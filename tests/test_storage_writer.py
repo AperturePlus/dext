@@ -123,3 +123,67 @@ async def test_command_exception_propagates_via_future_and_worker_survives(tmp_p
     nid = await w.upsert_node(NodeSpec(node_key="ok", type=NodeType.detail_url, url="https://x/ok"))
     assert isinstance(nid, int)
     await _close(eng, w, task)
+
+
+from dext.storage.models import (
+    CrawlRun,
+    ExtractionAttempt,
+    ExtractionFailure,
+    PageCache,
+    UniversityMeta,
+)
+from dext.storage.writer import PageCachePayload
+
+
+async def test_save_page_cache_upserts_by_identity_url(tmp_path):
+    eng, sf, w, task = await _writer(tmp_path)
+    url = "https://x?__ycl_page=2"  # identity URL (synthetic for form pagination)
+    await w.save_page_cache(PageCachePayload(url=url, title="第2页", status_code=200, links=["a", "b"]))
+    await w.save_page_cache(PageCachePayload(url=url, title="第2页改", status_code=200, content_hash="h2"))
+    async with sf() as s:
+        rows = (await s.execute(select(PageCache).where(PageCache.url == url))).scalars().all()
+        assert len(rows) == 1  # upsert, not duplicate
+        assert rows[0].title == "第2页改"
+        assert rows[0].content_hash == "h2"
+        assert rows[0].snapshot_encoding == "utf-8"
+    await _close(eng, w, task)
+
+
+async def test_extraction_attempt_record_then_finish(tmp_path):
+    eng, sf, w, task = await _writer(tmp_path)
+    nid = await w.upsert_node(NodeSpec(node_key="d", type=NodeType.detail_url, url="https://x/d"))
+    aid = await w.record_extraction_attempt(graph_node_id=nid, attempt=1, input_cache_url="https://x/d")
+    await w.finish_extraction_attempt(aid, status="succeeded", raw_output_preview="{...}")
+    async with sf() as s:
+        att = (await s.execute(select(ExtractionAttempt).where(ExtractionAttempt.id == aid))).scalar_one()
+        assert att.status == "succeeded"
+        assert att.finished_at is not None
+    await _close(eng, w, task)
+
+
+async def test_record_extraction_failure(tmp_path):
+    eng, sf, w, task = await _writer(tmp_path)
+    await w.record_extraction_failure(failure_type="invalid_json", resolver="dropped",
+                                      professor_name_hint="张三", source_url="https://x/d")
+    async with sf() as s:
+        rows = (await s.execute(select(ExtractionFailure))).scalars().all()
+        assert len(rows) == 1 and rows[0].failure_type == "invalid_json"
+    await _close(eng, w, task)
+
+
+async def test_run_lifecycle_and_university_status(tmp_path):
+    eng, sf, w, task = await _writer(tmp_path)
+    async with sf() as s:  # a meta row must exist for last_run_id wiring
+        s.add(UniversityMeta(name="测试大学", abbr="test"))
+        await s.commit()
+    rid = await w.start_run(mode="fresh", settings={"max_depth": 4})
+    await w.update_university_status("in_progress")
+    await w.finish_run(rid, status="completed", summary={"professors": 10})
+    async with sf() as s:
+        run = (await s.execute(select(CrawlRun).where(CrawlRun.id == rid))).scalar_one()
+        meta = (await s.execute(select(UniversityMeta))).scalar_one()
+        assert run.status == "completed" and run.finished_at is not None
+        assert run.summary_json == {"professors": 10}
+        assert meta.crawl_status == "in_progress"
+        assert meta.last_run_id == rid
+    await _close(eng, w, task)

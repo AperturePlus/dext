@@ -15,12 +15,17 @@ from typing import Awaitable, Callable
 from sqlalchemy import or_, select
 
 from dext.storage.models import (
+    CrawlRun,
     EdgeType,
+    ExtractionAttempt,
+    ExtractionFailure,
     GraphEdge,
     GraphNode,
     NodeStatus,
     NodeType,
     OrgUnit,
+    PageCache,
+    UniversityMeta,
     utcnow_iso,
 )
 
@@ -52,6 +57,22 @@ class NodeSpec:
     max_attempts: int = 3
     run_id: int | None = None
     metadata: dict | None = None
+
+
+@dataclass
+class PageCachePayload:
+    url: str  # identity URL (synthetic URL for form pagination) -- the cache key
+    final_url: str | None = None
+    status_code: int | None = None
+    text_snapshot: str | None = None
+    links: list | None = None
+    link_signals: list | None = None
+    block_reason: str | None = None
+    html_snapshot: str | None = None
+    content_hash: str | None = None
+    title: str | None = None
+    fetch_action: dict | None = None
+    snapshot_encoding: str = "utf-8"
 
 
 @dataclass
@@ -120,6 +141,36 @@ class DBWriter:
 
     async def claim_next(self, *, run_id, exclude_node_keys=None, types=None, now=None) -> ClaimedNode | None:
         return await self._run(lambda s: _claim_next(s, run_id, exclude_node_keys, types, now))
+
+    # --- page cache / extraction / run-meta commands ---
+    async def save_page_cache(self, payload: "PageCachePayload") -> str:
+        return await self._run(lambda s: _save_page_cache(s, payload))
+
+    async def record_extraction_attempt(self, *, graph_node_id, attempt=1, status="running",
+                                        prompt_hash=None, input_cache_url=None) -> int:
+        return await self._run(
+            lambda s: _record_attempt(s, graph_node_id, attempt, status, prompt_hash, input_cache_url)
+        )
+
+    async def finish_extraction_attempt(self, attempt_id, *, status, raw_output_preview=None, failure_type=None) -> None:
+        return await self._run(
+            lambda s: _finish_attempt(s, attempt_id, status, raw_output_preview, failure_type)
+        )
+
+    async def record_extraction_failure(self, *, failure_type, resolver=None,
+                                        raw_arguments_preview=None, professor_name_hint=None, source_url=None) -> int:
+        return await self._run(
+            lambda s: _record_failure(s, failure_type, resolver, raw_arguments_preview, professor_name_hint, source_url)
+        )
+
+    async def start_run(self, *, mode, settings=None) -> int:
+        return await self._run(lambda s: _start_run(s, mode, settings))
+
+    async def finish_run(self, run_id, *, status, summary=None) -> None:
+        return await self._run(lambda s: _finish_run(s, run_id, status, summary))
+
+    async def update_university_status(self, status) -> None:
+        return await self._run(lambda s: _update_university_status(s, status))
 
 
 # --- command implementations (module-level; take the worker's session) ---
@@ -239,3 +290,82 @@ async def _claim_next(session, run_id, exclude_node_keys, types, now) -> Claimed
         priority_score=node.priority_score, content_hash=node.content_hash,
         metadata=node.metadata_json,
     )
+
+
+async def _save_page_cache(session, payload: PageCachePayload) -> str:
+    existing = (await session.execute(select(PageCache).where(PageCache.url == payload.url))).scalar_one_or_none()
+    target = existing or PageCache(url=payload.url)
+    target.final_url = payload.final_url
+    target.status_code = payload.status_code
+    target.text_snapshot = payload.text_snapshot
+    target.links_json = payload.links
+    target.link_signals_json = payload.link_signals
+    target.block_reason = payload.block_reason
+    target.html_snapshot = payload.html_snapshot
+    target.content_hash = payload.content_hash
+    target.title = payload.title
+    target.fetch_action_json = payload.fetch_action
+    target.snapshot_encoding = payload.snapshot_encoding
+    if existing is None:
+        session.add(target)
+    await session.flush()
+    return target.url
+
+
+async def _record_attempt(session, graph_node_id, attempt, status, prompt_hash, input_cache_url) -> int:
+    row = ExtractionAttempt(
+        graph_node_id=graph_node_id, attempt=attempt, status=status,
+        prompt_hash=prompt_hash, input_cache_url=input_cache_url,
+    )
+    session.add(row)
+    await session.flush()
+    return row.id
+
+
+async def _finish_attempt(session, attempt_id, status, raw_output_preview, failure_type) -> None:
+    row = (await session.execute(select(ExtractionAttempt).where(ExtractionAttempt.id == attempt_id))).scalar_one()
+    row.status = status
+    if raw_output_preview is not None:
+        row.raw_output_preview = raw_output_preview
+    if failure_type is not None:
+        row.failure_type = failure_type
+    row.finished_at = utcnow_iso()
+    await session.flush()
+
+
+async def _record_failure(session, failure_type, resolver, raw_arguments_preview, professor_name_hint, source_url) -> int:
+    row = ExtractionFailure(
+        failure_type=failure_type, resolver=resolver,
+        raw_arguments_preview=raw_arguments_preview,
+        professor_name_hint=professor_name_hint, source_url=source_url,
+    )
+    session.add(row)
+    await session.flush()
+    return row.id
+
+
+async def _start_run(session, mode, settings) -> int:
+    run = CrawlRun(mode=mode, started_at=utcnow_iso(), status="running", settings_json=settings)
+    session.add(run)
+    await session.flush()
+    meta = (await session.execute(select(UniversityMeta))).scalars().first()
+    if meta is not None:
+        meta.last_run_id = run.id
+    await session.flush()
+    return run.id
+
+
+async def _finish_run(session, run_id, status, summary) -> None:
+    run = (await session.execute(select(CrawlRun).where(CrawlRun.id == run_id))).scalar_one()
+    run.status = status
+    run.finished_at = utcnow_iso()
+    if summary is not None:
+        run.summary_json = summary
+    await session.flush()
+
+
+async def _update_university_status(session, status) -> None:
+    meta = (await session.execute(select(UniversityMeta))).scalars().first()
+    if meta is not None:
+        meta.crawl_status = status
+    await session.flush()
