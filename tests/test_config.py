@@ -1,6 +1,19 @@
+import os
 from pathlib import Path
 
+import pytest
+
 from dext.config import Settings, get_settings
+
+
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch):
+    """Isolate every test from ambient DEXT_* / DEEPSEEK_API_KEY env vars,
+    so a developer/CI shell that exports them can't cause spurious failures."""
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    for key in list(os.environ):
+        if key.startswith("DEXT_"):
+            monkeypatch.delenv(key, raising=False)
 
 
 def test_defaults_are_sane():
