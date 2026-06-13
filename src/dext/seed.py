@@ -6,6 +6,8 @@ YAML/env only, no normalization (URL normalization belongs to SP3).
 
 from __future__ import annotations
 
+import re
+import urllib.parse
 from pathlib import Path
 
 import yaml
@@ -95,3 +97,52 @@ def get_university(manifest: Manifest, name: str) -> UniversitySeed:
             return university
     available = ", ".join(u.name for u in manifest.universities)
     raise SeedError(f"university {name!r} not found in seed. Available: {available}")
+
+
+# Longest-first public-suffix set. We deliberately avoid tldextract (YAGNI):
+# 38 universities resolve uniquely; on a future collision, set seed `abbr`.
+_PUBLIC_SUFFIXES = sorted(
+    ["edu.cn", "ac.cn", "edu", "com", "org", "net", "cn"],
+    key=lambda s: s.count(".") + 1,
+    reverse=True,
+)
+
+
+def _slugify(value: str) -> str:
+    value = re.sub(r"[^a-z0-9-]", "-", value.strip().lower())
+    return re.sub(r"-+", "-", value).strip("-")
+
+
+def _label_left_of_suffix(host: str) -> str:
+    """Return the label immediately left of the longest matching public suffix.
+
+    'buaa.edu.cn' -> 'buaa'; 'pku.edu.cn' -> 'pku'. Falls back to the first
+    label if no known suffix matches.
+    """
+    labels = host.split(".")
+    for suffix in _PUBLIC_SUFFIXES:
+        suffix_labels = suffix.split(".")
+        n = len(suffix_labels)
+        if len(labels) > n and labels[-n:] == suffix_labels:
+            return labels[-(n + 1)]
+    return labels[0] if labels else host
+
+
+def resolve_abbr(university: UniversitySeed) -> str:
+    """Stable, readable, lowercase English abbr for the DB filename.
+
+    Uses an explicit seed `abbr` when present; otherwise derives it from the
+    official URL's host (strip leading 'www.', take the label left of the
+    public suffix). Result is slugified to [a-z0-9-].
+    """
+    if university.abbr:
+        return _slugify(university.abbr)
+    host = (urllib.parse.urlsplit(university.url).hostname or "").lower()
+    if host.startswith("www."):
+        host = host[len("www.") :]
+    return _slugify(_label_left_of_suffix(host))
+
+
+def db_filename(abbr: str) -> str:
+    """DB file name for an abbr (path assembly lives in SP2)."""
+    return f"{abbr}.db"
