@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Virtual env / tooling
+.venv/
+
+# Runtime data (per-university SQLite DBs + backups)
+/data/
+
+# Secrets
+.env
+
+# Node (userscripts build)
+**/node_modules/
+
+# Local Claude Code settings (personal)
+.claude/settings.local.json
