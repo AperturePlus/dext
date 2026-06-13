@@ -146,6 +146,13 @@ class DBWriter:
     async def save_page_cache(self, payload: "PageCachePayload") -> str:
         return await self._run(lambda s: _save_page_cache(s, payload))
 
+    async def save_professors(self, payloads, *, org_unit_id, org_unit_name):
+        from dext.storage.dedup import save_professors as _save_professors
+
+        return await self._run(
+            lambda s: _save_professors(s, payloads, org_unit_id=org_unit_id, org_unit_name=org_unit_name)
+        )
+
     async def record_extraction_attempt(self, *, graph_node_id, attempt=1, status="running",
                                         prompt_hash=None, input_cache_url=None) -> int:
         return await self._run(
