@@ -76,6 +76,28 @@ def test_load_manifest_uses_settings_default_path(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_load_manifest_falls_back_to_assets_when_seed_path_missing(tmp_path, monkeypatch):
+    # Where the default seed_path ("entrances.yaml") is absent, load_manifest()
+    # must fall back to assets/entrances.yaml (SP1 spec §3.2).
+    monkeypatch.chdir(tmp_path)
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "entrances.yaml").write_text(
+        "version: 1\n"
+        "universities:\n"
+        "  - name: 测试大学\n"
+        "    url: https://t.edu.cn/\n"
+        "    org_unit_listing_urls: ['https://t.edu.cn/list']\n",
+        encoding="utf-8",
+    )
+    from dext.config import get_settings
+
+    get_settings.cache_clear()
+    m = load_manifest()  # "entrances.yaml" absent here -> assets/entrances.yaml
+    assert [u.name for u in m.universities] == ["测试大学"]
+    get_settings.cache_clear()
+
+
 def test_load_manifest_missing_file_raises_seed_error(tmp_path):
     with pytest.raises(SeedError):
         load_manifest(tmp_path / "nope.yaml")
