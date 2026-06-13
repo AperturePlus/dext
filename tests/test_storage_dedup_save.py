@@ -1,7 +1,7 @@
 from sqlalchemy import select
 
 from dext.storage.db import create_all, create_engine_for_path, make_session_factory
-from dext.storage.models import Academician, Professor, ProfessorAffiliation
+from dext.storage.models import Academician, ExtractionFailure, Professor, ProfessorAffiliation
 from dext.storage.writer import DBWriter, OrgUnitSpec
 from dext.types import ProfessorPayload
 
@@ -100,4 +100,24 @@ async def test_repeated_save_is_idempotent_no_duplicate_affiliations(tmp_path):
     await w.save_professors([p], org_unit_id=math, org_unit_name="数学学院")
     async with sf() as s:
         assert len((await s.execute(select(ProfessorAffiliation))).scalars().all()) == 1
+    await _close(eng, w, task)
+
+
+async def test_save_error_isolation_records_failure_and_continues_batch(tmp_path):
+    # Requirement 4 (per-record SAVEPOINT isolation): a bad payload rolls back ITS
+    # savepoint, is recorded as a save_error, and the rest of the batch still persists.
+    eng, sf, w, task, math, _ = await _setup(tmp_path)
+    payloads = [
+        ProfessorPayload(name="甲", email="jia@x.edu"),
+        ProfessorPayload(name=None),  # name_key(None) raises inside its SAVEPOINT
+        ProfessorPayload(name="乙", email="yi@x.edu"),
+    ]
+    r = await w.save_professors(payloads, org_unit_id=math, org_unit_name="数学学院")
+    assert r.save_errors == 1
+    assert r.inserted == 2  # the two good records survived the bad one
+    async with sf() as s:
+        profs = (await s.execute(select(Professor))).scalars().all()
+        assert {p.name for p in profs} == {"甲", "乙"}
+        fails = (await s.execute(select(ExtractionFailure))).scalars().all()
+        assert len(fails) == 1 and fails[0].failure_type == "save_error"
     await _close(eng, w, task)
