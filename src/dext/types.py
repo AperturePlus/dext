@@ -19,6 +19,7 @@ __all__ = [
     "ProfessorPayload",
     "FetchAction",
     "PaginationState",
+    "FetchResult",
 ]
 
 
@@ -70,3 +71,21 @@ class PaginationState:
     synthetic_url: str
     url: str
     total_pages: int | None = None
+
+
+@dataclass
+class FetchResult:
+    """One browser fetch outcome (SP4 produces → SP6 consumes; overview §5).
+
+    `identity_url` is the cache/node key (= job.identity_url or job.url). `html`/`title`
+    are already UTF-8 / mojibake-repaired. `block_reason` is set only on failure
+    (waf/timeout/human_failed/human_skip/...)."""
+
+    identity_url: str
+    requested_url: str
+    final_url: str
+    status_code: int | None
+    html: str
+    title: str
+    pagination_states: list[PaginationState]
+    block_reason: str | None = None
