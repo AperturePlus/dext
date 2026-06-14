@@ -12,7 +12,14 @@ from dataclasses import dataclass
 
 from dext.storage.models import EdgeType, NodeStatus, NodeType
 
-__all__ = ["NodeType", "EdgeType", "NodeStatus", "ProfessorPayload"]
+__all__ = [
+    "NodeType",
+    "EdgeType",
+    "NodeStatus",
+    "ProfessorPayload",
+    "FetchAction",
+    "PaginationState",
+]
 
 
 @dataclass
@@ -29,3 +36,37 @@ class ProfessorPayload:
     bio: str | None = None
     enrollment_pref: str | None = None  # 博导/硕导 etc.
     publications: str | None = None
+
+
+@dataclass
+class FetchAction:
+    """Browser action telling the userscript to fill a form field and submit
+    (mirrors userscripts/src/types.ts FetchAction). Produced by SP3 form
+    pagination, carried on FetchJob/graph node, consumed by SP4/SP6."""
+
+    kind: str  # always "form_submit" for now
+    form_name: str | None = None
+    fields: dict[str, str] | None = None
+    submit: bool | None = None
+    synthetic_url: str | None = None
+    label: str | None = None
+    page_index: int | None = None
+    state_id: str | None = None
+
+
+@dataclass
+class PaginationState:
+    """One discovered form-pagination state (mirrors userscripts/src/types.ts
+    PaginationState). `synthetic_url` is the stable backend identity URL; it must
+    be byte-identical to what formPagination.ts computes for the same page."""
+
+    kind: str  # always "form_submit"
+    state_id: str  # "form:<NAME>:<FIELD>:<N>"
+    label: str
+    page_index: int
+    form_name: str
+    fields: dict[str, str]
+    submit: bool
+    synthetic_url: str
+    url: str
+    total_pages: int | None = None
