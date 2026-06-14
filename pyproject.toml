@@ -5,6 +5,7 @@ description = "Graph-driven human-assisted university faculty crawler"
 requires-python = ">=3.11"
 dependencies = [
     "html2text>=2024.2.26",
+    "beautifulsoup4>=4.12",
     "openai>=1.40.0",
     "sqlalchemy>=2.0.30",
     "aiosqlite>=0.19.0",
