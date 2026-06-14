@@ -133,3 +133,17 @@ async def run_server(app, host, port) -> Runner   # 供 SP7 生命周期管理
 
 ## 12. 不做
 - ❌ 鉴权 / HTTPS（本地回环）。❌ 多 owner 协调。❌ 持久化 job 队列（图节点才是持久状态）。❌ 用 httpx 做主抓取。
+
+## 13. 实现决策补遗（2026-06-14，brainstorming 定稿）
+
+实现前确认的细化与对 §1–§12 的取舍，权威性等同正文：
+
+1. **重定向探测用 `aiohttp` 而非 httpx。** httpx 未在 `pyproject.toml` 声明（仅传递依赖），而 `aiohttp` 已是一等依赖；`aiohttp.ClientSession.get()` 默认跟随重定向并以 `resp.url` 暴露落地 URL，对探测足够。§7/§10 中 “httpx” 读作“异步 HTTP 客户端”，默认实现为 aiohttp。探测 IO 经**可注入 resolver** 封装，使分类逻辑可在无网络下单测。
+2. **`FetchResult` 落在 `dext.types`**（与总览 §5 一致；SP4 产出、SP6 消费），不放 `dext.bridge`。
+3. **薄 handler / 厚 bridge。** `server.py` 仅做 UTF-8 解码 + 序列化；`next/complete/fail/skip/override` 全部业务逻辑在 `HumanFetcherBridge` 上，使 job 生命周期可脱离 HTTP 单测。`_future` 作为 `FetchJob` 字段随 job 流转（序列化时排除），不另设 id→future 字典。
+4. **`FetchQueue` 为纯内存结构（不依赖 asyncio）。** 全部访问发生在单一事件循环内（aiohttp handler 与 GraphDriver 同环、无并行），故用 `deque` + 单 assigned 槽即线程安全；不引入 `asyncio.Queue`（其阻塞 `get()` 与“无 job → 返回 None → 204”语义相悖）。Future/`wait_for` 超时等 asyncio 原语集中在 bridge。
+5. **`/fail` 的 `block_reason` = 脚本原始 message**（空则 `human_failed`）；retry 可否由 SP6 分类（§2/§12），桥只如实记录原因以利诊断。
+6. **`/override` 保持 job 为 assigned**（不回 pending）：同一 job id、同一 future，仅换 `url`，维持单 in-flight 不变量与人工当前焦点。
+7. **幂等：超时后迟到的 `/complete`/`/fail`/`/skip`**（`find` 命中不到 assigned，或 `future.done()`）一律记日志后返回良性响应（200 `{status:"ignored"}` / override 返回 204），绝不抛异常；超时的 pending job 由 `queue.discard` 主动移除，避免事后被 `take_next` 派出。
+8. **`/status` 计数累计**：`completed/failed/skipped` 跨临时 job 累加；`pending=len(deque)`、`assigned∈{0,1}`。`server_uptime_seconds` 取 `time.monotonic()` 起点差。
+9. **mojibake 安全往返**：`text.encode('latin-1')`（遇真实 CJK 抛错→原样返回，保证正确 UTF-8 不被破坏）→ `.decode('utf-8')`（非误码→原样）→ 仅当高位字节（U+0080–U+00FF）“可疑度”不增加才采纳。`café` 等合法 latin-1 因 utf-8 解码失败而安全保留。
