@@ -142,7 +142,7 @@ dext 是 `yanclaw` 项目的重写（yanclaw 遇到结构问题后从零重建�
 - `NodeType` / `EdgeType` / `NodeStatus` 枚举（源文档 §5）——定义处 SP2，全局复用。
 - `PageSnapshot`（SP3 产出）：`text_snapshot`, `links`, `link_signals`, `content_hash`, `title`。
 - `ProfessorPayload`（SP5 产出 → SP2 upsert）：见 SP5 spec 的 sanitizer 字段规范。
-- `FetchAction` / `PaginationState`：与 `types.ts` 镜像（定义处 SP4）。
+- `FetchAction` / `PaginationState`：与 `types.ts` 镜像（定义处 `dext.types`，SP3 实现时新增；SP4/SP6 import 使用）。
 
 接口以这些 dataclass / pydantic 模型为边界；各 SP 内部实现互不可见。
 

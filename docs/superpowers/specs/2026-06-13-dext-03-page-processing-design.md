@@ -87,7 +87,7 @@ def is_offsite(url, base) -> bool
 - 与脚本上报的 `pagination_states` 合并去重（按 `state_id` / synthetic_url）。
 - **约束**：`__ycl_*` 仅后端身份用，不发给学校服务器；正文/链接/detail 必须来自翻页后 HTML（SP4/SP6 保证缓存按 identity_url 存）。
 
-> `PaginationState` 结构与 `userscripts/src/types.ts` 镜像，定义处实际在 SP4（共享 DTO），SP3 import 使用。
+> `PaginationState`（及 `FetchAction`）结构与 `userscripts/src/types.ts` 镜像。**定义处 = `dext.types`**（SP3 实现时新增，与枚举 / `ProfessorPayload` 同处共享 DTO）；SP4/SP6 从 `dext.types` import，不重复定义。（原计划定义处为 SP4；因 SP3 先于 SP4 构建且产出 `list[PaginationState]`，上移至 `dext.types` 以免前向依赖与改名。2026-06-14 决策。）
 
 ## 6. detail 候选过滤 `dext.page.candidates`（§8.4）
 
