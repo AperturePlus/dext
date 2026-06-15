@@ -170,8 +170,8 @@ class DBWriter:
             lambda s: _record_failure(s, failure_type, resolver, raw_arguments_preview, professor_name_hint, source_url)
         )
 
-    async def start_run(self, *, mode, settings=None) -> int:
-        return await self._run(lambda s: _start_run(s, mode, settings))
+    async def start_run(self, *, mode, settings=None, backup_path=None) -> int:
+        return await self._run(lambda s: _start_run(s, mode, settings, backup_path))
 
     async def finish_run(self, run_id, *, status, summary=None) -> None:
         return await self._run(lambda s: _finish_run(s, run_id, status, summary))
@@ -354,8 +354,14 @@ async def _record_failure(session, failure_type, resolver, raw_arguments_preview
     return row.id
 
 
-async def _start_run(session, mode, settings) -> int:
-    run = CrawlRun(mode=mode, started_at=utcnow_iso(), status="running", settings_json=settings)
+async def _start_run(session, mode, settings, backup_path) -> int:
+    run = CrawlRun(
+        mode=mode,
+        started_at=utcnow_iso(),
+        status="running",
+        settings_json=settings,
+        backup_path=str(backup_path) if backup_path is not None else None,
+    )
     session.add(run)
     await session.flush()
     meta = (await session.execute(select(UniversityMeta))).scalars().first()

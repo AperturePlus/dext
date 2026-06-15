@@ -92,11 +92,20 @@ class StorageHandle:
     """Owns one university DB: the engine, the single-writer DBWriter (running as
     a task), and a read-session factory. close() drains the writer then disposes."""
 
-    def __init__(self, engine: AsyncEngine, writer: "DBWriter", session_factory, *, university_id=None):
+    def __init__(
+        self,
+        engine: AsyncEngine,
+        writer: "DBWriter",
+        session_factory,
+        *,
+        university_id=None,
+        backup_path: Path | None = None,
+    ):
         self.engine = engine
         self.writer = writer
         self.session_factory = session_factory
         self.university_id = university_id
+        self.backup_path = backup_path
         self._writer_task = None
 
     def start_writer(self) -> None:

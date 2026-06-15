@@ -58,10 +58,10 @@ def _backup_existing(db_path: Path, settings) -> Path:
     return backup_dir
 
 
-async def _assemble_handle(engine) -> StorageHandle:
+async def _assemble_handle(engine, *, backup_path: Path | None = None) -> StorageHandle:
     session_factory = make_session_factory(engine)
     writer = DBWriter(session_factory)
-    handle = StorageHandle(engine, writer, session_factory)
+    handle = StorageHandle(engine, writer, session_factory, backup_path=backup_path)
     handle.start_writer()
     return handle
 
@@ -69,11 +69,12 @@ async def _assemble_handle(engine) -> StorageHandle:
 async def open_fresh(university, abbr: str, settings) -> StorageHandle:
     db_path = resolve_db_path(abbr, settings)
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    backup_path = None
     if db_path.exists():
-        _backup_existing(db_path, settings)  # raises on failure -> original kept
+        backup_path = _backup_existing(db_path, settings)  # raises on failure -> original kept
     engine = create_engine_for_path(db_path)
     await create_all(engine)
-    handle = await _assemble_handle(engine)
+    handle = await _assemble_handle(engine, backup_path=backup_path)
     async with handle.session() as session:
         session.add(UniversityMeta(
             name=university.name,
