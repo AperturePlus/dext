@@ -176,6 +176,9 @@ class DBWriter:
     async def finish_run(self, run_id, *, status, summary=None) -> None:
         return await self._run(lambda s: _finish_run(s, run_id, status, summary))
 
+    async def update_org_unit_status(self, org_unit_id, status) -> None:
+        return await self._run(lambda s: _update_org_unit_status(s, org_unit_id, status))
+
     async def update_university_status(self, status) -> None:
         return await self._run(lambda s: _update_university_status(s, status))
 
@@ -368,6 +371,13 @@ async def _finish_run(session, run_id, status, summary) -> None:
     run.finished_at = utcnow_iso()
     if summary is not None:
         run.summary_json = summary
+    await session.flush()
+
+
+async def _update_org_unit_status(session, org_unit_id, status) -> None:
+    row = (await session.execute(select(OrgUnit).where(OrgUnit.id == org_unit_id))).scalar_one_or_none()
+    if row is not None:
+        row.status = status
     await session.flush()
 
 

@@ -129,6 +129,7 @@ from dext.storage.models import (
     CrawlRun,
     ExtractionAttempt,
     ExtractionFailure,
+    OrgUnit,
     PageCache,
     UniversityMeta,
 )
@@ -186,4 +187,14 @@ async def test_run_lifecycle_and_university_status(tmp_path):
         assert run.summary_json == {"professors": 10}
         assert meta.crawl_status == "in_progress"
         assert meta.last_run_id == rid
+    await _close(eng, w, task)
+
+
+async def test_update_org_unit_status(tmp_path):
+    eng, sf, w, task = await _writer(tmp_path)
+    oid = await w.upsert_org_unit(OrgUnitSpec(name="数学学院", url="https://x/math", status="pending"))
+    await w.update_org_unit_status(oid, "no_faculty_page")
+    async with sf() as s:
+        row = (await s.execute(select(OrgUnit).where(OrgUnit.id == oid))).scalar_one()
+        assert row.status == "no_faculty_page"
     await _close(eng, w, task)
