@@ -44,11 +44,48 @@ def test_decider_prompt_mentions_json_for_json_object_mode():
     assert "https://x.edu.cn/teacher/1" in msgs[1]["content"]
 
 
+def test_prompts_include_conservative_exclusion_rules():
+    ctx = type("O", (), {"org_unit_id": 1, "org_unit_name": "数学", "faculty_list_url": ""})()
+    decider = build_decider_messages(
+        _snap(), [_sig("https://x.edu.cn/teacher/1")],
+        node=type("N", (), {"type": "faculty_list_url", "url": "u", "depth": 1, "org_unit_name": "数学"})(),
+        context=type("C", (), {"university_name": "X大", "visited_summary": "", "faculty_list_url": "u"})(),
+        max_tokens=1000,
+    )[0]["content"]
+    extractor = build_extractor_messages(_snap(), ctx, max_tokens=1000, strict=False)[0]["content"]
+    retry = build_extractor_messages(_snap(), ctx, max_tokens=1000, strict=True)[0]["content"]
+    for prompt in (decider, extractor, retry):
+        for term in ("中外合办", "联合办学", "艺术学院", "体育学院", "博士后", "离退休", "成人教育", "继续教育"):
+            assert term in prompt
+        assert "宁可漏排除，不要错排除" in prompt
+        assert "国际关系学院" in prompt
+    assert "SCUPI" in decider
+    assert "ltxjs" in decider
+    assert "bshldz" in decider
+    assert "空的 professors 数组" in extractor
+
+
 def test_extractor_strict_prompt_differs_from_default():
     ctx = type("O", (), {"org_unit_id": 1, "org_unit_name": "数学", "faculty_list_url": ""})()
     normal = build_extractor_messages(_snap(), ctx, max_tokens=1000, strict=False)
     strict = build_extractor_messages(_snap(), ctx, max_tokens=1000, strict=True)
     assert normal[0]["content"] != strict[0]["content"]
+
+
+def test_extractor_prompt_separates_title_and_enrollment_pref():
+    ctx = type("O", (), {"org_unit_id": 1, "org_unit_name": "数学", "faculty_list_url": ""})()
+    for messages in (
+        build_extractor_messages(_snap(), ctx, max_tokens=1000, strict=False),
+        build_extractor_messages(_snap(), ctx, max_tokens=1000, strict=True),
+    ):
+        content = messages[0]["content"]
+        assert "title" in content
+        assert "enrollment_pref" in content
+        assert "博导" in content
+        assert "硕导" in content
+        assert "博士生导师" in content
+        assert "硕士生导师" in content
+        assert "应填写到 `enrollment_pref`" in content
 
 
 def test_save_professors_tool_schema_aligns_with_payload():
