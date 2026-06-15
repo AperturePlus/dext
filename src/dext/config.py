@@ -34,9 +34,11 @@ class Settings(BaseSettings):
     # LLM (DeepSeek / OpenAI chat-completions format)
     deepseek_api_key: str = Field(default="", validation_alias="DEEPSEEK_API_KEY")
     llm_base_url: str = "https://api.deepseek.com"
-    llm_model: str = "deepseek-chat"
-    llm_model_retry: str = "deepseek-reasoner"
-    llm_enable_thinking: bool = False
+    llm_model: str = "deepseek-v4-flash"
+    llm_enable_thinking: bool = True  # V4 enables thinking by default
+    llm_reasoning_effort: str = "high"  # first-pass effort tier
+    llm_reasoning_effort_retry: str = "max"  # escalated on strict retry
+    llm_max_page_tokens: int = 24000  # page-text truncation budget
     llm_workers: int = 4
     invalid_json_max_retry: int = 2
 

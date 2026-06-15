@@ -24,9 +24,11 @@ def test_defaults_are_sane():
     assert s.bridge_port == 21520
     assert s.fetch_timeout_seconds == 60
     assert s.llm_base_url == "https://api.deepseek.com"
-    assert s.llm_model == "deepseek-chat"
-    assert s.llm_model_retry == "deepseek-reasoner"
-    assert s.llm_enable_thinking is False
+    assert s.llm_model == "deepseek-v4-flash"
+    assert s.llm_enable_thinking is True
+    assert s.llm_reasoning_effort == "high"
+    assert s.llm_reasoning_effort_retry == "max"
+    assert s.llm_max_page_tokens == 24000
     assert s.llm_workers == 4
     assert s.invalid_json_max_retry == 2
     assert s.max_depth == 4
