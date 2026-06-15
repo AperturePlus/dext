@@ -137,7 +137,9 @@ async def extract_professors(snapshot: PageSnapshot, org_unit_ctx: OrgUnitContex
                              client: LLMClient, attempt: int = 0) -> ExtractionResult
 ```
 
-- 强制 `save_professors` tool（`tool_choice={"type":"function","function":{"name":"save_professors"}}`）。
+- 传 `save_professors` tool，`tool_choice="auto"`。**bug trap（实测确认）**：DeepSeek V4 thinking 模式
+  **拒绝**强制 `tool_choice={"type":"function",...}`（报 `Thinking mode does not support this tool_choice`）；
+  因此用 `auto` + prompt 强约束驱动调用，模型不调用/空结果落入下方 no_structured_data 评估。
 - `attempt > 0` ⇒ `retry_mode=True`（effort=max）+ 严格 retry prompt（只输出合法 JSON、引号转义、单批 ≤ 25 人）。
 - 解析分支：
   - 合法 tool args → 逐条 `sanitize` → `payloads`，`failure_type=None`。
