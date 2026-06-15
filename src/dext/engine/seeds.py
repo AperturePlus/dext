@@ -1,0 +1,191 @@
+"""Seed loading and graph-node construction helpers for SP6."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from dext.page.urls import normalize_url
+from dext.seed import OrgUnitSeed, UniversitySeed
+from dext.storage.dedup import node_key_for
+from dext.storage.models import EdgeType, NodeStatus, NodeType
+from dext.storage.writer import NodeSpec, OrgUnitSpec
+
+PRIORITY_BY_TYPE: dict[NodeType, float] = {
+    NodeType.org_listing_url: 100.0,
+    NodeType.org_unit: 90.0,
+    NodeType.faculty_list_url: 80.0,
+    NodeType.pagination_url: 70.0,
+    NodeType.faculty_followup_url: 65.0,
+    NodeType.detail_url: 50.0,
+}
+
+
+@dataclass
+class SeedLoadSummary:
+    org_listing_nodes: int = 0
+    org_units: int = 0
+    org_unit_nodes: int = 0
+    faculty_list_nodes: int = 0
+    edges: int = 0
+
+
+def priority_for(node_type: NodeType) -> float:
+    return PRIORITY_BY_TYPE[node_type]
+
+
+def node_spec(
+    node_type: NodeType,
+    *,
+    url: str,
+    settings,
+    run_id: int | None = None,
+    org_unit_id: int | None = None,
+    org_unit_name: str | None = None,
+    depth: int = 0,
+    metadata: dict | None = None,
+    status: NodeStatus = NodeStatus.pending,
+    confidence: float | None = None,
+    node_key_url: str | None = None,
+) -> NodeSpec:
+    identity_url = node_key_url or url
+    key = node_key_for(node_type, normalized_url=identity_url, org_unit_id=org_unit_id)
+    priority = priority_for(node_type)
+    return NodeSpec(
+        node_key=key,
+        type=node_type,
+        url=url,
+        org_unit_id=org_unit_id,
+        org_unit_name=org_unit_name,
+        status=status,
+        priority_score=priority,
+        base_priority=priority,
+        confidence=confidence,
+        depth=depth,
+        max_attempts=settings.max_attempts,
+        run_id=run_id,
+        metadata=metadata,
+    )
+
+
+def org_node_spec(
+    *,
+    org_unit_id: int | None,
+    org_unit_name: str,
+    url: str,
+    settings,
+    run_id: int | None = None,
+    status: NodeStatus = NodeStatus.pending,
+    depth: int = 0,
+    metadata: dict | None = None,
+) -> NodeSpec:
+    key = node_key_for(NodeType.org_unit, org_unit_id=org_unit_id, normalized_name=org_unit_name)
+    priority = priority_for(NodeType.org_unit)
+    return NodeSpec(
+        node_key=key,
+        type=NodeType.org_unit,
+        url=url,
+        org_unit_id=org_unit_id,
+        org_unit_name=org_unit_name,
+        status=status,
+        priority_score=priority,
+        base_priority=priority,
+        depth=depth,
+        max_attempts=settings.max_attempts,
+        run_id=run_id,
+        metadata=metadata,
+    )
+
+
+def normalize_seed_url(url: str, base: str) -> str:
+    return normalize_url(url, base) or url
+
+
+def synthetic_org_url(name: str) -> str:
+    return f"about:org_unit:{name}"
+
+
+async def _seed_org_unit(
+    storage,
+    unit: OrgUnitSeed,
+    university_url: str,
+    settings,
+    run_id: int,
+    summary: SeedLoadSummary,
+) -> tuple[int, int | None]:
+    org_url = normalize_seed_url(unit.url, university_url) if unit.url else synthetic_org_url(unit.name)
+    org_id = await storage.writer.upsert_org_unit(
+        OrgUnitSpec(name=unit.name, url=org_url, kind=unit.kind, discovered_from_url=university_url)
+    )
+    summary.org_units += 1
+
+    org_node_id: int | None = None
+    if unit.url:
+        org_node_id = await storage.writer.upsert_node(
+            org_node_spec(
+                org_unit_id=org_id,
+                org_unit_name=unit.name,
+                url=org_url,
+                settings=settings,
+                run_id=run_id,
+                depth=0,
+                metadata={"seeded": True},
+            )
+        )
+        summary.org_unit_nodes += 1
+    elif unit.faculty_urls:
+        org_node_id = await storage.writer.upsert_node(
+            org_node_spec(
+                org_unit_id=org_id,
+                org_unit_name=unit.name,
+                url=org_url,
+                settings=settings,
+                run_id=run_id,
+                status=NodeStatus.skipped,
+                depth=0,
+                metadata={"seeded": True, "synthetic": True, "reason": "seed_direct_faculty_urls"},
+            )
+        )
+        summary.org_unit_nodes += 1
+
+    for raw_url in unit.faculty_urls:
+        faculty_url = normalize_seed_url(raw_url, org_url)
+        faculty_id = await storage.writer.upsert_node(
+            node_spec(
+                NodeType.faculty_list_url,
+                url=faculty_url,
+                settings=settings,
+                run_id=run_id,
+                org_unit_id=org_id,
+                org_unit_name=unit.name,
+                depth=1 if unit.url else 0,
+                metadata={"seeded": True, "source": "org_units[].faculty_urls"},
+            )
+        )
+        summary.faculty_list_nodes += 1
+        if org_node_id is not None:
+            await storage.writer.add_edge(org_node_id, faculty_id, EdgeType.belongs_to_org_unit)
+            summary.edges += 1
+
+    return org_id, org_node_id
+
+
+async def load_seed_nodes(university: UniversitySeed, storage, settings, run_id: int) -> SeedLoadSummary:
+    summary = SeedLoadSummary()
+    for raw_url in university.org_unit_listing_urls:
+        url = normalize_seed_url(raw_url, university.url)
+        await storage.writer.upsert_node(
+            node_spec(
+                NodeType.org_listing_url,
+                url=url,
+                settings=settings,
+                run_id=run_id,
+                depth=0,
+                metadata={"seeded": True, "source": "org_unit_listing_urls"},
+            )
+        )
+        summary.org_listing_nodes += 1
+
+    for unit in university.org_units:
+        await _seed_org_unit(storage, unit, university.url, settings, run_id, summary)
+
+    return summary
