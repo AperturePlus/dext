@@ -38,6 +38,7 @@ class DecidedLink:
     label: str
     confidence: float
     is_leaf: bool
+    org_unit_name: str | None = None
 
 
 @dataclass
@@ -67,7 +68,15 @@ def _parse_decision(raw_content: str, candidates: list[LinkSignal]) -> Decision:
             conf = float(item.get("confidence", 0.0))
         except (TypeError, ValueError):
             conf = 0.0
-        links.append(DecidedLink(url=url, label=label, confidence=conf, is_leaf=bool(item.get("is_leaf", False))))
+        links.append(
+            DecidedLink(
+                url=url,
+                label=label,
+                confidence=conf,
+                is_leaf=bool(item.get("is_leaf", False)),
+                org_unit_name=item.get("org_unit_name"),
+            )
+        )
     return Decision(links=links, page_is_leaf=bool(data.get("page_is_leaf", False)), raw_preview=raw[:500])
 
 

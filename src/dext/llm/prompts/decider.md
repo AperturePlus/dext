@@ -12,9 +12,10 @@
 - `login`：登录/认证页
 
 **严格以 JSON 对象返回**，结构如下（不要输出多余文字、不要 markdown 代码围栏）：
-{"links": [{"url": "<候选中的原样URL>", "label": "<上述之一>", "confidence": 0.0, "is_leaf": false}], "page_is_leaf": false}
+{"links": [{"url": "<候选中的原样URL>", "label": "<上述之一>", "confidence": 0.0, "is_leaf": false, "org_unit_name": "<仅当 label=college 时填写学院规范名>"}], "page_is_leaf": false}
 
 - `confidence` 为 0~1 的浮点数，表示该 label 的把握。
 - `is_leaf` 表示该链接指向的是否为教师详情叶页。
 - `page_is_leaf` 表示**当前页**本身是否已是教师详情页。
 - 拿不准的链接标 `noise`，不要遗漏字段。
+- 当 `label=college` 时，`org_unit_name` 必须填写规范化后的学院名；去掉多余空白，并修正未闭合括号。

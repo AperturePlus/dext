@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict
 
+from dext.engine.names import clean_org_unit_name
 from dext.engine.seeds import node_spec, org_node_spec
 from dext.engine.workers import ExtractTask
 from dext.llm import DeciderContext, DeciderNode, decide_links
@@ -150,9 +151,7 @@ async def handle_org_listing(node: ClaimedNode, snapshot: PageSnapshot, deps: Ha
     for link in decision.links:
         if link.label != "college":
             continue
-        sig = _signal_by_url(snapshot, link.url)
-        name = (sig.anchor_text if sig is not None else "") or link.url.rsplit("/", 1)[-1]
-        name = name.strip()
+        name = clean_org_unit_name(link.org_unit_name)
         if not name or _is_non_teaching_unit(name):
             continue
         org_id = await deps.storage.writer.upsert_org_unit(
@@ -197,6 +196,7 @@ async def _create_child(
         metadata=metadata,
         confidence=confidence,
         node_key_url=identity_url,
+        subtree=parent.org_unit_id is not None,
     )
     child_id = await deps.storage.writer.upsert_node(spec)
     await deps.storage.writer.add_edge(parent.id, child_id, edge_type, confidence=confidence, metadata=metadata)

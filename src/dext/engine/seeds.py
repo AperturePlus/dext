@@ -9,15 +9,9 @@ from dext.seed import OrgUnitSeed, UniversitySeed
 from dext.storage.dedup import node_key_for
 from dext.storage.models import EdgeType, NodeStatus, NodeType
 from dext.storage.writer import NodeSpec, OrgUnitSpec
+from dext.engine.priorities import BASE_PRIORITY_BY_TYPE, priority_for as base_priority_for, subtree_priority_for
 
-PRIORITY_BY_TYPE: dict[NodeType, float] = {
-    NodeType.org_listing_url: 100.0,
-    NodeType.org_unit: 90.0,
-    NodeType.faculty_list_url: 80.0,
-    NodeType.pagination_url: 70.0,
-    NodeType.faculty_followup_url: 65.0,
-    NodeType.detail_url: 50.0,
-}
+PRIORITY_BY_TYPE: dict[NodeType, float] = BASE_PRIORITY_BY_TYPE
 
 
 @dataclass
@@ -27,10 +21,6 @@ class SeedLoadSummary:
     org_unit_nodes: int = 0
     faculty_list_nodes: int = 0
     edges: int = 0
-
-
-def priority_for(node_type: NodeType) -> float:
-    return PRIORITY_BY_TYPE[node_type]
 
 
 def node_spec(
@@ -46,10 +36,11 @@ def node_spec(
     status: NodeStatus = NodeStatus.pending,
     confidence: float | None = None,
     node_key_url: str | None = None,
+    subtree: bool = False,
 ) -> NodeSpec:
     identity_url = node_key_url or url
     key = node_key_for(node_type, normalized_url=identity_url, org_unit_id=org_unit_id)
-    priority = priority_for(node_type)
+    priority = subtree_priority_for(node_type) if subtree else base_priority_for(node_type)
     return NodeSpec(
         node_key=key,
         type=node_type,
@@ -79,7 +70,7 @@ def org_node_spec(
     metadata: dict | None = None,
 ) -> NodeSpec:
     key = node_key_for(NodeType.org_unit, org_unit_id=org_unit_id, normalized_name=org_unit_name)
-    priority = priority_for(NodeType.org_unit)
+    priority = base_priority_for(NodeType.org_unit)
     return NodeSpec(
         node_key=key,
         type=NodeType.org_unit,
@@ -159,6 +150,7 @@ async def _seed_org_unit(
                 org_unit_name=unit.name,
                 depth=1 if unit.url else 0,
                 metadata={"seeded": True, "source": "org_units[].faculty_urls"},
+                subtree=True,
             )
         )
         summary.faculty_list_nodes += 1

@@ -185,8 +185,10 @@ class DBWriter:
 
 # --- command implementations (module-level; take the worker's session) ---
 async def _upsert_org_unit(session, spec: OrgUnitSpec) -> int:
-    existing = (await session.execute(select(OrgUnit).where(OrgUnit.name == spec.name))).scalar_one_or_none()
+    existing = (await session.execute(select(OrgUnit).where(OrgUnit.url == spec.url))).scalar_one_or_none()
     if existing is not None:
+        if existing.name != spec.name:
+            existing.name = spec.name
         if not existing.url:
             existing.url = spec.url
         if not existing.kind:
@@ -213,7 +215,7 @@ async def _upsert_node(session, spec: NodeSpec) -> int:
         existing.base_priority = max(existing.base_priority, spec.base_priority)
         if existing.org_unit_id is None and spec.org_unit_id is not None:
             existing.org_unit_id = spec.org_unit_id
-        if not existing.org_unit_name and spec.org_unit_name:
+        if spec.org_unit_name and existing.org_unit_name != spec.org_unit_name:
             existing.org_unit_name = spec.org_unit_name
         if existing.confidence is None and spec.confidence is not None:
             existing.confidence = spec.confidence

@@ -7,14 +7,16 @@ from dext.engine.handlers import (
     HandlerDeps,
     _create_followup_nodes,
     _create_form_pagination_nodes,
+    _create_child,
     _create_url_pagination_nodes,
     _detail_like_urls,
+    handle_org_listing,
     fetch_action_from_metadata,
 )
 from dext.engine.seeds import node_spec
 from dext.page.links import build_snapshot
 from dext.storage.db import create_all, create_engine_for_path, make_session_factory
-from dext.storage.models import EdgeType, GraphEdge, GraphNode, NodeType
+from dext.storage.models import EdgeType, GraphEdge, GraphNode, NodeStatus, NodeType, OrgUnit
 from dext.storage.writer import ClaimedNode, DBWriter, OrgUnitSpec
 from dext.types import PaginationState
 
@@ -115,6 +117,71 @@ async def test_cross_org_shared_detail_url_creates_two_nodes(tmp_path):
         assert len(nodes) == 2
         assert {n.org_unit_id for n in nodes} == {org1, org2}
         assert len({n.node_key for n in nodes}) == 2
+    await _close(h)
+
+
+async def test_org_listing_uses_normalized_college_name(tmp_path):
+    h = await _storage(tmp_path)
+    listing_id = await h.writer.upsert_node(
+        node_spec(NodeType.org_listing_url, url="https://x.edu.cn/schools.htm", settings=_settings(), run_id=1)
+    )
+    html = """
+    <html><body>
+      <a href="/math.htm">数学学院（信息与计算科学系</a>
+    </body></html>
+    """
+    snap = build_snapshot(html, "https://x.edu.cn/schools.htm", "https://x.edu.cn/schools.htm", "")
+
+    async def _fake_decide(*args, **kwargs):
+        return SimpleNamespace(
+            links=[
+                SimpleNamespace(
+                    url="https://x.edu.cn/math.htm",
+                    label="college",
+                    confidence=0.9,
+                    is_leaf=False,
+                    org_unit_name="数学学院（信息与计算科学系",
+                )
+            ]
+        )
+
+    import dext.engine.handlers as handlers_mod
+
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = _fake_decide
+    try:
+        node = ClaimedNode(
+            id=listing_id,
+            node_key="listing",
+            type=NodeType.org_listing_url,
+            url=snap.url,
+            org_unit_id=None,
+            org_unit_name=None,
+            depth=0,
+            attempt_count=1,
+            priority_score=100,
+            content_hash=None,
+            metadata=None,
+        )
+        deps = HandlerDeps(
+            storage=h,
+            llm_client=None,
+            settings=_settings(),
+            run_id=1,
+            university_name="测试大学",
+            extract_queue=asyncio.Queue(),
+            raw_html=html,
+        )
+        await handle_org_listing(node, snap, deps)
+    finally:
+        handlers_mod.decide_links = orig
+
+    async with h.session_factory() as s:
+        org = (await s.execute(select(OrgUnit))).scalar_one()
+        assert org.name == "数学学院（信息与计算科学系）"
+        n = (await s.execute(select(GraphNode).where(GraphNode.type == NodeType.org_unit))).scalar_one()
+        assert n.status == NodeStatus.pending
+        assert n.priority_score == 90
     await _close(h)
 
 
