@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from dext.engine.handlers import (
     HandlerDeps,
+    handle_faculty_page,
     _create_followup_nodes,
     _create_form_pagination_nodes,
     _create_child,
@@ -182,6 +183,151 @@ async def test_org_listing_uses_normalized_college_name(tmp_path):
         n = (await s.execute(select(GraphNode).where(GraphNode.type == NodeType.org_unit))).scalar_one()
         assert n.status == NodeStatus.pending
         assert n.priority_score == 90
+    await _close(h)
+
+
+async def test_org_listing_skips_precise_excluded_colleges(tmp_path):
+    h = await _storage(tmp_path)
+    listing_id = await h.writer.upsert_node(
+        node_spec(NodeType.org_listing_url, url="https://x.edu.cn/schools.htm", settings=_settings(), run_id=1)
+    )
+    html = """
+    <html><body>
+      <a href="https://scupi.scu.edu.cn/">匹兹堡学院</a>
+      <a href="/arts.htm">艺术学院</a>
+      <a href="/sports.htm">体育学院</a>
+      <a href="/jxjy.htm">继续教育学院</a>
+      <a href="/sis.htm">国际关系学院</a>
+    </body></html>
+    """
+    snap = build_snapshot(html, "https://x.edu.cn/schools.htm", "https://x.edu.cn/schools.htm", "")
+
+    async def _fake_decide(*args, **kwargs):
+        return SimpleNamespace(
+            links=[
+                SimpleNamespace(
+                    url="https://scupi.scu.edu.cn/",
+                    label="college",
+                    confidence=0.95,
+                    is_leaf=False,
+                    org_unit_name="匹兹堡学院",
+                ),
+                SimpleNamespace(
+                    url="https://x.edu.cn/arts.htm",
+                    label="college",
+                    confidence=0.95,
+                    is_leaf=False,
+                    org_unit_name="艺术学院",
+                ),
+                SimpleNamespace(
+                    url="https://x.edu.cn/sports.htm",
+                    label="college",
+                    confidence=0.95,
+                    is_leaf=False,
+                    org_unit_name="体育学院",
+                ),
+                SimpleNamespace(
+                    url="https://x.edu.cn/jxjy.htm",
+                    label="college",
+                    confidence=0.95,
+                    is_leaf=False,
+                    org_unit_name="继续教育学院",
+                ),
+                SimpleNamespace(
+                    url="https://x.edu.cn/sis.htm",
+                    label="college",
+                    confidence=0.95,
+                    is_leaf=False,
+                    org_unit_name="国际关系学院",
+                ),
+            ]
+        )
+
+    import dext.engine.handlers as handlers_mod
+
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = _fake_decide
+    try:
+        node = ClaimedNode(
+            id=listing_id,
+            node_key="listing",
+            type=NodeType.org_listing_url,
+            url=snap.url,
+            org_unit_id=None,
+            org_unit_name=None,
+            depth=0,
+            attempt_count=1,
+            priority_score=100,
+            content_hash=None,
+            metadata=None,
+        )
+        deps = HandlerDeps(
+            storage=h,
+            llm_client=None,
+            settings=_settings(),
+            run_id=1,
+            university_name="测试大学",
+            extract_queue=asyncio.Queue(),
+            raw_html=html,
+        )
+        await handle_org_listing(node, snap, deps)
+    finally:
+        handlers_mod.decide_links = orig
+
+    async with h.session_factory() as s:
+        orgs = (await s.execute(select(OrgUnit))).scalars().all()
+        assert [org.name for org in orgs] == ["国际关系学院"]
+    await _close(h)
+
+
+async def test_faculty_page_skips_scu_confirmed_excluded_page(tmp_path):
+    h = await _storage(tmp_path)
+    org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="经济学院", url="https://sesu.scu.edu.cn/"))
+    node_id = await h.writer.upsert_node(
+        node_spec(
+            NodeType.faculty_list_url,
+            url="https://sesu.scu.edu.cn/szdw/bshldz.htm",
+            settings=_settings(),
+            run_id=1,
+            org_unit_id=org_id,
+            org_unit_name="经济学院",
+        )
+    )
+    html = "<html><head><title>博士后流动站-四川大学经济学院</title></head><body>博士后流动站</body></html>"
+    snap = build_snapshot(
+        html,
+        "https://sesu.scu.edu.cn/szdw/bshldz.htm",
+        "https://sesu.scu.edu.cn/szdw/bshldz.htm",
+        "博士后流动站-四川大学经济学院",
+    )
+    node = ClaimedNode(
+        id=node_id,
+        node_key="faculty",
+        type=NodeType.faculty_list_url,
+        url=snap.url,
+        org_unit_id=org_id,
+        org_unit_name="经济学院",
+        depth=1,
+        attempt_count=1,
+        priority_score=80,
+        content_hash=None,
+        metadata=None,
+    )
+    deps = HandlerDeps(
+        storage=h,
+        llm_client=None,
+        settings=_settings(),
+        run_id=1,
+        university_name="四川大学",
+        extract_queue=asyncio.Queue(),
+        raw_html=html,
+    )
+    await handle_faculty_page(node, snap, deps)
+
+    async with h.session_factory() as s:
+        row = (await s.execute(select(GraphNode).where(GraphNode.id == node_id))).scalar_one()
+        assert row.status == NodeStatus.skipped
+        assert row.last_error == "excluded:postdoc"
     await _close(h)
 
 

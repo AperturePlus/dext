@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict
 
+from dext.exclusions import classify_excluded_org_unit, classify_excluded_page_link
 from dext.engine.names import clean_org_unit_name
 from dext.engine.seeds import node_spec, org_node_spec
 from dext.engine.workers import ExtractTask
@@ -24,21 +25,6 @@ from dext.storage.writer import ClaimedNode, OrgUnitSpec
 from dext.types import FetchAction, PaginationState
 
 logger = logging.getLogger(__name__)
-
-_NON_TEACHING_UNIT_TOKENS = (
-    "体育",
-    "艺术",
-    "继续教育",
-    "国际教育",
-    "招生",
-    "就业",
-    "图书馆",
-    "校友",
-    "后勤",
-    "附属",
-    "机关",
-    "行政",
-)
 
 
 class HandlerDeps:
@@ -93,12 +79,19 @@ def _within_depth(parent: ClaimedNode, settings) -> bool:
     return _child_depth(parent) <= settings.max_depth
 
 
-def _is_non_teaching_unit(name: str) -> bool:
-    return any(token in name for token in _NON_TEACHING_UNIT_TOKENS)
-
-
 def _signal_by_url(snapshot: PageSnapshot, url: str):
     return next((s for s in snapshot.link_signals if s.url == url), None)
+
+
+def _excluded_link_reason(snapshot: PageSnapshot, url: str, *, org_unit_name: str | None = None) -> str | None:
+    sig = _signal_by_url(snapshot, url)
+    return classify_excluded_page_link(
+        url=url,
+        anchor_text=sig.anchor_text if sig is not None else None,
+        heading=sig.heading if sig is not None else None,
+        title=snapshot.title,
+        org_unit_name=org_unit_name,
+    )
 
 
 def _looks_like_pager_label(label: str | None) -> bool:
@@ -152,7 +145,7 @@ async def handle_org_listing(node: ClaimedNode, snapshot: PageSnapshot, deps: Ha
         if link.label != "college":
             continue
         name = clean_org_unit_name(link.org_unit_name)
-        if not name or _is_non_teaching_unit(name):
+        if not name or classify_excluded_org_unit(name, url=link.url):
             continue
         org_id = await deps.storage.writer.upsert_org_unit(
             OrgUnitSpec(name=name, url=link.url, kind="college", discovered_from_url=snapshot.url)
@@ -267,6 +260,8 @@ async def _create_url_pagination_nodes(
     for cand in find_url_pagination(snapshot, snapshot.url):
         if cand.url in excluded:
             continue
+        if _excluded_link_reason(snapshot, cand.url, org_unit_name=node.org_unit_name):
+            continue
         await _create_child(
             deps,
             node,
@@ -292,6 +287,8 @@ async def _create_followup_nodes(
     excluded = exclude_urls or set()
     for cand in find_followup_links(snapshot, snapshot.url, limit=deps.settings.followup_page_limit):
         if cand.url in excluded:
+            continue
+        if _excluded_link_reason(snapshot, cand.url, org_unit_name=node.org_unit_name):
             continue
         await _create_child(
             deps,
@@ -357,6 +354,8 @@ async def _create_decided_nodes(node: ClaimedNode, snapshot: PageSnapshot, deps:
         return 0
     for link in decision.links:
         if link.label == "detail" or link.is_leaf:
+            if _excluded_link_reason(snapshot, link.url, org_unit_name=node.org_unit_name):
+                continue
             await _create_child(
                 deps,
                 node,
@@ -368,6 +367,8 @@ async def _create_decided_nodes(node: ClaimedNode, snapshot: PageSnapshot, deps:
             )
             count += 1
         elif link.label == "pagination":
+            if _excluded_link_reason(snapshot, link.url, org_unit_name=node.org_unit_name):
+                continue
             await _create_child(
                 deps,
                 node,
@@ -379,6 +380,8 @@ async def _create_decided_nodes(node: ClaimedNode, snapshot: PageSnapshot, deps:
             )
             count += 1
         elif link.label == "followup":
+            if _excluded_link_reason(snapshot, link.url, org_unit_name=node.org_unit_name):
+                continue
             await _create_child(
                 deps,
                 node,
@@ -394,6 +397,16 @@ async def _create_decided_nodes(node: ClaimedNode, snapshot: PageSnapshot, deps:
 
 
 async def handle_faculty_page(node: ClaimedNode, snapshot: PageSnapshot, deps: HandlerDeps) -> None:
+    reason = classify_excluded_page_link(url=snapshot.url, title=snapshot.title, org_unit_name=node.org_unit_name)
+    if reason:
+        await deps.storage.writer.mark_node(
+            node.id,
+            NodeStatus.skipped,
+            last_error=f"excluded:{reason}",
+            content_hash=snapshot.content_hash,
+        )
+        logger.info("skipped excluded faculty page %s reason=%s", snapshot.url, reason)
+        return
     created = 0
     detail_like_urls = _detail_like_urls(snapshot)
     created += await _create_url_pagination_nodes(node, snapshot, deps, exclude_urls=detail_like_urls)
@@ -405,6 +418,16 @@ async def handle_faculty_page(node: ClaimedNode, snapshot: PageSnapshot, deps: H
 
 
 async def handle_detail(node: ClaimedNode, snapshot: PageSnapshot, deps: HandlerDeps) -> None:
+    reason = classify_excluded_page_link(url=snapshot.url, title=snapshot.title, org_unit_name=node.org_unit_name)
+    if reason:
+        await deps.storage.writer.mark_node(
+            node.id,
+            NodeStatus.skipped,
+            last_error=f"excluded:{reason}",
+            content_hash=snapshot.content_hash,
+        )
+        logger.info("skipped excluded detail page %s reason=%s", snapshot.url, reason)
+        return
     await deps.extract_queue.put(
         ExtractTask(
             node_id=node.id,
