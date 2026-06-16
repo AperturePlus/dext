@@ -7,6 +7,7 @@ from collections import Counter
 from dataclasses import asdict
 from urllib.parse import urlsplit
 
+from dext.bridge.decision import PendingDecision
 from dext.exclusions import is_valid_exclusion_reason
 from dext.engine.names import clean_org_unit_name
 from dext.engine.seeds import node_spec, org_node_spec
@@ -43,6 +44,7 @@ class HandlerDeps:
         extract_queue,
         reported_pagination_states: list[PaginationState] | None = None,
         raw_html: str = "",
+        decision_center=None,
     ) -> None:
         self.storage = storage
         self.llm_client = llm_client
@@ -52,6 +54,7 @@ class HandlerDeps:
         self.extract_queue = extract_queue
         self.reported_pagination_states = reported_pagination_states or []
         self.raw_html = raw_html
+        self.decision_center = decision_center
 
 
 def fetch_action_from_metadata(metadata: dict | None) -> FetchAction | None:
@@ -339,6 +342,7 @@ async def _materialize_decided(
     filter_result,
     *,
     pagination_created: int = 0,
+    over_budget: bool = False,
 ) -> int:
     count = 0
     if not _within_depth(node, deps.settings):
@@ -359,6 +363,8 @@ async def _materialize_decided(
             )
             count += 1
         elif link.label == "pagination":
+            if over_budget:
+                continue
             await _create_child(
                 deps, node, NodeType.pagination_url, url=link.url,
                 edge_type=EdgeType.pagination_of, confidence=link.confidence,
@@ -366,13 +372,17 @@ async def _materialize_decided(
             )
             count += 1
         elif link.label == "followup":
+            if over_budget:
+                continue
             await _create_child(
                 deps, node, NodeType.faculty_followup_url, url=link.url,
                 edge_type=EdgeType.discovered_on_page, confidence=link.confidence,
                 metadata={"label": link.label},
             )
             count += 1
-    count += await _materialize_reslices(node, snapshot, deps, reslice_links, yields_people=yields_people)
+    count += await _materialize_reslices(
+        node, snapshot, deps, reslice_links, yields_people=(yields_people or over_budget)
+    )
     logger.info(
         "navigation filter for %s kept=%d dropped=%s selected=%d parse_error=%s",
         snapshot.url, len(filter_result.kept), filter_result.dropped, count, decision.parse_error,
@@ -424,6 +434,36 @@ def _choose_reslice_axis(reslice_links: list) -> str:
     return sorted(present)[0]
 
 
+async def _over_facet_budget(node: ClaimedNode, deps: HandlerDeps) -> bool:
+    if node.org_unit_id is None:
+        return False
+    budget = getattr(deps.settings, "facet_node_budget", 0) or 0
+    if budget <= 0:
+        return False
+    count = await deps.storage.writer.count_subtree_facet_nodes(node.org_unit_id)
+    if count < budget:
+        return False
+    logger.info("facet_budget_exceeded org_unit=%s budget=%d count=%d", node.org_unit_id, budget, count)
+    _maybe_set_budget_decision(node, deps, count)
+    return True
+
+
+def _maybe_set_budget_decision(node: ClaimedNode, deps: HandlerDeps, count: int) -> None:
+    center = getattr(deps, "decision_center", None)
+    if center is None or center.current() is not None:
+        return
+    center.set_decision(
+        PendingDecision(
+            id=f"facet_budget:{node.org_unit_id}",
+            kind="facet_budget",
+            org_unit_name=node.org_unit_name or "",
+            failure_count=count,
+            sample_urls=[],
+            suggested_action="stop_subtree",
+        )
+    )
+
+
 async def handle_faculty_page(node: ClaimedNode, snapshot: PageSnapshot, deps: HandlerDeps) -> None:
     filter_result = filter_navigation_candidates(
         snapshot,
@@ -440,13 +480,16 @@ async def handle_faculty_page(node: ClaimedNode, snapshot: PageSnapshot, deps: H
         )
         logger.info("skipped excluded faculty page %s reason=%s", snapshot.url, page_exclusion_reason)
         return
+    over_budget = await _over_facet_budget(node, deps)
     created = 0
-    detail_like_urls = _detail_like_urls(snapshot)
-    created += await _create_url_pagination_nodes(node, snapshot, deps, exclude_urls=detail_like_urls)
-    created += await _create_form_pagination_nodes(node, snapshot, deps)
+    if not over_budget:
+        detail_like_urls = _detail_like_urls(snapshot)
+        created += await _create_url_pagination_nodes(node, snapshot, deps, exclude_urls=detail_like_urls)
+        created += await _create_form_pagination_nodes(node, snapshot, deps)
     try:
         created += await _materialize_decided(
-            node, snapshot, deps, decision, filter_result, pagination_created=created
+            node, snapshot, deps, decision, filter_result,
+            pagination_created=created, over_budget=over_budget,
         )
     except RuntimeError as exc:
         reason = str(exc) or "decider_failed"

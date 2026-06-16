@@ -189,6 +189,7 @@ class CrawlEngine:
                 extract_queue=self.extract_queue,
                 reported_pagination_states=result.pagination_states,
                 raw_html=result.html,
+                decision_center=self.decision_center,
             ),
         )
         self._summary.dispatched += 1

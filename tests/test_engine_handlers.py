@@ -619,3 +619,68 @@ async def test_faculty_page_takes_one_axis_when_no_people(tmp_path):
         }  # letter axis chosen (priority over title); title dropped
         assert all((n.metadata_json or {}).get("facet_axis") == "letter" for n in followups)
     await _close(h)
+
+
+from dext.bridge.decision import DecisionCenter
+
+
+def _settings_budget(n):
+    return SimpleNamespace(max_attempts=3, max_depth=4, followup_page_limit=36, facet_node_budget=n)
+
+
+async def test_faculty_page_facet_budget_stops_expansion_and_sets_decision(tmp_path):
+    h = await _storage(tmp_path)
+    org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="爆炸院", url="https://x.edu.cn/boom/"))
+    # Pre-seed 2 followup nodes; together with this faculty_list node that is 3 facet
+    # nodes for the subtree, which is >= the budget of 2 → over budget.
+    for i in range(2):
+        await h.writer.upsert_node(
+            node_spec(NodeType.faculty_followup_url, url=f"https://x.edu.cn/boom/seed{i}.html",
+                      settings=_settings(), run_id=1, org_unit_id=org_id, org_unit_name="爆炸院")
+        )
+    node_id = await h.writer.upsert_node(
+        node_spec(NodeType.faculty_list_url, url="https://x.edu.cn/boom/index.html",
+                  settings=_settings(), run_id=1, org_unit_id=org_id, org_unit_name="爆炸院")
+    )
+    html = """
+    <html><body>
+      <a href="/boom/more.html">系所</a>
+      <a href="/boom/teacher/1.html">张三</a>
+    </body></html>
+    """
+    snap = build_snapshot(html, "https://x.edu.cn/boom/index.html", "https://x.edu.cn/boom/index.html", "")
+
+    async def _fake_decide(*args, **kwargs):
+        return SimpleNamespace(
+            links=[
+                SimpleNamespace(url="https://x.edu.cn/boom/more.html", label="followup",
+                                confidence=0.9, is_leaf=False),
+                SimpleNamespace(url="https://x.edu.cn/boom/teacher/1.html", label="detail",
+                                confidence=0.9, is_leaf=True),
+            ],
+            parse_error=None, page_exclusion_reason=None,
+        )
+
+    import dext.engine.handlers as handlers_mod
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = _fake_decide
+    center = DecisionCenter()
+    try:
+        node = ClaimedNode(id=node_id, node_key="f", type=NodeType.faculty_list_url, url=snap.url,
+                           org_unit_id=org_id, org_unit_name="爆炸院", depth=2, attempt_count=1,
+                           priority_score=80, content_hash=None, metadata=None)
+        deps = HandlerDeps(storage=h, llm_client=None, settings=_settings_budget(2), run_id=1,
+                           university_name="测试大学", extract_queue=asyncio.Queue(), raw_html=html,
+                           decision_center=center)
+        await handle_faculty_page(node, snap, deps)
+    finally:
+        handlers_mod.decide_links = orig
+
+    async with h.session_factory() as s:
+        nodes = (await s.execute(select(GraphNode))).scalars().all()
+        # detail leaf still created (not budget-limited); no NEW followup beyond the 2 seeds.
+        assert any(n.type == NodeType.detail_url and n.url.endswith("/teacher/1.html") for n in nodes)
+        assert sum(1 for n in nodes if n.type == NodeType.faculty_followup_url) == 2
+    assert center.current() is not None
+    assert center.current().kind == "facet_budget"
+    await _close(h)
