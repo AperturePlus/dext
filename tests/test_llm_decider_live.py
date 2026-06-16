@@ -1,7 +1,7 @@
 from dext.llm.decider import DeciderContext, DeciderNode, decide_links
 from dext.page.links import LinkSignal, PageSnapshot
 
-_LABELS = {"college", "faculty_list", "pagination", "followup", "detail", "noise", "login"}
+_LABELS = {"college", "faculty_list", "pagination", "followup", "reslice", "detail", "noise", "login"}
 
 
 def _sig(url, text, path):
@@ -73,3 +73,38 @@ async def test_decide_page_exclusion_for_arts_college(llm_client):
     decision = await decide_links(snap, cands, node, ctx, client=llm_client)
     assert decision.parse_error is None
     assert decision.page_exclusion_reason == "arts"
+
+
+async def test_decide_labels_title_reslice_and_keeps_dept_followup(llm_client):
+    cands = [
+        _sig("https://x.edu.cn/szdw/jiaoshou/index.html", "教授", ["szdw", "jiaoshou"]),
+        _sig("https://x.edu.cn/szdw/fujiaoshou/index.html", "副教授", ["szdw", "fujiaoshou"]),
+        _sig("https://x.edu.cn/szdw/zhexuexi/index.html", "哲学系", ["szdw", "zhexuexi"]),
+        _sig("https://x.edu.cn/szdw/jianzhi/index.html", "兼职教授", ["szdw", "jianzhi"]),
+        _sig("https://x.edu.cn/teacher/1001.htm", "张三 教授", ["teacher", "1001"]),
+    ]
+    snap = PageSnapshot(
+        url="https://x.edu.cn/szdw.htm", final_url="https://x.edu.cn/szdw.htm",
+        title="师资队伍",
+        text_snapshot="师资队伍。按职称查看：教授、副教授。按系查看：哲学系。兼职教授。教师：张三 教授。",
+        links=[c.url for c in cands], link_signals=cands, content_hash="h",
+    )
+    node = DeciderNode(type="faculty_list_url", url=snap.url, depth=1, org_unit_name="某学院")
+    ctx = DeciderContext(university_name="X大学", visited_summary="", faculty_list_url=snap.url)
+
+    decision = await decide_links(snap, cands, node, ctx, client=llm_client)
+    assert decision.parse_error is None
+    for link in decision.links:
+        assert link.label in _LABELS
+    by_url = {l.url: l for l in decision.links}
+
+    jiaoshou = by_url.get("https://x.edu.cn/szdw/jiaoshou/index.html")
+    if jiaoshou is not None:                        # 职称 → 同群体 re-slice
+        assert jiaoshou.label == "reslice"
+        assert jiaoshou.facet_axis == "title"
+    dept = by_url.get("https://x.edu.cn/szdw/zhexuexi/index.html")
+    if dept is not None:                            # 系 → 组织子单元，绝不是 reslice
+        assert dept.label != "reslice"
+    jianzhi = by_url.get("https://x.edu.cn/szdw/jianzhi/index.html")
+    if jianzhi is not None:                         # 兼职 → 异群体，不塌缩为 reslice
+        assert jianzhi.label != "reslice"
