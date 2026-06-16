@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from dataclasses import asdict
-from urllib.parse import urlsplit
+from dataclasses import asdict, dataclass
+from urllib.parse import parse_qsl, urlsplit
 
 from dext.bridge.decision import PendingDecision
 from dext.exclusions import is_valid_exclusion_reason
@@ -29,7 +29,25 @@ from dext.types import FetchAction, PaginationState
 
 logger = logging.getLogger(__name__)
 
-RESLICE_AXIS_PRIORITY = ("letter", "title", "advisor")
+RESLICE_AXIS_PRIORITY = ("letter", "query:jxx", "query:yjjg", "query:jobType", "title", "advisor")
+_QUERY_FILTER_IGNORED_PARAMS = {
+    "keyword", "keywords", "search", "q", "kw", "key",
+    "page", "p", "pn", "pageno", "pagenum", "curpage", "currentpage",
+    "pageindex", "pagesize", "rows", "per_page",
+    "__ycl_kind", "__ycl_form", "__ycl_field", "__ycl_page",
+}
+_ALL_FILTER_LABELS = ("全部", "不限", "所有")
+
+
+@dataclass(frozen=True)
+class _ResliceLink:
+    url: str
+    confidence: float | None
+    facet_axis: str | None
+    facet_value: str | None = None
+    facet_is_all: bool = False
+    facet_kind: str | None = None
+    facet_reset_count: int = 0
 
 
 class HandlerDeps:
@@ -111,6 +129,112 @@ def _link_exclusion_reason(link) -> str | None:
 def _page_exclusion_reason(decision) -> str | None:
     reason = getattr(decision, "page_exclusion_reason", None)
     return reason if is_valid_exclusion_reason(reason) else None
+
+
+def _query_pairs(url: str) -> dict[str, list[str]]:
+    return {
+        key: values
+        for key, values in _query_pairs_all(url).items()
+        if key.lower() not in _QUERY_FILTER_IGNORED_PARAMS
+    }
+
+
+def _query_pairs_all(url: str) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for key, value in parse_qsl(urlsplit(url).query, keep_blank_values=True):
+        out.setdefault(key, []).append(value)
+    return out
+
+
+def _query_value(values: list[str] | None) -> str:
+    return values[-1] if values else ""
+
+
+def _is_all_filter_label(label: str | None) -> bool:
+    text = (label or "").strip()
+    return bool(text) and any(token in text for token in _ALL_FILTER_LABELS)
+
+
+def _same_query_filter_surface(current_url: str, candidate_url: str) -> bool:
+    current = urlsplit(current_url)
+    candidate = urlsplit(candidate_url)
+    current_host = (current.hostname or "").lower()
+    candidate_host = (candidate.hostname or "").lower()
+    return (
+        current.scheme.lower() == candidate.scheme.lower()
+        and current_host == candidate_host
+        and current.path.rstrip("/") == candidate.path.rstrip("/")
+        and current.query != candidate.query
+    )
+
+
+def _query_filter_changes(current_url: str, candidate_url: str) -> dict[str, tuple[str, str]]:
+    current = _query_pairs(current_url)
+    candidate = _query_pairs(candidate_url)
+    keys = set(current) | set(candidate)
+    changes: dict[str, tuple[str, str]] = {}
+    for key in keys:
+        before = _query_value(current.get(key))
+        after = _query_value(candidate.get(key))
+        if before != after:
+            changes[key] = (before, after)
+    return changes
+
+
+def _query_axis_name(param: str) -> str:
+    return f"query:{param}"
+
+
+def _infer_query_filter_reslice(current_url: str, link, signal) -> _ResliceLink | None:
+    if getattr(link, "label", None) in {"detail", "pagination", "login", "noise"}:
+        return None
+    if getattr(link, "is_leaf", False):
+        return None
+    if not _same_query_filter_surface(current_url, getattr(link, "url", "")):
+        return None
+    changes = _query_filter_changes(current_url, link.url)
+    if not changes:
+        return None
+    reset_changes = [(key, before, after) for key, (before, after) in changes.items() if before and not after]
+    if reset_changes:
+        key, _before, after = _best_query_change(reset_changes)
+        axis = _query_axis_name(key)
+        return _ResliceLink(
+            url=link.url,
+            confidence=getattr(link, "confidence", None),
+            facet_axis=axis,
+            facet_value=after,
+            facet_is_all=True,
+            facet_kind="query_filter",
+            facet_reset_count=len(reset_changes),
+        )
+    nonempty_changes = [(key, before, after) for key, (before, after) in changes.items() if after]
+    if not nonempty_changes:
+        label = getattr(signal, "anchor_text", None)
+        key, _before, after = _best_query_change([(key, before, after) for key, (before, after) in changes.items()])
+        return _ResliceLink(
+            url=link.url,
+            confidence=getattr(link, "confidence", None),
+            facet_axis=_query_axis_name(key),
+            facet_value=after,
+            facet_is_all=_is_all_filter_label(label),
+            facet_kind="query_filter",
+            facet_reset_count=0,
+        )
+    key, _before, after = _best_query_change(nonempty_changes)
+    return _ResliceLink(
+        url=link.url,
+        confidence=getattr(link, "confidence", None),
+        facet_axis=_query_axis_name(key),
+        facet_value=after,
+        facet_is_all=False,
+        facet_kind="query_filter",
+        facet_reset_count=0,
+    )
+
+
+def _best_query_change(changes: list[tuple[str, str, str]]) -> tuple[str, str, str]:
+    return sorted(changes, key=lambda item: (_reslice_axis_rank(_query_axis_name(item[0])), item[0]))[0]
 
 
 async def dispatch(node: ClaimedNode, snapshot: PageSnapshot, deps: HandlerDeps) -> None:
@@ -348,11 +472,21 @@ async def _materialize_decided(
     if not _within_depth(node, deps.settings):
         return 0
     actionable = [link for link in decision.links if not _link_exclusion_reason(link)]
-    has_detail = any(link.label == "detail" or link.is_leaf for link in actionable if link.label != "reslice")
-    has_followup = any(link.label == "followup" for link in actionable)
-    yields_people = has_detail or has_followup or pagination_created > 0
-    reslice_links = [link for link in actionable if link.label == "reslice"]
+    signal_by_url = {sig.url: sig for sig in filter_result.kept}
+    query_reslices: list[_ResliceLink] = []
+    regular_links = []
     for link in actionable:
+        inferred = _infer_query_filter_reslice(snapshot.url, link, signal_by_url.get(link.url))
+        if inferred is not None:
+            query_reslices.append(inferred)
+        else:
+            regular_links.append(link)
+    has_detail = any(link.label == "detail" or link.is_leaf for link in regular_links if link.label != "reslice")
+    has_followup = any(link.label == "followup" for link in regular_links)
+    yields_people = has_detail or has_followup or pagination_created > 0
+    reslice_links = [link for link in regular_links if link.label == "reslice"]
+    reslice_links.extend(query_reslices)
+    for link in regular_links:
         if link.label == "reslice":
             continue  # handled in _materialize_reslices
         if link.label == "detail" or link.is_leaf:
@@ -381,7 +515,7 @@ async def _materialize_decided(
             )
             count += 1
     count += await _materialize_reslices(
-        node, snapshot, deps, reslice_links, yields_people=(yields_people or over_budget)
+        node, snapshot, deps, reslice_links, yields_people=yields_people, over_budget=over_budget
     )
     logger.info(
         "navigation filter for %s kept=%d dropped=%s selected=%d parse_error=%s",
@@ -401,37 +535,85 @@ async def _materialize_reslices(
     reslice_links: list,
     *,
     yields_people: bool,
+    over_budget: bool = False,
 ) -> int:
     if not reslice_links:
         return 0
+    if over_budget:
+        for axis, n in Counter(_facet_axis(link) for link in reslice_links).items():
+            logger.info("redundant_facet:%s dropped=%d url=%s", axis, n, snapshot.url)
+        return 0
+    all_links = [link for link in reslice_links if getattr(link, "facet_is_all", False)]
+    if all_links:
+        chosen_link = _choose_all_reslice(all_links)
+        chosen = _facet_axis(chosen_link)
+        await _create_child(
+            deps, node, NodeType.faculty_followup_url, url=chosen_link.url,
+            edge_type=EdgeType.discovered_on_page, confidence=getattr(chosen_link, "confidence", None),
+            metadata=_reslice_metadata(chosen_link, chosen),
+        )
+        dropped = [link for link in reslice_links if link is not chosen_link]
+        for axis, n in Counter(_facet_axis(link) for link in dropped).items():
+            logger.info("redundant_facet:%s dropped=%d url=%s", axis, n, snapshot.url)
+        return 1
     if yields_people:
         # Trust-broad: the same people are already reachable here → collapse all re-slices.
-        for axis, n in Counter(getattr(link, "facet_axis", None) or "unknown" for link in reslice_links).items():
+        for axis, n in Counter(_facet_axis(link) for link in reslice_links).items():
             logger.info("redundant_facet:%s dropped=%d url=%s", axis, n, snapshot.url)
         return 0
     # No people anywhere on this page → re-slices are the only way forward; descend ONE axis.
     chosen = _choose_reslice_axis(reslice_links)
     count = 0
     for link in reslice_links:
-        if (getattr(link, "facet_axis", None) or "unknown") != chosen:
+        if _facet_axis(link) != chosen:
             continue
         await _create_child(
             deps, node, NodeType.faculty_followup_url, url=link.url,
             edge_type=EdgeType.discovered_on_page, confidence=getattr(link, "confidence", None),
-            metadata={"label": "reslice", "reslice": True, "facet_axis": chosen},
+            metadata=_reslice_metadata(link, chosen),
         )
         count += 1
-    for axis in {getattr(link, "facet_axis", None) or "unknown" for link in reslice_links} - {chosen}:
+    for axis in {_facet_axis(link) for link in reslice_links} - {chosen}:
         logger.info("reslice_axis_skipped:%s url=%s", axis, snapshot.url)
     return count
 
 
+def _facet_axis(link) -> str:
+    return getattr(link, "facet_axis", None) or "unknown"
+
+
+def _reslice_metadata(link, axis: str) -> dict:
+    metadata = {"label": "reslice", "reslice": True, "facet_axis": axis}
+    if getattr(link, "facet_kind", None):
+        metadata["facet_kind"] = link.facet_kind
+    if hasattr(link, "facet_value"):
+        metadata["facet_value"] = getattr(link, "facet_value", None)
+    if hasattr(link, "facet_is_all"):
+        metadata["facet_is_all"] = bool(getattr(link, "facet_is_all", False))
+    return metadata
+
+
+def _choose_all_reslice(reslice_links: list) -> object:
+    return sorted(
+        reslice_links,
+        key=lambda link: (
+            -int(getattr(link, "facet_reset_count", 0) or 0),
+            _reslice_axis_rank(_facet_axis(link)),
+            getattr(link, "url", ""),
+        ),
+    )[0]
+
+
 def _choose_reslice_axis(reslice_links: list) -> str:
-    present = {getattr(link, "facet_axis", None) or "unknown" for link in reslice_links}
-    for axis in RESLICE_AXIS_PRIORITY:
-        if axis in present:
-            return axis
-    return sorted(present)[0]
+    present = {_facet_axis(link) for link in reslice_links}
+    return sorted(present, key=lambda axis: (_reslice_axis_rank(axis), axis))[0]
+
+
+def _reslice_axis_rank(axis: str) -> int:
+    try:
+        return RESLICE_AXIS_PRIORITY.index(axis)
+    except ValueError:
+        return len(RESLICE_AXIS_PRIORITY)
 
 
 async def _over_facet_budget(node: ClaimedNode, deps: HandlerDeps) -> bool:
