@@ -228,7 +228,8 @@ class CrawlEngine:
         self._summary.pending = counts.get(NodeStatus.pending.value, 0)
         self._summary.in_progress = counts.get(NodeStatus.in_progress.value, 0)
         self._summary.professors = prof_count
-        self._summary.status = "completed" if self._summary.failed == 0 and self._summary.retry == 0 else "failed"
+        blocking = self._summary.failed + self._summary.retry + self._summary.pending + self._summary.in_progress
+        self._summary.status = "completed" if blocking == 0 else "failed"
         return self._summary
 
 

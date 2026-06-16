@@ -186,3 +186,81 @@ async def test_targeted_summary_counts_only_selected_org_units(tmp_path):
     assert summary.node_status_counts == {NodeStatus.done.value: 1}
     assert summary.professors == 2
     await _close(storage)
+
+
+async def test_summary_fails_when_selected_org_unit_has_pending_exhausted_node(tmp_path):
+    storage = await _storage(tmp_path)
+    settings = _settings()
+    org_id = await storage.writer.upsert_org_unit(OrgUnitSpec(name="管理学院", url="https://x/management"))
+    await storage.writer.upsert_node(
+        node_spec(
+            NodeType.org_unit,
+            url="https://x/management",
+            settings=settings,
+            run_id=1,
+            org_unit_id=org_id,
+            org_unit_name="管理学院",
+            status=NodeStatus.pending,
+        )
+    )
+    async with storage.session() as s:
+        node = (await s.execute(select(GraphNode).where(GraphNode.org_unit_id == org_id))).scalar_one()
+        node.attempt_count = node.max_attempts
+        await s.commit()
+
+    engine = CrawlEngine(
+        storage,
+        bridge=None,
+        llm_client=None,
+        settings=settings,
+        run_id=1,
+        university_name="测试大学",
+        org_unit_ids={org_id},
+    )
+    summary = await engine._build_summary()
+
+    assert summary.status == "failed"
+    assert summary.pending == 1
+    assert summary.node_status_counts == {NodeStatus.pending.value: 1}
+    await _close(storage)
+
+
+async def test_summary_fails_when_nodes_are_not_terminal(tmp_path):
+    storage = await _storage(tmp_path)
+    settings = _settings()
+    await storage.writer.upsert_node(
+        node_spec(
+            NodeType.faculty_list_url,
+            url="https://x/pending",
+            settings=settings,
+            run_id=1,
+            status=NodeStatus.pending,
+        )
+    )
+    await storage.writer.upsert_node(
+        node_spec(
+            NodeType.faculty_list_url,
+            url="https://x/in-progress",
+            settings=settings,
+            run_id=1,
+            status=NodeStatus.in_progress,
+        )
+    )
+    await storage.writer.upsert_node(
+        node_spec(
+            NodeType.faculty_list_url,
+            url="https://x/skipped",
+            settings=settings,
+            run_id=1,
+            status=NodeStatus.skipped,
+        )
+    )
+
+    engine = CrawlEngine(storage, bridge=None, llm_client=None, settings=settings, run_id=1, university_name="测试大学")
+    summary = await engine._build_summary()
+
+    assert summary.status == "failed"
+    assert summary.pending == 1
+    assert summary.in_progress == 1
+    assert summary.skipped == 1
+    await _close(storage)
