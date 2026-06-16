@@ -467,3 +467,44 @@ async def test_decider_parse_error_marks_node_retry_via_worker(tmp_path):
         assert node.last_error == "decider_invalid_json"
     assert summary.status == "failed"
     await _close(storage)
+
+
+async def test_async_decider_end_to_end_live(tmp_path, live_settings):
+    from dext.llm.client import LLMClient
+
+    storage = await _storage(tmp_path)
+    settings = live_settings
+    listing = "https://x.edu.cn/yx.htm"
+    org = "https://x.edu.cn/math/index.htm"
+    flist = "https://x.edu.cn/math/szdw.htm"
+    d1 = "https://x.edu.cn/math/t/zhang.htm"
+    d2 = "https://x.edu.cn/math/t/li.htm"
+    pages = {
+        listing: '<html><body><h2>院系设置</h2>'
+                 '<a href="https://x.edu.cn/math/index.htm">数学学院</a></body></html>',
+        org: '<html><body><h2>数学学院</h2>'
+             '<a href="https://x.edu.cn/math/szdw.htm">师资队伍</a></body></html>',
+        flist: '<html><body><h2>师资队伍</h2>'
+               '<a href="https://x.edu.cn/math/t/zhang.htm">张三 教授</a>'
+               '<a href="https://x.edu.cn/math/t/li.htm">李四 副教授</a></body></html>',
+        d1: '<html><body><h1>张三</h1><p>职称：教授</p>'
+            '<p>邮箱：zhang@x.edu.cn</p><p>研究方向：代数几何</p></body></html>',
+        d2: '<html><body><h1>李四</h1><p>职称：副教授</p>'
+            '<p>邮箱：li@x.edu.cn</p><p>研究方向：拓扑学</p></body></html>',
+    }
+    bridge = CountingBridge(pages)
+
+    await storage.writer.upsert_node(
+        node_spec(NodeType.org_listing_url, url=listing, settings=settings, run_id=1)
+    )
+    engine = CrawlEngine(storage, bridge, llm_client=LLMClient(settings), settings=settings,
+                         run_id=1, university_name="测试大学")
+    summary = await engine.run()
+
+    assert bridge.max_in_flight == 1
+    async with storage.session() as s:
+        profs = (await s.execute(select(Professor))).scalars().all()
+        affils = (await s.execute(select(ProfessorAffiliation))).scalars().all()
+        assert len(profs) >= 1
+        assert len(affils) >= 1
+    await _close(storage)
