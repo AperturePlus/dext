@@ -4,7 +4,12 @@ No network, no DB, no LLM, no global state (spec §1, overview §7).
 Public interface (spec §7) re-exported below.
 """
 
-from dext.page.candidates import FilterContext, FilterResult, filter_detail_candidates
+from dext.page.candidates import (
+    FilterContext,
+    FilterResult,
+    filter_detail_candidates,
+    filter_navigation_candidates,
+)
 from dext.page.links import LinkSignal, PageSnapshot, build_snapshot
 from dext.page.pagination import (
     FollowupCandidate,
@@ -33,6 +38,7 @@ __all__ = [
     "PaginationCandidate",
     "FollowupCandidate",
     "filter_detail_candidates",
+    "filter_navigation_candidates",
     "FilterContext",
     "FilterResult",
 ]

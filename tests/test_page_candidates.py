@@ -1,4 +1,15 @@
-from dext.page.candidates import FilterContext, FilterResult, filter_detail_candidates
+from dext.page.candidates import (
+    FilterContext,
+    FilterResult,
+    filter_detail_candidates,
+    filter_navigation_candidates,
+)
+from dext.exclusions import (
+    BASIC_EDUCATION_CENTER,
+    EXPERIMENT_CENTER,
+    classify_excluded_org_unit,
+    classify_excluded_page_link,
+)
 from dext.page.links import LinkSignal, PageSnapshot
 
 _LIST_URL = "https://x.edu.cn/szdw/index.htm"
@@ -91,3 +102,72 @@ def test_drop_scu_confirmed_excluded_faculty_pages():
     res = filter_detail_candidates(_snap(sigs), _ctx(same_site_only=False))
     assert [s.url for s in res.kept] == ["https://x.edu.cn/szdw/zhangsan.htm"]
     assert res.dropped["excluded"] == 3
+
+
+def test_drop_explicit_staff_and_admin_exclusion_links():
+    sigs = [
+        _sig("https://x.edu.cn/szdw/rsgz.htm", "人事工作"),
+        _sig("https://x.edu.cn/szdw/jjzx.htm", "基教中心"),
+        _sig("https://x.edu.cn/szdw/syzx.htm", "实验中心"),
+        _sig("https://x.edu.cn/szdw/jfg.htm", "教辅岗"),
+        _sig("https://x.edu.cn/szdw/xzg.htm", "行政岗"),
+        _sig("https://x.edu.cn/szdw/zzxz.htm", "专职行政"),
+        _sig("https://x.edu.cn/szdw/xzry.htm", "行政人员"),
+        _sig("https://x.edu.cn/szdw/xztd.htm", "行政团队"),
+        _sig("https://x.edu.cn/szdw/xz.htm", "行政"),
+        _sig("https://x.edu.cn/szdw/zhangsan.htm", "张三"),
+    ]
+    res = filter_navigation_candidates(_snap(sigs), _ctx())
+    assert [s.anchor_text for s in res.kept] == ["张三"]
+    assert res.dropped["excluded"] == 9
+
+
+def test_org_unit_excludes_basic_education_and_experiment_centers():
+    assert classify_excluded_org_unit("基教中心") == BASIC_EDUCATION_CENTER
+    assert classify_excluded_org_unit("基础教学中心") == BASIC_EDUCATION_CENTER
+    assert classify_excluded_org_unit("实验中心") == EXPERIMENT_CENTER
+
+
+def test_keeps_admin_law_and_admin_management_teacher_signals():
+    sigs = [
+        _sig("https://x.edu.cn/szdw/xzfx.htm", "行政法教师团队"),
+        _sig("https://x.edu.cn/szdw/xzglt.htm", "行政管理系教师"),
+        _sig("https://x.edu.cn/szdw/zhangsan.htm", "张三 行政职务：系主任"),
+        _sig("https://x.edu.cn/szdw/lisi.htm", "李四 行政管理研究方向"),
+    ]
+    res = filter_navigation_candidates(_snap(sigs), _ctx())
+    assert [s.anchor_text for s in res.kept] == [
+        "行政法教师团队",
+        "行政管理系教师",
+        "张三 行政职务：系主任",
+        "李四 行政管理研究方向",
+    ]
+    assert res.dropped["excluded"] == 0
+    assert classify_excluded_page_link(title="行政法教师团队") is None
+    assert classify_excluded_page_link(heading="行政管理系教师") is None
+
+
+def test_navigation_candidates_keep_scu_law_title_categories_for_llm():
+    sigs = [
+        _sig("https://law.scu.edu.cn/szdw/zzjzg_link/fgzc.htm", "副高职称"),
+        _sig("https://law.scu.edu.cn/szdw/zzjzg_link/zjzc.htm", "中级职称"),
+        _sig("https://law.scu.edu.cn/info/1360/15754.htm", "左卫民"),
+    ]
+    snap = PageSnapshot(
+        url="https://law.scu.edu.cn/szdw/zzjzg_link/zgzc.htm",
+        final_url="https://law.scu.edu.cn/szdw/zzjzg_link/zgzc.htm",
+        title="正高职称-四川大学法学院",
+        text_snapshot="",
+        links=[s.url for s in sigs],
+        link_signals=sigs,
+        content_hash="h",
+    )
+    res = filter_navigation_candidates(
+        snap,
+        FilterContext(faculty_list_url=snap.url),
+    )
+    assert [s.url for s in res.kept] == [
+        "https://law.scu.edu.cn/szdw/zzjzg_link/fgzc.htm",
+        "https://law.scu.edu.cn/szdw/zzjzg_link/zjzc.htm",
+        "https://law.scu.edu.cn/info/1360/15754.htm",
+    ]

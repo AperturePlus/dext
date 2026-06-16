@@ -15,6 +15,11 @@ SPORTS = "sports"
 POSTDOC = "postdoc"
 RETIRED = "retired"
 CONTINUING_EDUCATION = "continuing_education"
+PERSONNEL_WORK = "personnel_work"
+BASIC_EDUCATION_CENTER = "basic_education_center"
+EXPERIMENT_CENTER = "experiment_center"
+SUPPORT_ROLE = "support_role"
+ADMINISTRATION = "administration"
 
 _WS = re.compile(r"\s+")
 
@@ -25,6 +30,9 @@ _EXACT_ORG_NAMES = {
     "成人教育学院": CONTINUING_EDUCATION,
     "继续教育学院": CONTINUING_EDUCATION,
     "成人继续教育学院": CONTINUING_EDUCATION,
+    "基教中心": BASIC_EDUCATION_CENTER,
+    "基础教学中心": BASIC_EDUCATION_CENTER,
+    "实验中心": EXPERIMENT_CENTER,
 }
 
 _EXACT_HOSTS = {
@@ -43,6 +51,15 @@ _EXACT_TEXT_MARKERS = (
     (CONTINUING_EDUCATION, ("成人教育学院", "继续教育学院", "成人继续教育学院")),
     (ARTS, ("艺术学院",)),
     (SPORTS, ("体育学院",)),
+    (PERSONNEL_WORK, ("人事工作",)),
+    (BASIC_EDUCATION_CENTER, ("基教中心", "基础教学中心")),
+    (EXPERIMENT_CENTER, ("实验中心",)),
+    (SUPPORT_ROLE, ("教辅岗",)),
+    (ADMINISTRATION, ("行政岗", "专职行政", "行政人员", "行政团队")),
+)
+
+_EXACT_TEXT_VALUES = (
+    (ADMINISTRATION, ("行政",)),
 )
 
 
@@ -84,7 +101,12 @@ def classify_excluded_page_link(
         if (host, path) in _EXACT_HOST_PATHS:
             return _EXACT_HOST_PATHS[(host, path)]
 
-    haystack = _compact(" ".join(part for part in (anchor_text, title, heading) if part))
+    compact_parts = tuple(_compact(part) for part in (anchor_text, title, heading) if part)
+    for reason, values in _EXACT_TEXT_VALUES:
+        if any(part in values for part in compact_parts):
+            return reason
+
+    haystack = "".join(compact_parts)
     if not haystack:
         return None
     for reason, markers in _EXACT_TEXT_MARKERS:

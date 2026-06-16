@@ -1,7 +1,8 @@
-"""Detail-candidate pre-filter (spec §6, source doc §8.4). Cheap, deterministic,
-diagnosable: every drop has a reason code and a count. The real "is this a
-teacher detail page" judgement is the LLM decider's (SP5); this layer only removes
-obvious non-candidates and produces counts.
+"""Navigation-candidate pre-filter (spec §6, source doc §8.4).
+
+Cheap, deterministic, diagnosable: every drop has a reason code and a count.
+The real "what kind of page is this link?" judgement is the LLM decider's; this
+layer only removes obvious non-candidates and produces counts.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ class FilterResult:
     dropped: dict[str, int]
 
 
-def filter_detail_candidates(snapshot: PageSnapshot, context: FilterContext) -> FilterResult:
+def filter_navigation_candidates(snapshot: PageSnapshot, context: FilterContext) -> FilterResult:
     dropped = {code: 0 for code in _DROP_CODES}
     kept: list[LinkSignal] = []
     seen: set[str] = set()
@@ -51,3 +52,8 @@ def filter_detail_candidates(snapshot: PageSnapshot, context: FilterContext) -> 
             continue
         kept.append(sig)
     return FilterResult(kept=kept, dropped=dropped)
+
+
+def filter_detail_candidates(snapshot: PageSnapshot, context: FilterContext) -> FilterResult:
+    """Backward-compatible alias for the high-recall navigation filter."""
+    return filter_navigation_candidates(snapshot, context)
