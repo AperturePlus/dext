@@ -10,6 +10,7 @@ from dext.exclusions import is_valid_exclusion_reason
 from dext.llm import OrgUnitContext, extract_professors
 from dext.page.links import PageSnapshot
 from dext.storage.models import NodeStatus
+from dext.storage.writer import ClaimedNode
 from dext.engine.retry import classify_extraction_failure
 from dext.types import ProfessorPayload
 
@@ -26,6 +27,14 @@ class ExtractTask:
     attempt_count: int
 
 
+@dataclass
+class DecideTask:
+    node: ClaimedNode
+    snapshot: PageSnapshot
+    raw_html: str
+    reported_pagination_states: list
+
+
 class ExtractionTracker:
     def __init__(self) -> None:
         self.in_flight = 0
@@ -35,15 +44,31 @@ def _payloads_with_system_homepage(payloads: list[ProfessorPayload], homepage: s
     return [replace(payload, homepage=homepage) for payload in payloads]
 
 
-async def llm_worker(name: str, queue: asyncio.Queue, storage, llm_client, settings, tracker: ExtractionTracker) -> None:
+async def llm_worker(
+    name: str,
+    queue: asyncio.Queue,
+    storage,
+    llm_client,
+    settings,
+    tracker: ExtractionTracker,
+    *,
+    deps_factory=None,
+) -> None:
+    # Deferred import: handlers imports ExtractTask from this module, so a top-level
+    # `from dext.engine.handlers import dispatch` would create an import cycle.
+    from dext.engine.handlers import dispatch
+
     while True:
         task = await queue.get()
         if task is None:
             queue.task_done()
             return
-        tracker.in_flight += 1
+        tracker.in_flight += 1  # no await between get() and increment — closes the DONE-race window
         try:
-            await process_extract_task(task, storage, llm_client, settings)
+            if isinstance(task, DecideTask):
+                await dispatch(task.node, task.snapshot, deps_factory(task))
+            else:
+                await process_extract_task(task, storage, llm_client, settings)
         finally:
             tracker.in_flight -= 1
             queue.task_done()
