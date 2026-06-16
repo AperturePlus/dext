@@ -44,7 +44,7 @@ def test_decider_prompt_mentions_json_for_json_object_mode():
     assert "https://x.edu.cn/teacher/1" in msgs[1]["content"]
 
 
-def test_prompts_include_conservative_exclusion_rules():
+def test_prompts_use_generic_exclusion_policy_not_scu_specifics():
     ctx = type("O", (), {"org_unit_id": 1, "org_unit_name": "数学", "faculty_list_url": ""})()
     decider = build_decider_messages(
         _snap(), [_sig("https://x.edu.cn/teacher/1")],
@@ -54,45 +54,21 @@ def test_prompts_include_conservative_exclusion_rules():
     )[0]["content"]
     extractor = build_extractor_messages(_snap(), ctx, max_tokens=1000, strict=False)[0]["content"]
     retry = build_extractor_messages(_snap(), ctx, max_tokens=1000, strict=True)[0]["content"]
+
+    present = (
+        "中外合作办学", "联合办学", "艺术学院", "体育学院", "成人教育", "继续教育",
+        "基础教学中心", "实验中心", "博士后", "离退休", "行政岗", "专职行政",
+        "行政人员", "行政团队", "教辅岗", "人事工作", "筹建", "筹备",
+        "卓越工程师学院", "书院", "宁可漏排除", "国际关系学院", "行政法", "行政管理",
+    )
+    absent = ("SCUPI", "匹兹堡", "ltxjs", "bshldz", "吴玉章", "吴健雄", "scu.edu.cn")
     for prompt in (decider, extractor, retry):
-        for term in (
-            "中外合办",
-            "联合办学",
-            "艺术学院",
-            "体育学院",
-            "博士后",
-            "离退休",
-            "成人教育",
-            "继续教育",
-            "人事工作",
-            "基教中心",
-            "基础教学中心",
-            "实验中心",
-            "教辅岗",
-            "行政岗",
-            "专职行政",
-            "行政人员",
-            "行政团队",
-            "学院（筹）",
-            "筹建",
-            "筹备",
-            "卓越工程师学院",
-            "书院",
-            "吴玉章书院",
-            "吴健雄书院",
-            "行政法",
-            "行政管理",
-        ):
-            assert term in prompt
-        assert "宁可漏排除，不要错排除" in prompt
-        assert "国际关系学院" in prompt
-    assert "SCUPI" in decider
-    assert "ltxjs" in decider
-    assert "bshldz" in decider
-    assert "行政团队等人员子类拆分" not in decider
-    assert "行政团队必须标为 `noise`" in decider
-    assert "“工程”“工程师”“国际”等泛词" in decider
-    assert "正常招生学院" in decider
+        for term in present:
+            assert term in prompt, term
+        for term in absent:
+            assert term not in prompt, term
+    assert "page_exclusion_reason" in decider
+    assert "exclusion_reason" in decider
     assert "空的 professors 数组" in extractor
 
 

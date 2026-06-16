@@ -10,6 +10,8 @@ import hashlib
 from functools import lru_cache
 from importlib.resources import files
 
+from dext.exclusions import render_exclusion_policy
+
 _PKG = "dext.llm.prompts"
 _TEMPLATES = ("decider", "extractor", "extractor_retry")
 
@@ -20,9 +22,15 @@ def _load(name: str) -> str:
 
 
 @lru_cache(maxsize=None)
+def _rendered(name: str) -> str:
+    """模板注入排除策略后的静态文本（未含动态用户内容）。prompt_hash 以此为准。"""
+    return _load(name).replace("{{EXCLUSION_POLICY}}", render_exclusion_policy())
+
+
+@lru_cache(maxsize=None)
 def prompt_hash(name: str) -> str:
-    """16-hex sha256 prefix of the template file — a stable version fingerprint."""
-    return hashlib.sha256(_load(name).encode("utf-8")).hexdigest()[:16]
+    """16-hex sha256 prefix of the RENDERED template — 模板或类别表变更都会 bump。"""
+    return hashlib.sha256(_rendered(name).encode("utf-8")).hexdigest()[:16]
 
 
 PROMPT_HASHES: dict[str, str] = {name: prompt_hash(name) for name in _TEMPLATES}
@@ -103,12 +111,12 @@ def build_decider_messages(snapshot, candidates, node, context, *, max_tokens) -
         f"PAGE TEXT (truncated):\n{page_text}\n\n"
         f"CANDIDATE LINKS:\n" + "\n".join(lines)
     )
-    return [{"role": "system", "content": _load("decider")}, {"role": "user", "content": user}]
+    return [{"role": "system", "content": _rendered("decider")}, {"role": "user", "content": user}]
 
 
 def build_extractor_messages(snapshot, org_unit_ctx, *, max_tokens, strict: bool = False) -> list[dict]:
     page_text = truncate_to_budget(snapshot.text_snapshot, max_tokens)
-    system = _load("extractor_retry" if strict else "extractor")
+    system = _rendered("extractor_retry" if strict else "extractor")
     user = (
         f"Org unit: {org_unit_ctx.org_unit_name}\n"
         f"Page URL: {snapshot.url}\n"
