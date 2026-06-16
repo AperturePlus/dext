@@ -513,3 +513,109 @@ def test_detail_like_teacher_url_is_excluded_from_root_pagination_candidates():
     excluded = _detail_like_urls(snap)
     assert "https://x.edu.cn/teacher/info/1001.htm" in excluded
     assert "https://x.edu.cn/szdw/2.htm" not in excluded
+
+
+async def test_faculty_page_drops_reslice_when_people_present(tmp_path):
+    h = await _storage(tmp_path)
+    org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="哲学系", url="https://x.edu.cn/phil/"))
+    node_id = await h.writer.upsert_node(
+        node_spec(NodeType.faculty_list_url, url="https://x.edu.cn/phil/index.html",
+                  settings=_settings(), run_id=1, org_unit_id=org_id, org_unit_name="哲学系")
+    )
+    html = """
+    <html><body>
+      <a href="/phil/jiaoshou/index.html">教授</a>
+      <a href="/phil/fujiaoshou/index.html">副教授</a>
+      <a href="/phil/teacher/1.html">张三</a>
+    </body></html>
+    """
+    snap = build_snapshot(html, "https://x.edu.cn/phil/index.html", "https://x.edu.cn/phil/index.html", "")
+
+    async def _fake_decide(*args, **kwargs):
+        return SimpleNamespace(
+            links=[
+                SimpleNamespace(url="https://x.edu.cn/phil/jiaoshou/index.html", label="reslice",
+                                confidence=0.9, is_leaf=False, facet_axis="title"),
+                SimpleNamespace(url="https://x.edu.cn/phil/fujiaoshou/index.html", label="reslice",
+                                confidence=0.9, is_leaf=False, facet_axis="title"),
+                SimpleNamespace(url="https://x.edu.cn/phil/teacher/1.html", label="detail",
+                                confidence=0.9, is_leaf=True),
+            ],
+            parse_error=None, page_exclusion_reason=None,
+        )
+
+    import dext.engine.handlers as handlers_mod
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = _fake_decide
+    try:
+        node = ClaimedNode(id=node_id, node_key="f", type=NodeType.faculty_list_url, url=snap.url,
+                           org_unit_id=org_id, org_unit_name="哲学系", depth=2, attempt_count=1,
+                           priority_score=80, content_hash=None, metadata=None)
+        deps = HandlerDeps(storage=h, llm_client=None, settings=_settings(), run_id=1,
+                           university_name="测试大学", extract_queue=asyncio.Queue(), raw_html=html)
+        await handle_faculty_page(node, snap, deps)
+    finally:
+        handlers_mod.decide_links = orig
+
+    async with h.session_factory() as s:
+        nodes = (await s.execute(select(GraphNode))).scalars().all()
+        details = [n for n in nodes if n.type == NodeType.detail_url]
+        followups = [n for n in nodes if n.type == NodeType.faculty_followup_url]
+        parent = next(n for n in nodes if n.id == node_id)
+        assert [n.url for n in details] == ["https://x.edu.cn/phil/teacher/1.html"]
+        assert followups == []  # both title re-slices collapsed
+        assert parent.status == NodeStatus.done
+    await _close(h)
+
+
+async def test_faculty_page_takes_one_axis_when_no_people(tmp_path):
+    h = await _storage(tmp_path)
+    org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="某系", url="https://x.edu.cn/u/"))
+    node_id = await h.writer.upsert_node(
+        node_spec(NodeType.faculty_list_url, url="https://x.edu.cn/u/people.html",
+                  settings=_settings(), run_id=1, org_unit_id=org_id, org_unit_name="某系")
+    )
+    # No detail/pagination/followup links; only two reslice axes (letter + title).
+    html = """
+    <html><body>
+      <a href="/u/letter_a.html">A</a>
+      <a href="/u/letter_b.html">B</a>
+      <a href="/u/prof.html">教授</a>
+    </body></html>
+    """
+    snap = build_snapshot(html, "https://x.edu.cn/u/people.html", "https://x.edu.cn/u/people.html", "")
+
+    async def _fake_decide(*args, **kwargs):
+        return SimpleNamespace(
+            links=[
+                SimpleNamespace(url="https://x.edu.cn/u/letter_a.html", label="reslice",
+                                confidence=0.8, is_leaf=False, facet_axis="letter"),
+                SimpleNamespace(url="https://x.edu.cn/u/letter_b.html", label="reslice",
+                                confidence=0.8, is_leaf=False, facet_axis="letter"),
+                SimpleNamespace(url="https://x.edu.cn/u/prof.html", label="reslice",
+                                confidence=0.8, is_leaf=False, facet_axis="title"),
+            ],
+            parse_error=None, page_exclusion_reason=None,
+        )
+
+    import dext.engine.handlers as handlers_mod
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = _fake_decide
+    try:
+        node = ClaimedNode(id=node_id, node_key="f", type=NodeType.faculty_list_url, url=snap.url,
+                           org_unit_id=org_id, org_unit_name="某系", depth=2, attempt_count=1,
+                           priority_score=80, content_hash=None, metadata=None)
+        deps = HandlerDeps(storage=h, llm_client=None, settings=_settings(), run_id=1,
+                           university_name="测试大学", extract_queue=asyncio.Queue(), raw_html=html)
+        await handle_faculty_page(node, snap, deps)
+    finally:
+        handlers_mod.decide_links = orig
+
+    async with h.session_factory() as s:
+        nodes = (await s.execute(select(GraphNode))).scalars().all()
+        followups = [n for n in nodes if n.type == NodeType.faculty_followup_url]
+        assert {n.url for n in followups} == {
+            "https://x.edu.cn/u/letter_a.html", "https://x.edu.cn/u/letter_b.html",
+        }  # letter axis chosen (priority over title); title dropped
+        assert all((n.metadata_json or {}).get("facet_axis") == "letter" for n in followups)
+    await _close(h)

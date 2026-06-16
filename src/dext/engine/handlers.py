@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import asdict
 from urllib.parse import urlsplit
 
@@ -26,6 +27,8 @@ from dext.storage.writer import ClaimedNode, OrgUnitSpec
 from dext.types import FetchAction, PaginationState
 
 logger = logging.getLogger(__name__)
+
+RESLICE_AXIS_PRIORITY = ("letter", "title", "advisor")
 
 
 class HandlerDeps:
@@ -328,59 +331,97 @@ async def _create_form_pagination_nodes(node: ClaimedNode, snapshot: PageSnapsho
     return count
 
 
-async def _materialize_decided(node: ClaimedNode, snapshot: PageSnapshot, deps: HandlerDeps, decision, filter_result) -> int:
+async def _materialize_decided(
+    node: ClaimedNode,
+    snapshot: PageSnapshot,
+    deps: HandlerDeps,
+    decision,
+    filter_result,
+    *,
+    pagination_created: int = 0,
+) -> int:
     count = 0
     if not _within_depth(node, deps.settings):
         return 0
-    for link in decision.links:
-        if _link_exclusion_reason(link):
-            continue
+    actionable = [link for link in decision.links if not _link_exclusion_reason(link)]
+    has_detail = any(link.label == "detail" or link.is_leaf for link in actionable if link.label != "reslice")
+    has_followup = any(link.label == "followup" for link in actionable)
+    yields_people = has_detail or has_followup or pagination_created > 0
+    reslice_links = [link for link in actionable if link.label == "reslice"]
+    for link in actionable:
+        if link.label == "reslice":
+            continue  # handled in _materialize_reslices
         if link.label == "detail" or link.is_leaf:
             await _create_child(
-                deps,
-                node,
-                NodeType.detail_url,
-                url=link.url,
-                edge_type=EdgeType.detail_candidate_of,
-                confidence=link.confidence,
+                deps, node, NodeType.detail_url, url=link.url,
+                edge_type=EdgeType.detail_candidate_of, confidence=link.confidence,
                 metadata={"label": link.label},
             )
             count += 1
         elif link.label == "pagination":
             await _create_child(
-                deps,
-                node,
-                NodeType.pagination_url,
-                url=link.url,
-                edge_type=EdgeType.pagination_of,
-                confidence=link.confidence,
+                deps, node, NodeType.pagination_url, url=link.url,
+                edge_type=EdgeType.pagination_of, confidence=link.confidence,
                 metadata={"label": link.label, "pagination_kind": "decider"},
             )
             count += 1
         elif link.label == "followup":
             await _create_child(
-                deps,
-                node,
-                NodeType.faculty_followup_url,
-                url=link.url,
-                edge_type=EdgeType.discovered_on_page,
-                confidence=link.confidence,
+                deps, node, NodeType.faculty_followup_url, url=link.url,
+                edge_type=EdgeType.discovered_on_page, confidence=link.confidence,
                 metadata={"label": link.label},
             )
             count += 1
+    count += await _materialize_reslices(node, snapshot, deps, reslice_links, yields_people=yields_people)
     logger.info(
         "navigation filter for %s kept=%d dropped=%s selected=%d parse_error=%s",
-        snapshot.url,
-        len(filter_result.kept),
-        filter_result.dropped,
-        count,
-        decision.parse_error,
+        snapshot.url, len(filter_result.kept), filter_result.dropped, count, decision.parse_error,
     )
     if decision.parse_error:
         raise RuntimeError("decider_invalid_json")
     if filter_result.kept and count == 0 and not decision.links:
         raise RuntimeError("decider_no_navigation_links")
     return count
+
+
+async def _materialize_reslices(
+    node: ClaimedNode,
+    snapshot: PageSnapshot,
+    deps: HandlerDeps,
+    reslice_links: list,
+    *,
+    yields_people: bool,
+) -> int:
+    if not reslice_links:
+        return 0
+    if yields_people:
+        # Trust-broad: the same people are already reachable here → collapse all re-slices.
+        for axis, n in Counter(getattr(link, "facet_axis", None) or "unknown" for link in reslice_links).items():
+            logger.info("redundant_facet:%s dropped=%d url=%s", axis, n, snapshot.url)
+        return 0
+    # No people anywhere on this page → re-slices are the only way forward; descend ONE axis.
+    chosen = _choose_reslice_axis(reslice_links)
+    count = 0
+    for link in reslice_links:
+        if (getattr(link, "facet_axis", None) or "unknown") != chosen:
+            continue
+        await _create_child(
+            deps, node, NodeType.faculty_followup_url, url=link.url,
+            edge_type=EdgeType.discovered_on_page, confidence=getattr(link, "confidence", None),
+            metadata={"label": "reslice", "reslice": True, "facet_axis": chosen},
+        )
+        count += 1
+    for axis in {getattr(link, "facet_axis", None) or "unknown" for link in reslice_links} - {chosen}:
+        logger.info("reslice_axis_skipped:%s url=%s", axis, snapshot.url)
+    return count
+
+
+def _choose_reslice_axis(reslice_links: list) -> str:
+    present = {getattr(link, "facet_axis", None) or "unknown" for link in reslice_links}
+    for axis in RESLICE_AXIS_PRIORITY:
+        if axis in present:
+            return axis
+    return sorted(present)[0]
 
 
 async def handle_faculty_page(node: ClaimedNode, snapshot: PageSnapshot, deps: HandlerDeps) -> None:
@@ -404,7 +445,9 @@ async def handle_faculty_page(node: ClaimedNode, snapshot: PageSnapshot, deps: H
     created += await _create_url_pagination_nodes(node, snapshot, deps, exclude_urls=detail_like_urls)
     created += await _create_form_pagination_nodes(node, snapshot, deps)
     try:
-        created += await _materialize_decided(node, snapshot, deps, decision, filter_result)
+        created += await _materialize_decided(
+            node, snapshot, deps, decision, filter_result, pagination_created=created
+        )
     except RuntimeError as exc:
         reason = str(exc) or "decider_failed"
         await deps.storage.writer.mark_node(
