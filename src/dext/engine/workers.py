@@ -6,6 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, replace
 
+from dext.exclusions import is_valid_exclusion_reason
 from dext.llm import OrgUnitContext, extract_professors
 from dext.page.links import PageSnapshot
 from dext.storage.models import NodeStatus
@@ -91,6 +92,20 @@ async def process_extract_task(task: ExtractTask, storage, llm_client, settings)
                 raw_output_preview=result.raw_preview,
             )
             await storage.writer.mark_node(task.node_id, NodeStatus.done, content_hash=task.snapshot.content_hash)
+            return
+
+        if result.exclusion_reason and is_valid_exclusion_reason(result.exclusion_reason):
+            await storage.writer.finish_extraction_attempt(
+                attempt_id,
+                status="skipped",
+                raw_output_preview=result.raw_preview,
+                failure_type="excluded",
+            )
+            await storage.writer.mark_node(
+                task.node_id,
+                NodeStatus.skipped,
+                last_error=f"excluded:{result.exclusion_reason}",
+            )
             return
 
         decision = classify_extraction_failure(
