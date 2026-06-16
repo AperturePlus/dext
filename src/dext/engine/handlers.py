@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict
 
-from dext.exclusions import classify_excluded_org_unit, classify_excluded_page_link
 from dext.engine.names import clean_org_unit_name
 from dext.engine.seeds import node_spec, org_node_spec
 from dext.engine.workers import ExtractTask
@@ -79,21 +78,6 @@ def _within_depth(parent: ClaimedNode, settings) -> bool:
     return _child_depth(parent) <= settings.max_depth
 
 
-def _signal_by_url(snapshot: PageSnapshot, url: str):
-    return next((s for s in snapshot.link_signals if s.url == url), None)
-
-
-def _excluded_link_reason(snapshot: PageSnapshot, url: str, *, org_unit_name: str | None = None) -> str | None:
-    sig = _signal_by_url(snapshot, url)
-    return classify_excluded_page_link(
-        url=url,
-        anchor_text=sig.anchor_text if sig is not None else None,
-        heading=sig.heading if sig is not None else None,
-        title=snapshot.title,
-        org_unit_name=org_unit_name,
-    )
-
-
 def _looks_like_pager_label(label: str | None) -> bool:
     text = (label or "").strip().lower()
     if not text:
@@ -145,7 +129,7 @@ async def handle_org_listing(node: ClaimedNode, snapshot: PageSnapshot, deps: Ha
         if link.label != "college":
             continue
         name = clean_org_unit_name(link.org_unit_name)
-        if not name or classify_excluded_org_unit(name, url=link.url):
+        if not name:
             continue
         org_id = await deps.storage.writer.upsert_org_unit(
             OrgUnitSpec(name=name, url=link.url, kind="college", discovered_from_url=snapshot.url)
@@ -164,6 +148,9 @@ async def handle_org_listing(node: ClaimedNode, snapshot: PageSnapshot, deps: Ha
         await deps.storage.writer.add_edge(node.id, org_node_id, EdgeType.discovered_on_page, confidence=link.confidence)
         created += 1
     await deps.storage.writer.mark_node(node.id, NodeStatus.done, content_hash=snapshot.content_hash)
+    excluded = sum(1 for link in decision.links if getattr(link, "exclusion_reason", None))
+    if excluded:
+        logger.info("org listing %s decider-excluded %d links", snapshot.url, excluded)
     logger.info("org listing %s created %d org units", snapshot.url, created)
 
 
@@ -200,6 +187,17 @@ async def handle_org_unit(node: ClaimedNode, snapshot: PageSnapshot, deps: Handl
     if node.org_unit_id is not None:
         await deps.storage.writer.update_org_unit_status(node.org_unit_id, "in_progress")
     decision = await _decide(snapshot, snapshot.link_signals, node, deps)
+    if decision.page_exclusion_reason:
+        if node.org_unit_id is not None:
+            await deps.storage.writer.update_org_unit_status(node.org_unit_id, "no_faculty_page")
+        await deps.storage.writer.mark_node(
+            node.id,
+            NodeStatus.skipped,
+            last_error=f"excluded:{decision.page_exclusion_reason}",
+            content_hash=snapshot.content_hash,
+        )
+        logger.info("skipped excluded org unit %s reason=%s", snapshot.url, decision.page_exclusion_reason)
+        return
     created = 0
     if _within_depth(node, deps.settings):
         for link in decision.links:
@@ -260,8 +258,6 @@ async def _create_url_pagination_nodes(
     for cand in find_url_pagination(snapshot, snapshot.url):
         if cand.url in excluded:
             continue
-        if _excluded_link_reason(snapshot, cand.url, org_unit_name=node.org_unit_name):
-            continue
         await _create_child(
             deps,
             node,
@@ -315,19 +311,12 @@ async def _create_form_pagination_nodes(node: ClaimedNode, snapshot: PageSnapsho
     return count
 
 
-async def _create_decided_nodes(node: ClaimedNode, snapshot: PageSnapshot, deps: HandlerDeps) -> int:
-    filter_result = filter_navigation_candidates(
-        snapshot,
-        FilterContext(faculty_list_url=snapshot.url, already_enriched=set()),
-    )
-    decision = await _decide(snapshot, filter_result.kept, node, deps)
+async def _materialize_decided(node: ClaimedNode, snapshot: PageSnapshot, deps: HandlerDeps, decision, filter_result) -> int:
     count = 0
     if not _within_depth(node, deps.settings):
         return 0
     for link in decision.links:
         if link.label == "detail" or link.is_leaf:
-            if _excluded_link_reason(snapshot, link.url, org_unit_name=node.org_unit_name):
-                continue
             await _create_child(
                 deps,
                 node,
@@ -339,8 +328,6 @@ async def _create_decided_nodes(node: ClaimedNode, snapshot: PageSnapshot, deps:
             )
             count += 1
         elif link.label == "pagination":
-            if _excluded_link_reason(snapshot, link.url, org_unit_name=node.org_unit_name):
-                continue
             await _create_child(
                 deps,
                 node,
@@ -352,8 +339,6 @@ async def _create_decided_nodes(node: ClaimedNode, snapshot: PageSnapshot, deps:
             )
             count += 1
         elif link.label == "followup":
-            if _excluded_link_reason(snapshot, link.url, org_unit_name=node.org_unit_name):
-                continue
             await _create_child(
                 deps,
                 node,
@@ -380,22 +365,26 @@ async def _create_decided_nodes(node: ClaimedNode, snapshot: PageSnapshot, deps:
 
 
 async def handle_faculty_page(node: ClaimedNode, snapshot: PageSnapshot, deps: HandlerDeps) -> None:
-    reason = classify_excluded_page_link(url=snapshot.url, title=snapshot.title, org_unit_name=node.org_unit_name)
-    if reason:
+    filter_result = filter_navigation_candidates(
+        snapshot,
+        FilterContext(faculty_list_url=snapshot.url, already_enriched=set()),
+    )
+    decision = await _decide(snapshot, filter_result.kept, node, deps)
+    if decision.page_exclusion_reason:
         await deps.storage.writer.mark_node(
             node.id,
             NodeStatus.skipped,
-            last_error=f"excluded:{reason}",
+            last_error=f"excluded:{decision.page_exclusion_reason}",
             content_hash=snapshot.content_hash,
         )
-        logger.info("skipped excluded faculty page %s reason=%s", snapshot.url, reason)
+        logger.info("skipped excluded faculty page %s reason=%s", snapshot.url, decision.page_exclusion_reason)
         return
     created = 0
     detail_like_urls = _detail_like_urls(snapshot)
     created += await _create_url_pagination_nodes(node, snapshot, deps, exclude_urls=detail_like_urls)
     created += await _create_form_pagination_nodes(node, snapshot, deps)
     try:
-        created += await _create_decided_nodes(node, snapshot, deps)
+        created += await _materialize_decided(node, snapshot, deps, decision, filter_result)
     except RuntimeError as exc:
         reason = str(exc) or "decider_failed"
         await deps.storage.writer.mark_node(
@@ -411,16 +400,6 @@ async def handle_faculty_page(node: ClaimedNode, snapshot: PageSnapshot, deps: H
 
 
 async def handle_detail(node: ClaimedNode, snapshot: PageSnapshot, deps: HandlerDeps) -> None:
-    reason = classify_excluded_page_link(url=snapshot.url, title=snapshot.title, org_unit_name=node.org_unit_name)
-    if reason:
-        await deps.storage.writer.mark_node(
-            node.id,
-            NodeStatus.skipped,
-            last_error=f"excluded:{reason}",
-            content_hash=snapshot.content_hash,
-        )
-        logger.info("skipped excluded detail page %s reason=%s", snapshot.url, reason)
-        return
     await deps.extract_queue.put(
         ExtractTask(
             node_id=node.id,
