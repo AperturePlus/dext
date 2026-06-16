@@ -44,6 +44,22 @@ def test_decider_prompt_mentions_json_for_json_object_mode():
     assert "https://x.edu.cn/teacher/1" in msgs[1]["content"]
 
 
+def test_decider_prompt_classifies_query_filter_buttons_as_reslice():
+    msgs = build_decider_messages(
+        _snap(), [_sig("https://x.edu.cn/szdw/zrjs?keyword=&yjjg=&jxx=公共管理系&jobType=", "公共管理系")],
+        node=type("N", (), {"type": "faculty_list_url", "url": "u", "depth": 1, "org_unit_name": "管理"})(),
+        context=type("C", (), {"university_name": "X大", "visited_summary": "", "faculty_list_url": "u"})(),
+        max_tokens=1000,
+    )
+    system = msgs[0]["content"]
+    assert "同一路径上只改变查询参数" in system
+    assert "教师类别/教学系/研究机构/全部" in system
+    assert "jobType=" in system
+    assert "jxx=" in system
+    assert "yjjg=" in system
+    assert "引擎会从 URL 参数推断" in system
+
+
 def test_prompts_use_generic_exclusion_policy_not_scu_specifics():
     ctx = type("O", (), {"org_unit_id": 1, "org_unit_name": "数学", "faculty_list_url": ""})()
     decider = build_decider_messages(

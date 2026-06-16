@@ -97,6 +97,15 @@ def test_parse_nulls_invalid_facet_axis():
     assert d.links[0].facet_axis is None
 
 
+def test_parse_keeps_reslice_with_null_facet_axis_for_query_filter_inference():
+    cands = [_sig("https://x/a?jxx=math")]
+    raw = ('{"links": [{"url": "https://x/a?jxx=math", "label": "reslice", "confidence": 0.8, '
+           '"is_leaf": false, "facet_axis": null}]}')
+    d = _parse_decision(raw, cands)
+    assert d.links[0].label == "reslice"
+    assert d.links[0].facet_axis is None
+
+
 def test_parse_ignores_facet_axis_when_label_not_reslice():
     cands = [_sig("https://x/a")]
     raw = ('{"links": [{"url": "https://x/a", "label": "detail", "confidence": 0.9, '

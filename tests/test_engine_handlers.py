@@ -621,6 +621,226 @@ async def test_faculty_page_takes_one_axis_when_no_people(tmp_path):
     await _close(h)
 
 
+async def test_faculty_page_drops_query_filter_buttons_when_wide_page_has_people(tmp_path):
+    h = await _storage(tmp_path)
+    org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="管理学院", url="https://x.edu.cn/szdw/zrjs"))
+    node_id = await h.writer.upsert_node(
+        node_spec(NodeType.faculty_list_url, url="https://x.edu.cn/szdw/zrjs",
+                  settings=_settings(), run_id=1, org_unit_id=org_id, org_unit_name="管理学院")
+    )
+    html = """
+    <html><body>
+      <a href="/szdw/zrjs?keyword=&yjjg=&jxx=&jobType=教授">教授</a>
+      <a href="/szdw/zrjs?keyword=&yjjg=&jxx=公共管理系&jobType=">公共管理系</a>
+      <a href="/szdw/zrjs?keyword=&yjjg=智能财务管理研究所&jxx=&jobType=">智能财务管理研究所</a>
+      <a href="/szdw/zrjs/teacher/1.html">张三</a>
+    </body></html>
+    """
+    snap = build_snapshot(html, "https://x.edu.cn/szdw/zrjs", "https://x.edu.cn/szdw/zrjs", "")
+
+    async def _fake_decide(*args, **kwargs):
+        return SimpleNamespace(
+            links=[
+                SimpleNamespace(url="https://x.edu.cn/szdw/zrjs?keyword=&yjjg=&jxx=&jobType=教授",
+                                label="followup", confidence=0.8, is_leaf=False),
+                SimpleNamespace(url="https://x.edu.cn/szdw/zrjs?keyword=&yjjg=&jxx=公共管理系&jobType=",
+                                label="followup", confidence=0.8, is_leaf=False),
+                SimpleNamespace(url="https://x.edu.cn/szdw/zrjs?keyword=&yjjg=智能财务管理研究所&jxx=&jobType=",
+                                label="followup", confidence=0.8, is_leaf=False),
+                SimpleNamespace(url="https://x.edu.cn/szdw/zrjs/teacher/1.html",
+                                label="detail", confidence=0.9, is_leaf=True),
+            ],
+            parse_error=None, page_exclusion_reason=None,
+        )
+
+    import dext.engine.handlers as handlers_mod
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = _fake_decide
+    try:
+        node = ClaimedNode(id=node_id, node_key="f", type=NodeType.faculty_list_url, url=snap.url,
+                           org_unit_id=org_id, org_unit_name="管理学院", depth=2, attempt_count=1,
+                           priority_score=80, content_hash=None, metadata=None)
+        deps = HandlerDeps(storage=h, llm_client=None, settings=_settings(), run_id=1,
+                           university_name="测试大学", extract_queue=asyncio.Queue(), raw_html=html)
+        await handle_faculty_page(node, snap, deps)
+    finally:
+        handlers_mod.decide_links = orig
+
+    async with h.session_factory() as s:
+        nodes = (await s.execute(select(GraphNode))).scalars().all()
+        details = [n for n in nodes if n.type == NodeType.detail_url]
+        followups = [n for n in nodes if n.type == NodeType.faculty_followup_url]
+        assert [n.url for n in details] == ["https://x.edu.cn/szdw/zrjs/teacher/1.html"]
+        assert followups == []
+    await _close(h)
+
+
+async def test_faculty_page_creates_one_query_filter_reset_to_wider_table(tmp_path):
+    h = await _storage(tmp_path)
+    current_url = (
+        "https://x.edu.cn/szdw/zrjs?keyword=&yjjg=智能财务管理研究所&"
+        "jxx=公共管理系&jobType=教授"
+    )
+    all_url = "https://x.edu.cn/szdw/zrjs?keyword=&yjjg=&jxx=&jobType="
+    org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="管理学院", url=current_url))
+    node_id = await h.writer.upsert_node(
+        node_spec(NodeType.faculty_followup_url, url=current_url,
+                  settings=_settings(), run_id=1, org_unit_id=org_id, org_unit_name="管理学院")
+    )
+    html = f"""
+    <html><body>
+      <a href="{all_url}">全部</a>
+      <a href="/szdw/zrjs?keyword=&yjjg=智能财务管理研究所&jxx=公共管理系&jobType=副教授">副教授</a>
+      <a href="/szdw/zrjs?keyword=&yjjg=数字营销管理研究所&jxx=公共管理系&jobType=教授">数字营销管理研究所</a>
+      <a href="/szdw/zrjs?keyword=&yjjg=智能财务管理研究所&jxx=组织管理系&jobType=教授">组织管理系</a>
+      <a href="/szdw/zrjs/teacher/1.html">张三</a>
+    </body></html>
+    """
+    snap = build_snapshot(html, current_url, current_url, "")
+
+    async def _fake_decide(*args, **kwargs):
+        return SimpleNamespace(
+            links=[
+                SimpleNamespace(url=all_url, label="followup", confidence=0.8, is_leaf=False),
+                SimpleNamespace(url="https://x.edu.cn/szdw/zrjs?keyword=&yjjg=智能财务管理研究所&jxx=公共管理系&jobType=副教授",
+                                label="followup", confidence=0.8, is_leaf=False),
+                SimpleNamespace(url="https://x.edu.cn/szdw/zrjs?keyword=&yjjg=数字营销管理研究所&jxx=公共管理系&jobType=教授",
+                                label="followup", confidence=0.8, is_leaf=False),
+                SimpleNamespace(url="https://x.edu.cn/szdw/zrjs?keyword=&yjjg=智能财务管理研究所&jxx=组织管理系&jobType=教授",
+                                label="followup", confidence=0.8, is_leaf=False),
+                SimpleNamespace(url="https://x.edu.cn/szdw/zrjs/teacher/1.html",
+                                label="detail", confidence=0.9, is_leaf=True),
+            ],
+            parse_error=None, page_exclusion_reason=None,
+        )
+
+    import dext.engine.handlers as handlers_mod
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = _fake_decide
+    try:
+        node = ClaimedNode(id=node_id, node_key="f", type=NodeType.faculty_followup_url, url=snap.url,
+                           org_unit_id=org_id, org_unit_name="管理学院", depth=2, attempt_count=1,
+                           priority_score=80, content_hash=None, metadata=None)
+        deps = HandlerDeps(storage=h, llm_client=None, settings=_settings(), run_id=1,
+                           university_name="测试大学", extract_queue=asyncio.Queue(), raw_html=html)
+        await handle_faculty_page(node, snap, deps)
+    finally:
+        handlers_mod.decide_links = orig
+
+    async with h.session_factory() as s:
+        nodes = (await s.execute(select(GraphNode))).scalars().all()
+        followups = [n for n in nodes if n.type == NodeType.faculty_followup_url and n.id != node_id]
+        assert [n.url for n in followups] == [all_url]
+        metadata = followups[0].metadata_json or {}
+        assert metadata["facet_kind"] == "query_filter"
+        assert metadata["facet_axis"] == "query:jxx"
+        assert metadata["facet_value"] == ""
+        assert metadata["facet_is_all"] is True
+    await _close(h)
+
+
+async def test_faculty_page_takes_one_query_filter_axis_when_no_people_or_reset(tmp_path):
+    h = await _storage(tmp_path)
+    org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="管理学院", url="https://x.edu.cn/szdw/zrjs"))
+    node_id = await h.writer.upsert_node(
+        node_spec(NodeType.faculty_list_url, url="https://x.edu.cn/szdw/zrjs",
+                  settings=_settings(), run_id=1, org_unit_id=org_id, org_unit_name="管理学院")
+    )
+    html = """
+    <html><body>
+      <a href="/szdw/zrjs?keyword=&yjjg=&jxx=公共管理系&jobType=">公共管理系</a>
+      <a href="/szdw/zrjs?keyword=&yjjg=&jxx=组织管理系&jobType=">组织管理系</a>
+      <a href="/szdw/zrjs?keyword=&yjjg=智能财务管理研究所&jxx=&jobType=">智能财务管理研究所</a>
+      <a href="/szdw/zrjs?keyword=&yjjg=数字营销管理研究所&jxx=&jobType=">数字营销管理研究所</a>
+    </body></html>
+    """
+    snap = build_snapshot(html, "https://x.edu.cn/szdw/zrjs", "https://x.edu.cn/szdw/zrjs", "")
+
+    async def _fake_decide(*args, **kwargs):
+        return SimpleNamespace(
+            links=[
+                SimpleNamespace(url="https://x.edu.cn/szdw/zrjs?keyword=&yjjg=&jxx=公共管理系&jobType=",
+                                label="followup", confidence=0.8, is_leaf=False),
+                SimpleNamespace(url="https://x.edu.cn/szdw/zrjs?keyword=&yjjg=&jxx=组织管理系&jobType=",
+                                label="followup", confidence=0.8, is_leaf=False),
+                SimpleNamespace(url="https://x.edu.cn/szdw/zrjs?keyword=&yjjg=智能财务管理研究所&jxx=&jobType=",
+                                label="followup", confidence=0.8, is_leaf=False),
+                SimpleNamespace(url="https://x.edu.cn/szdw/zrjs?keyword=&yjjg=数字营销管理研究所&jxx=&jobType=",
+                                label="followup", confidence=0.8, is_leaf=False),
+            ],
+            parse_error=None, page_exclusion_reason=None,
+        )
+
+    import dext.engine.handlers as handlers_mod
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = _fake_decide
+    try:
+        node = ClaimedNode(id=node_id, node_key="f", type=NodeType.faculty_list_url, url=snap.url,
+                           org_unit_id=org_id, org_unit_name="管理学院", depth=2, attempt_count=1,
+                           priority_score=80, content_hash=None, metadata=None)
+        deps = HandlerDeps(storage=h, llm_client=None, settings=_settings(), run_id=1,
+                           university_name="测试大学", extract_queue=asyncio.Queue(), raw_html=html)
+        await handle_faculty_page(node, snap, deps)
+    finally:
+        handlers_mod.decide_links = orig
+
+    async with h.session_factory() as s:
+        nodes = (await s.execute(select(GraphNode))).scalars().all()
+        followups = [n for n in nodes if n.type == NodeType.faculty_followup_url]
+        assert {n.url for n in followups} == {
+            "https://x.edu.cn/szdw/zrjs?keyword=&yjjg=&jxx=公共管理系&jobType=",
+            "https://x.edu.cn/szdw/zrjs?keyword=&yjjg=&jxx=组织管理系&jobType=",
+        }
+        assert all((n.metadata_json or {}).get("facet_axis") == "query:jxx" for n in followups)
+    await _close(h)
+
+
+async def test_faculty_page_keeps_path_followup_while_dropping_query_filters(tmp_path):
+    h = await _storage(tmp_path)
+    org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="管理学院", url="https://x.edu.cn/szdw/zrjs"))
+    node_id = await h.writer.upsert_node(
+        node_spec(NodeType.faculty_list_url, url="https://x.edu.cn/szdw/zrjs",
+                  settings=_settings(), run_id=1, org_unit_id=org_id, org_unit_name="管理学院")
+    )
+    html = """
+    <html><body>
+      <a href="/szdw/cyjxjs">产业教学教师</a>
+      <a href="/szdw/zrjs?keyword=&yjjg=&jxx=公共管理系&jobType=">公共管理系</a>
+    </body></html>
+    """
+    snap = build_snapshot(html, "https://x.edu.cn/szdw/zrjs", "https://x.edu.cn/szdw/zrjs", "")
+
+    async def _fake_decide(*args, **kwargs):
+        return SimpleNamespace(
+            links=[
+                SimpleNamespace(url="https://x.edu.cn/szdw/cyjxjs",
+                                label="followup", confidence=0.8, is_leaf=False),
+                SimpleNamespace(url="https://x.edu.cn/szdw/zrjs?keyword=&yjjg=&jxx=公共管理系&jobType=",
+                                label="followup", confidence=0.8, is_leaf=False),
+            ],
+            parse_error=None, page_exclusion_reason=None,
+        )
+
+    import dext.engine.handlers as handlers_mod
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = _fake_decide
+    try:
+        node = ClaimedNode(id=node_id, node_key="f", type=NodeType.faculty_list_url, url=snap.url,
+                           org_unit_id=org_id, org_unit_name="管理学院", depth=2, attempt_count=1,
+                           priority_score=80, content_hash=None, metadata=None)
+        deps = HandlerDeps(storage=h, llm_client=None, settings=_settings(), run_id=1,
+                           university_name="测试大学", extract_queue=asyncio.Queue(), raw_html=html)
+        await handle_faculty_page(node, snap, deps)
+    finally:
+        handlers_mod.decide_links = orig
+
+    async with h.session_factory() as s:
+        nodes = (await s.execute(select(GraphNode))).scalars().all()
+        followups = [n for n in nodes if n.type == NodeType.faculty_followup_url]
+        assert [n.url for n in followups] == ["https://x.edu.cn/szdw/cyjxjs"]
+    await _close(h)
+
+
 from dext.bridge.decision import DecisionCenter
 
 
