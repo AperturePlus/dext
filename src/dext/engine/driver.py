@@ -8,9 +8,9 @@ from dataclasses import dataclass, field
 from sqlalchemy import func, select
 
 from dext.bridge.queue import JobContext
-from dext.engine.handlers import HandlerDeps, dispatch, fetch_action_from_metadata, identity_url_for
+from dext.engine.handlers import HandlerDeps, fetch_action_from_metadata, identity_url_for
 from dext.engine.retry import assess_terminal_unavailable_page, classify_fetch_failure
-from dext.engine.workers import ExtractionTracker, llm_worker
+from dext.engine.workers import DecideTask, ExtractionTracker, ExtractTask, llm_worker
 from dext.page import build_snapshot
 from dext.storage.models import GraphNode, NodeStatus, NodeType, PageCache, Professor, ProfessorAffiliation
 from dext.storage.writer import PageCachePayload
@@ -79,7 +79,15 @@ class CrawlEngine:
     async def run(self) -> CrawlSummary:
         worker_tasks = [
             asyncio.create_task(
-                llm_worker(f"llm-{i}", self.extract_queue, self.storage, self.llm_client, self.settings, self._tracker)
+                llm_worker(
+                    f"llm-{i}",
+                    self.extract_queue,
+                    self.storage,
+                    self.llm_client,
+                    self.settings,
+                    self._tracker,
+                    deps_factory=self._deps_factory,
+                )
             )
             for i in range(max(1, self.settings.llm_workers))
         ]
@@ -177,22 +185,41 @@ class CrawlEngine:
                 content_hash=snapshot.content_hash,
             )
             return
-        await dispatch(
-            node,
-            snapshot,
-            HandlerDeps(
-                storage=self.storage,
-                llm_client=self.llm_client,
-                settings=self.settings,
-                run_id=self.run_id,
-                university_name=self.university_name,
-                extract_queue=self.extract_queue,
-                reported_pagination_states=result.pagination_states,
-                raw_html=result.html,
-                decision_center=self.decision_center,
-            ),
-        )
+        if NodeType(node.type) == NodeType.detail_url:
+            await self.extract_queue.put(
+                ExtractTask(
+                    node_id=node.id,
+                    node_key=node.node_key,
+                    snapshot=snapshot,
+                    org_unit_id=node.org_unit_id,
+                    org_unit_name=node.org_unit_name or "",
+                    attempt_count=node.attempt_count,
+                )
+            )
+        else:
+            await self.extract_queue.put(
+                DecideTask(
+                    node=node,
+                    snapshot=snapshot,
+                    raw_html=result.html,
+                    reported_pagination_states=result.pagination_states,
+                )
+            )
         self._summary.dispatched += 1
+        # Return immediately → the driver loop claims the next pending node and keeps fetching.
+
+    def _deps_factory(self, task: DecideTask) -> HandlerDeps:
+        return HandlerDeps(
+            storage=self.storage,
+            llm_client=self.llm_client,
+            settings=self.settings,
+            run_id=self.run_id,
+            university_name=self.university_name,
+            extract_queue=self.extract_queue,
+            reported_pagination_states=task.reported_pagination_states,
+            raw_html=task.raw_html,
+            decision_center=self.decision_center,
+        )
 
     async def _save_failed_page_cache(self, result) -> None:
         await self.storage.writer.save_page_cache(
