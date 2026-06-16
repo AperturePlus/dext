@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 
 from dext.bridge.queue import JobContext
 from dext.engine.handlers import HandlerDeps, dispatch, fetch_action_from_metadata, identity_url_for
-from dext.engine.retry import classify_fetch_failure
+from dext.engine.retry import assess_terminal_unavailable_page, classify_fetch_failure
 from dext.engine.workers import ExtractionTracker, llm_worker
 from dext.page import build_snapshot
 from dext.storage.models import GraphNode, NodeStatus, NodeType, PageCache, Professor, ProfessorAffiliation
@@ -145,6 +145,7 @@ class CrawlEngine:
             return
 
         snapshot = build_snapshot(result.html, result.identity_url, result.final_url, result.title)
+        terminal_unavailable = assess_terminal_unavailable_page(snapshot, status_code=result.status_code)
         await self.storage.writer.save_page_cache(
             PageCachePayload(
                 url=result.identity_url,
@@ -153,12 +154,29 @@ class CrawlEngine:
                 text_snapshot=snapshot.text_snapshot,
                 links=snapshot.links,
                 link_signals=[s.__dict__ for s in snapshot.link_signals],
+                block_reason=f"terminal_unavailable:{terminal_unavailable}" if terminal_unavailable else None,
                 html_snapshot=result.html,
                 content_hash=snapshot.content_hash,
                 title=snapshot.title,
                 fetch_action=action.__dict__ if action is not None else None,
             )
         )
+        if terminal_unavailable:
+            reason = f"terminal_unavailable:{terminal_unavailable}"
+            self._summary.fetch_failed += 1
+            await self.storage.writer.record_extraction_failure(
+                failure_type=f"fetch:{reason}",
+                resolver="dropped",
+                raw_arguments_preview=None,
+                source_url=result.identity_url,
+            )
+            await self.storage.writer.mark_node(
+                node.id,
+                NodeStatus.skipped,
+                last_error=reason,
+                content_hash=snapshot.content_hash,
+            )
+            return
         await dispatch(
             node,
             snapshot,
