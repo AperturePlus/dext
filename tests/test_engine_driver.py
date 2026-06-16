@@ -398,3 +398,42 @@ async def test_single_fetch_in_flight_across_sibling_nodes(tmp_path):
     assert bridge.fetch_count == 4
     assert summary.status == "completed"
     await _close(storage)
+
+
+async def test_engine_does_not_terminate_while_decider_in_flight(tmp_path):
+    storage = await _storage(tmp_path)
+    settings = _settings(llm_workers=2)
+    parent = "https://x.edu.cn/szdw.htm"
+    pagination_urls = [
+        "https://x.edu.cn/szdw/2.htm",
+        "https://x.edu.cn/szdw/3.htm",
+        "https://x.edu.cn/szdw/4.htm",
+    ]
+    pages = {parent: "<html><body>师资</body></html>"}
+    for u in pagination_urls:
+        pages[u] = "<html><body>末页</body></html>"
+    bridge = CountingBridge(pages)
+    decider = FakeDecider(parent, pagination_urls, parent_delay=0.05)
+
+    await storage.writer.upsert_node(
+        node_spec(NodeType.faculty_list_url, url=parent, settings=settings, run_id=1)
+    )
+
+    import dext.engine.handlers as handlers_mod
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = decider
+    try:
+        summary = await CrawlEngine(storage, bridge, llm_client=None, settings=settings,
+                                    run_id=1, university_name="测试大学").run()
+    finally:
+        handlers_mod.decide_links = orig
+
+    assert summary.status == "completed"
+    assert bridge.fetch_count == 4
+    async with storage.session() as s:
+        pag = (await s.execute(
+            select(GraphNode).where(GraphNode.type == NodeType.pagination_url)
+        )).scalars().all()
+        assert len(pag) == 3                                  # children materialized post-decide
+        assert all(n.status == NodeStatus.done for n in pag)  # and fully processed
+    await _close(storage)
