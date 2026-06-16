@@ -6,10 +6,10 @@ export default defineConfig({
     monkey({
       entry: 'src/main.ts',
       userscript: {
-        name: 'Yanclaw Assistant',
-        namespace: 'https://github.com/yanclaw',
+        name: 'Dexter',
+        namespace: 'https://github.com/AperturePlus/dext',
         version: '1.0.0',
-        description: 'Human-assisted crawler frontend for Yanclaw',
+        description: 'Human-assisted crawler frontend',
         match: ['*://*.edu.cn/*', '*://*.ac.cn/*','//*.github.io'],
         exclude: ['*://dx.scu.edu.cn/*', '*://mail.scu.edu.cn/*'],
         noframes: true,
