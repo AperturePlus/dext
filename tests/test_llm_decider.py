@@ -78,3 +78,28 @@ def test_parse_page_exclusion_reason_valid_and_invalid():
     assert invalid.page_exclusion_reason is None
     missing = _parse_decision('{"links": []}', [])
     assert missing.page_exclusion_reason is None
+
+
+def test_parse_keeps_reslice_label_and_facet_axis():
+    cands = [_sig("https://x/a")]
+    raw = ('{"links": [{"url": "https://x/a", "label": "reslice", "confidence": 0.8, '
+           '"is_leaf": false, "facet_axis": "title"}]}')
+    d = _parse_decision(raw, cands)
+    assert d.links[0].label == "reslice"
+    assert d.links[0].facet_axis == "title"
+
+
+def test_parse_nulls_invalid_facet_axis():
+    cands = [_sig("https://x/a")]
+    raw = ('{"links": [{"url": "https://x/a", "label": "reslice", "confidence": 0.8, '
+           '"is_leaf": false, "facet_axis": "bogus"}]}')
+    d = _parse_decision(raw, cands)
+    assert d.links[0].facet_axis is None
+
+
+def test_parse_ignores_facet_axis_when_label_not_reslice():
+    cands = [_sig("https://x/a")]
+    raw = ('{"links": [{"url": "https://x/a", "label": "detail", "confidence": 0.9, '
+           '"is_leaf": true, "facet_axis": "title"}]}')
+    d = _parse_decision(raw, cands)
+    assert d.links[0].facet_axis is None

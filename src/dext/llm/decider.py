@@ -15,7 +15,8 @@ from dext.llm.client import LLMClient
 from dext.llm.prompts import build_decider_messages
 from dext.page.links import LinkSignal, PageSnapshot
 
-_LABELS = {"college", "faculty_list", "pagination", "followup", "detail", "noise", "login"}
+_LABELS = {"college", "faculty_list", "pagination", "followup", "reslice", "detail", "noise", "login"}
+_RESLICE_AXES = {"title", "letter", "advisor"}
 
 
 @dataclass
@@ -41,6 +42,7 @@ class DecidedLink:
     is_leaf: bool
     org_unit_name: str | None = None
     exclusion_reason: str | None = None
+    facet_axis: str | None = None
 
 
 @dataclass
@@ -67,6 +69,8 @@ def _parse_decision(raw_content: str, candidates: list[LinkSignal]) -> Decision:
         label = item.get("label")
         if label not in _LABELS:
             label = "noise"
+        raw_axis = item.get("facet_axis")
+        facet_axis = raw_axis if (label == "reslice" and raw_axis in _RESLICE_AXES) else None
         try:
             conf = float(item.get("confidence", 0.0))
         except (TypeError, ValueError):
@@ -80,6 +84,7 @@ def _parse_decision(raw_content: str, candidates: list[LinkSignal]) -> Decision:
                 is_leaf=bool(item.get("is_leaf", False)),
                 org_unit_name=item.get("org_unit_name"),
                 exclusion_reason=raw_reason if is_valid_exclusion_reason(raw_reason) else None,
+                facet_axis=facet_axis,
             )
         )
     page_reason = data.get("page_exclusion_reason")
