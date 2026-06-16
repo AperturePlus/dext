@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from dext.llm import OrgUnitContext, extract_professors
 from dext.page.links import PageSnapshot
 from dext.storage.models import NodeStatus
 from dext.engine.retry import classify_extraction_failure
+from dext.types import ProfessorPayload
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,10 @@ class ExtractTask:
 class ExtractionTracker:
     def __init__(self) -> None:
         self.in_flight = 0
+
+
+def _payloads_with_system_homepage(payloads: list[ProfessorPayload], homepage: str) -> list[ProfessorPayload]:
+    return [replace(payload, homepage=homepage) for payload in payloads]
 
 
 async def llm_worker(name: str, queue: asyncio.Queue, storage, llm_client, settings, tracker: ExtractionTracker) -> None:
@@ -59,8 +64,9 @@ async def process_extract_task(task: ExtractTask, storage, llm_client, settings)
             attempt=max(task.attempt_count - 1, 0),
         )
         if result.payloads:
+            payloads = _payloads_with_system_homepage(result.payloads, task.snapshot.url)
             save_result = await storage.writer.save_professors(
-                result.payloads,
+                payloads,
                 org_unit_id=org_unit_id,
                 org_unit_name=org_unit_name,
             )
