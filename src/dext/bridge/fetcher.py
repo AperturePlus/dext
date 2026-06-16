@@ -17,6 +17,7 @@ from dext.bridge.queue import (
     FetchJob, FetchQueue, JobContext, JobStatus, QueueStats, new_job_id, utcnow,
 )
 from dext.types import FetchAction, FetchResult, PaginationState
+from dext.url_policy import has_explicit_port
 
 if TYPE_CHECKING:
     from dext.config import Settings
@@ -59,6 +60,11 @@ class HumanFetcherBridge:
         job = self._resolvable(job_id)
         if job is None:
             return False
+        if has_explicit_port(final_url):
+            logger.info("rejecting complete for job %s with explicit-port final_url=%s", job_id, final_url)
+            job.future.set_result(self._failed_result(job, block_reason="invalid_url:explicit_port"))
+            self._queue.finish(job, JobStatus.failed)
+            return True
         result = FetchResult(
             identity_url=job.identity_url or job.url, requested_url=job.url, final_url=final_url,
             status_code=None, html=repair_mojibake_text(html), title=repair_mojibake_text(title),
@@ -86,6 +92,9 @@ class HumanFetcherBridge:
 
     def override(self, job_id: str, new_url: str) -> FetchJob | None:
         """Swap the in-flight job's URL, keeping the same id/future/assigned status."""
+        if has_explicit_port(new_url):
+            logger.info("rejecting override for job %s with explicit-port url=%s", job_id, new_url)
+            return None
         job = self._queue.find(job_id)
         if job is None:
             return None

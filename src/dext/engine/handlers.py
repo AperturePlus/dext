@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict
+from urllib.parse import urlsplit
 
 from dext.exclusions import is_valid_exclusion_reason
 from dext.engine.names import clean_org_unit_name
@@ -432,4 +433,8 @@ async def handle_detail(node: ClaimedNode, snapshot: PageSnapshot, deps: Handler
 
 
 def normalize_discovered_url(url: str, base: str) -> str:
-    return normalize_url(url, base) or url
+    normalized = normalize_url(url, base)
+    if normalized is not None:
+        return normalized
+    parts = urlsplit(url.strip())
+    return url.strip() if parts.scheme and parts.scheme not in ("http", "https") else ""

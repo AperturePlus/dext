@@ -10,13 +10,15 @@ def test_fragment_is_stripped():
     assert normalize_url("page.htm#top", "https://x.edu.cn/") == "https://x.edu.cn/page.htm"
 
 
-def test_host_lowercased_and_default_port_dropped():
-    assert normalize_url("HTTP://X.EDU.CN:80/a", "https://x.edu.cn/") == "http://x.edu.cn/a"
-    assert normalize_url("https://x.edu.cn:443/a", "https://x.edu.cn/") == "https://x.edu.cn/a"
+def test_host_lowercased_without_explicit_port():
+    assert normalize_url("HTTP://X.EDU.CN/a", "https://x.edu.cn/") == "http://x.edu.cn/a"
 
 
-def test_nondefault_port_kept():
-    assert normalize_url("https://x.edu.cn:8443/a", "https://x.edu.cn/") == "https://x.edu.cn:8443/a"
+def test_explicit_ports_are_rejected_even_defaults():
+    assert normalize_url("https://x.edu.cn:8443/a", "https://x.edu.cn/") is None
+    assert normalize_url("https://x.edu.cn:443/a", "https://x.edu.cn/") is None
+    assert normalize_url("http://x.edu.cn:80/a", "https://x.edu.cn/") is None
+    assert normalize_url("/a", "https://x.edu.cn:443/") is None
 
 
 def test_trailing_path_slash_stripped_but_root_kept():
@@ -50,6 +52,7 @@ def test_empty_or_none_href_returns_none():
 def test_same_site_exact_host():
     assert same_site("https://x.edu.cn/a", "https://x.edu.cn/b")
     assert not same_site("https://a.x.edu.cn/a", "https://b.x.edu.cn/a")
+    assert not same_site("https://x.edu.cn:443/a", "https://x.edu.cn/b")
 
 
 def test_same_site_loose_registrable_domain():
@@ -61,3 +64,4 @@ def test_same_site_loose_registrable_domain():
 def test_is_offsite_uses_loose_registrable_domain():
     assert not is_offsite("https://math.xjtu.edu.cn/p", "https://www.xjtu.edu.cn/list.htm")
     assert is_offsite("https://third-party.com/p", "https://www.xjtu.edu.cn/list.htm")
+    assert is_offsite("https://math.xjtu.edu.cn:443/p", "https://www.xjtu.edu.cn/list.htm")

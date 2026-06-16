@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
-_DEFAULT_PORTS = {"http": 80, "https": 443}
+from dext.url_policy import has_explicit_port, has_explicit_port_parts
 
 # Common multi-label public suffixes (KISS, no public-suffix-list dependency).
 _MULTI_SUFFIXES = frozenset(
@@ -25,9 +25,9 @@ _MULTI_SUFFIXES = frozenset(
 def normalize_url(href: str | None, base_url: str) -> str | None:
     """Resolve `href` against `base_url` into a normalized identity URL, or None.
 
-    Steps: strip ends → urljoin to absolute → reject non-http(s) → lowercase host
-    → drop default port → strip a trailing path slash (root "/" kept) → drop
-    fragment → keep query verbatim.
+    Steps: strip ends → urljoin to absolute → reject non-http(s) and any explicit
+    host port → lowercase host → strip a trailing path slash (root "/" kept) →
+    drop fragment → keep query verbatim.
     """
     if href is None:
         return None
@@ -39,12 +39,12 @@ def normalize_url(href: str | None, base_url: str) -> str | None:
     scheme = parts.scheme.lower()
     if scheme not in ("http", "https"):
         return None
+    if has_explicit_port_parts(parts):
+        return None
     host = (parts.hostname or "").lower()
     if not host:
         return None
     netloc = host
-    if parts.port is not None and parts.port != _DEFAULT_PORTS.get(scheme):
-        netloc = f"{host}:{parts.port}"
     path = parts.path
     if len(path) > 1 and path.endswith("/"):
         path = path.rstrip("/")
@@ -68,6 +68,8 @@ def _registrable_domain(host: str) -> str:
 def same_site(a: str, b: str, *, loose: bool = False) -> bool:
     """Same host (default), or same registrable domain when `loose=True`
     (so subdomains of one university collapse together — spec §4 "宽松可配")."""
+    if has_explicit_port(a) or has_explicit_port(b):
+        return False
     ha, hb = _host(a), _host(b)
     if not ha or not hb:
         return False

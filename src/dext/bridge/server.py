@@ -18,6 +18,7 @@ from dext.bridge.decision import DecisionCenter, PendingDecision
 from dext.bridge.fetcher import HumanFetcherBridge
 from dext.bridge.queue import FetchJob, JobContext, QueueStats
 from dext.types import FetchAction, PaginationState
+from dext.url_policy import has_explicit_port
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +79,14 @@ def serialize_stats(stats: QueueStats) -> dict:
 
 def parse_pagination_state(d: dict) -> PaginationState | None:
     try:
+        synthetic_url = d["synthetic_url"]
+        url = d["url"]
+        if has_explicit_port(str(synthetic_url)) or has_explicit_port(str(url)):
+            raise ValueError("explicit_port")
         return PaginationState(
             kind=d["kind"], state_id=d["state_id"], label=d["label"],
             page_index=int(d["page_index"]), form_name=d["form_name"], fields=dict(d["fields"]),
-            submit=bool(d["submit"]), synthetic_url=d["synthetic_url"], url=d["url"],
+            submit=bool(d["submit"]), synthetic_url=synthetic_url, url=url,
             total_pages=d.get("total_pages"),
         )
     except (KeyError, TypeError, ValueError) as exc:

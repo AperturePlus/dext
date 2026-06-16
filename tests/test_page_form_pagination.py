@@ -72,6 +72,10 @@ def test_no_form_anchors_returns_empty():
     assert extract_form_pagination_states("<a href='/szdw/2.htm'>2</a>", _CURRENT_URL) == []
 
 
+def test_explicit_port_current_url_returns_no_form_states():
+    assert extract_form_pagination_states(_FORM_HTML, "https://example.edu.cn:443/xylb.jsp?py=a") == []
+
+
 def test_merge_dedups_by_synthetic_url_reported_wins():
     parsed = extract_form_pagination_states(_FORM_HTML, _CURRENT_URL)
     reported = [

@@ -13,6 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 from bs4 import BeautifulSoup
 
 from dext.page.links import PageSnapshot
+from dext.page.urls import has_explicit_port
 from dext.types import PaginationState
 
 # Numeric-page patterns (first match wins). Examples: szdw/2.htm, index_3.html,
@@ -116,8 +117,6 @@ _PAGE_ASSIGN_RE = re.compile(
 )
 _GOTO_FIELD_RE = re.compile(r"\b([A-Za-z0-9_]*?)GOPAGE\b", re.I)
 _CURRENT_PAGE_PARAMS = ("PAGENUM", "page", "p", "pn", "fromWenNOWPAGE")
-_FORM_DEFAULT_PORTS = {"http": 80, "https": 443}
-
 # WHATWG application/x-www-form-urlencoded serializer safe set: ASCII alnum + * - . _
 _FORM_SAFE = frozenset(
     b"*-._"
@@ -172,8 +171,6 @@ def _build_synthetic_url(url: str, form_name: str, field_name: str, page_index: 
     scheme = parts.scheme.lower()
     host = (parts.hostname or "").lower()
     netloc = host
-    if parts.port is not None and parts.port != _FORM_DEFAULT_PORTS.get(scheme):
-        netloc = f"{host}:{parts.port}"
     return urlunsplit((scheme, netloc, parts.path, query, ""))
 
 
@@ -231,6 +228,8 @@ def extract_form_pagination_states(html: str, current_url: str) -> list[Paginati
     optionally expand via a GOPAGE input, skip page 1 / current page, and build a
     byte-exact synthetic identity URL per page.
     """
+    if has_explicit_port(current_url):
+        return []
     soup = BeautifulSoup(html or "", "html.parser")
     groups: dict[tuple[str, str], set[int]] = {}
     for anchor in soup.find_all("a", href=True):

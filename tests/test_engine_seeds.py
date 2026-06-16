@@ -65,3 +65,32 @@ async def test_load_seed_nodes_is_idempotent_and_bootstraps_direct_faculty_urls(
         assert synthetic.url == "about:org_unit:物理学院"
         assert {e.edge_type for e in edges} == {EdgeType.belongs_to_org_unit}
     await _close(h)
+
+
+async def test_load_seed_nodes_skips_explicit_port_urls(tmp_path):
+    h = await _writer(tmp_path)
+    university = UniversitySeed(
+        name="测试大学",
+        url="https://x.edu.cn:443",
+        org_unit_listing_urls=["/schools.htm", "https://ok.edu.cn/schools.htm"],
+        org_units=[
+            OrgUnitSeed(name="端口学院", url="https://x.edu.cn:8080/math", faculty_urls=["/math/teachers.htm"]),
+            OrgUnitSeed(name="正常学院", url="https://ok.edu.cn/math", faculty_urls=[
+                "https://ok.edu.cn:443/math/teachers.htm",
+                "https://ok.edu.cn/math/teachers.htm",
+            ]),
+        ],
+    )
+
+    summary = await load_seed_nodes(university, h, _settings(), run_id=1)
+
+    assert summary.org_listing_nodes == 1
+    assert summary.org_units == 1
+    assert summary.faculty_list_nodes == 1
+    async with h.session_factory() as s:
+        urls = {n.url for n in (await s.execute(select(GraphNode))).scalars().all()}
+        assert "https://ok.edu.cn/schools.htm" in urls
+        assert "https://ok.edu.cn/math" in urls
+        assert "https://ok.edu.cn/math/teachers.htm" in urls
+        assert all(":443" not in url and ":8080" not in url for url in urls)
+    await _close(h)

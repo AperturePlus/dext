@@ -24,7 +24,7 @@ def classify_fetch_failure(block_reason: str | None) -> RetryDecision:
         return RetryDecision(NodeStatus.skipped, last_error=reason, resolver="dropped")
     if _is_terminal_unavailable_reason(lowered):
         return RetryDecision(NodeStatus.skipped, last_error=reason, resolver="dropped")
-    if lowered in {"invalid_url", "bad_url"}:
+    if lowered == "bad_url" or lowered.startswith("invalid_url"):
         return RetryDecision(NodeStatus.failed, last_error=reason, resolver="dropped")
     return RetryDecision(NodeStatus.retry, last_error=reason, resolver="retry", retryable=True)
 

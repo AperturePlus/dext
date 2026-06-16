@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from dext.page.urls import normalize_url
 from dext.seed import OrgUnitSeed, UniversitySeed
@@ -88,7 +89,11 @@ def org_node_spec(
 
 
 def normalize_seed_url(url: str, base: str) -> str:
-    return normalize_url(url, base) or url
+    normalized = normalize_url(url, base)
+    if normalized is not None:
+        return normalized
+    parts = urlsplit(url.strip())
+    return url.strip() if parts.scheme and parts.scheme not in ("http", "https") else ""
 
 
 def synthetic_org_url(name: str) -> str:
@@ -104,6 +109,8 @@ async def _seed_org_unit(
     summary: SeedLoadSummary,
 ) -> tuple[int, int | None]:
     org_url = normalize_seed_url(unit.url, university_url) if unit.url else synthetic_org_url(unit.name)
+    if not org_url:
+        return 0, None
     org_id = await storage.writer.upsert_org_unit(
         OrgUnitSpec(name=unit.name, url=org_url, kind=unit.kind, discovered_from_url=university_url)
     )
@@ -140,6 +147,8 @@ async def _seed_org_unit(
 
     for raw_url in unit.faculty_urls:
         faculty_url = normalize_seed_url(raw_url, org_url)
+        if not faculty_url:
+            continue
         faculty_id = await storage.writer.upsert_node(
             node_spec(
                 NodeType.faculty_list_url,
@@ -165,6 +174,8 @@ async def load_seed_nodes(university: UniversitySeed, storage, settings, run_id:
     summary = SeedLoadSummary()
     for raw_url in university.org_unit_listing_urls:
         url = normalize_seed_url(raw_url, university.url)
+        if not url:
+            continue
         await storage.writer.upsert_node(
             node_spec(
                 NodeType.org_listing_url,

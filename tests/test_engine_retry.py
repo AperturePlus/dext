@@ -8,6 +8,7 @@ from dext.storage.models import NodeStatus
 def test_fetch_failure_mapping():
     assert classify_fetch_failure("human_skip").status == NodeStatus.skipped
     assert classify_fetch_failure("invalid_url").status == NodeStatus.failed
+    assert classify_fetch_failure("invalid_url:explicit_port").status == NodeStatus.failed
     timeout = classify_fetch_failure("timeout")
     assert timeout.status == NodeStatus.retry
     assert timeout.retryable is True

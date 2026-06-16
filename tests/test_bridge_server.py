@@ -62,6 +62,20 @@ async def test_full_round_trip_complete(harness):
     assert "计算机学院" in result.html
 
 
+async def test_complete_with_explicit_port_final_url_resolves_as_invalid_url(harness):
+    task = asyncio.ensure_future(harness.bridge.fetch(url="https://x/list", context=JobContext()))
+    job = await _poll_next(harness.client)
+    resp = await _post(
+        harness.client,
+        f"/api/jobs/{job['id']}/complete",
+        {"html": "<h1>bad</h1>", "url": "https://x.edu.cn:8080/list", "title": "", "pagination_states": []},
+    )
+    assert resp.status == 200
+    assert (await resp.json())["status"] == "ok"
+    result = await task
+    assert result.block_reason == "invalid_url:explicit_port"
+
+
 async def test_single_in_flight_returns_204(harness):
     t1 = asyncio.ensure_future(harness.bridge.fetch(url="u1", context=JobContext()))
     t2 = asyncio.ensure_future(harness.bridge.fetch(url="u2", context=JobContext()))
@@ -101,6 +115,19 @@ async def test_override_swaps_url(harness):
     await _post(harness.client, f"/api/jobs/{job['id']}/complete",
                 {"html": "", "url": "https://x/right", "title": "", "pagination_states": []})
     assert (await task).requested_url == "https://x/right"
+
+
+async def test_override_rejects_explicit_port_url(harness):
+    task = asyncio.ensure_future(harness.bridge.fetch(url="https://x/wrong", context=JobContext()))
+    job = await _poll_next(harness.client)
+    resp = await _post(harness.client, f"/api/jobs/{job['id']}/override", {"new_url": "https://x:443/right"})
+    assert resp.status == 204
+    current = await harness.client.get("/api/status")
+    body = await current.json()
+    assert body["current_job"]["url"] == "https://x/wrong"
+    await _post(harness.client, f"/api/jobs/{job['id']}/complete",
+                {"html": "", "url": "https://x/wrong", "title": "", "pagination_states": []})
+    assert (await task).requested_url == "https://x/wrong"
 
 
 async def test_override_unknown_job_is_204(harness):
@@ -164,3 +191,17 @@ async def test_pagination_states_parsed_into_result(harness):
     assert len(result.pagination_states) == 1          # malformed one dropped
     assert result.pagination_states[0].page_index == 2
     assert result.pagination_states[0].total_pages == 5
+
+
+async def test_explicit_port_pagination_states_are_dropped(harness):
+    task = asyncio.ensure_future(harness.bridge.fetch(url="https://x/list", context=JobContext()))
+    job = await _poll_next(harness.client)
+    good = {"kind": "form_submit", "state_id": "form:f:p:2", "label": "f 第 2 页", "page_index": 2,
+            "total_pages": 5, "form_name": "f", "fields": {"p": "2"}, "submit": True,
+            "synthetic_url": "https://x/list?__ycl_page=2", "url": "https://x/list"}
+    bad = {**good, "state_id": "form:f:p:3", "page_index": 3,
+           "synthetic_url": "https://x.edu.cn:443/list?__ycl_page=3", "url": "https://x/list"}
+    await _post(harness.client, f"/api/jobs/{job['id']}/complete",
+                {"html": "", "url": "https://x/list", "title": "", "pagination_states": [bad, good]})
+    result = await task
+    assert [s.page_index for s in result.pagination_states] == [2]

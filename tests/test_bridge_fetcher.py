@@ -39,6 +39,17 @@ async def test_fetch_resolves_on_complete_with_repaired_html():
     assert b.stats().completed == 1
 
 
+async def test_complete_with_explicit_port_final_url_fails_job():
+    b = _bridge()
+    task = asyncio.ensure_future(b.fetch(url="https://x/list", context=_ctx()))
+    job = await _await_job(b)
+    assert b.complete(job.id, html="<h1>bad</h1>", final_url="https://x.edu.cn:443/list", title="t") is True
+    result = await task
+    assert result.block_reason == "invalid_url:explicit_port"
+    assert result.final_url == "https://x/list"
+    assert b.stats().failed == 1
+
+
 async def test_identity_url_preserved_as_cache_key():
     b = _bridge()
     task = asyncio.ensure_future(
@@ -122,3 +133,13 @@ async def test_override_swaps_url_keeps_job_and_future():
     b.complete(job.id, html="", final_url="https://x/right", title="")
     result = await task
     assert result.requested_url == "https://x/right"
+
+
+async def test_override_rejects_explicit_port_url():
+    b = _bridge()
+    task = asyncio.ensure_future(b.fetch(url="https://x/wrong", context=_ctx()))
+    job = await _await_job(b)
+    assert b.override(job.id, "https://x.edu.cn:8080/right") is None
+    assert b.current_job().url == "https://x/wrong"
+    b.complete(job.id, html="", final_url="https://x/wrong", title="")
+    assert (await task).requested_url == "https://x/wrong"

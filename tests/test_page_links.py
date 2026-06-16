@@ -65,6 +65,18 @@ def test_offsite_signal_marked_not_same_site():
     assert ext.same_site is False
 
 
+def test_explicit_port_anchor_is_dropped():
+    html = """
+    <html><body>
+      <a href="https://ce.lzu.edu.cn:8080/staff/static/show_szdw.html?userId=abc">刘木</a>
+      <a href="/staff/static/show_szdw.html?userId=ok">正常</a>
+    </body></html>
+    """
+    snap = build_snapshot(html, "https://ce.lzu.edu.cn/list.htm", "https://ce.lzu.edu.cn/list.htm", "")
+    assert snap.links == ["https://ce.lzu.edu.cn/staff/static/show_szdw.html?userId=ok"]
+    assert [s.anchor_text for s in snap.link_signals] == ["正常"]
+
+
 def test_build_snapshot_handles_empty_html():
     snap = build_snapshot("", "https://x.edu.cn/", "https://x.edu.cn/", "")
     assert snap.links == []
