@@ -15,7 +15,7 @@ from dext.page import (
     PageSnapshot,
     extract_form_pagination_states,
     filter_detail_candidates,
-    find_followup_links,
+    filter_navigation_candidates,
     find_url_pagination,
     merge_pagination_states,
     normalize_url,
@@ -274,34 +274,6 @@ async def _create_url_pagination_nodes(
     return count
 
 
-async def _create_followup_nodes(
-    node: ClaimedNode,
-    snapshot: PageSnapshot,
-    deps: HandlerDeps,
-    *,
-    exclude_urls: set[str] | None = None,
-) -> int:
-    if not _within_depth(node, deps.settings):
-        return 0
-    count = 0
-    excluded = exclude_urls or set()
-    for cand in find_followup_links(snapshot, snapshot.url, limit=deps.settings.followup_page_limit):
-        if cand.url in excluded:
-            continue
-        if _excluded_link_reason(snapshot, cand.url, org_unit_name=node.org_unit_name):
-            continue
-        await _create_child(
-            deps,
-            node,
-            NodeType.faculty_followup_url,
-            url=cand.url,
-            edge_type=EdgeType.discovered_on_page,
-            metadata={"label": cand.label, "followup_kind": "category"},
-        )
-        count += 1
-    return count
-
-
 def _action_from_state(state: PaginationState) -> FetchAction:
     return FetchAction(
         kind=state.kind,
@@ -344,7 +316,7 @@ async def _create_form_pagination_nodes(node: ClaimedNode, snapshot: PageSnapsho
 
 
 async def _create_decided_nodes(node: ClaimedNode, snapshot: PageSnapshot, deps: HandlerDeps) -> int:
-    filter_result = filter_detail_candidates(
+    filter_result = filter_navigation_candidates(
         snapshot,
         FilterContext(faculty_list_url=snapshot.url, already_enriched=set()),
     )
@@ -392,7 +364,18 @@ async def _create_decided_nodes(node: ClaimedNode, snapshot: PageSnapshot, deps:
                 metadata={"label": link.label},
             )
             count += 1
-    logger.info("detail filter for %s kept=%d dropped=%s", snapshot.url, len(filter_result.kept), filter_result.dropped)
+    logger.info(
+        "navigation filter for %s kept=%d dropped=%s selected=%d parse_error=%s",
+        snapshot.url,
+        len(filter_result.kept),
+        filter_result.dropped,
+        count,
+        decision.parse_error,
+    )
+    if decision.parse_error:
+        raise RuntimeError("decider_invalid_json")
+    if filter_result.kept and count == 0:
+        raise RuntimeError("decider_no_navigation_links")
     return count
 
 
@@ -410,9 +393,19 @@ async def handle_faculty_page(node: ClaimedNode, snapshot: PageSnapshot, deps: H
     created = 0
     detail_like_urls = _detail_like_urls(snapshot)
     created += await _create_url_pagination_nodes(node, snapshot, deps, exclude_urls=detail_like_urls)
-    created += await _create_followup_nodes(node, snapshot, deps, exclude_urls=detail_like_urls)
     created += await _create_form_pagination_nodes(node, snapshot, deps)
-    created += await _create_decided_nodes(node, snapshot, deps)
+    try:
+        created += await _create_decided_nodes(node, snapshot, deps)
+    except RuntimeError as exc:
+        reason = str(exc) or "decider_failed"
+        await deps.storage.writer.mark_node(
+            node.id,
+            NodeStatus.retry,
+            last_error=reason,
+            content_hash=snapshot.content_hash,
+        )
+        logger.info("retry faculty page %s reason=%s", snapshot.url, reason)
+        return
     await deps.storage.writer.mark_node(node.id, NodeStatus.done, content_hash=snapshot.content_hash)
     logger.info("faculty page %s created %d child nodes", snapshot.url, created)
 

@@ -6,7 +6,6 @@ from sqlalchemy import select
 from dext.engine.handlers import (
     HandlerDeps,
     handle_faculty_page,
-    _create_followup_nodes,
     _create_form_pagination_nodes,
     _create_child,
     _create_url_pagination_nodes,
@@ -41,7 +40,7 @@ def _settings():
     return SimpleNamespace(max_attempts=3, max_depth=4, followup_page_limit=36)
 
 
-async def test_faculty_page_creates_pagination_followup_and_form_nodes(tmp_path):
+async def test_faculty_page_creates_url_and_form_pagination_nodes(tmp_path):
     h = await _storage(tmp_path)
     org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="数学学院", url="https://x.edu.cn/math"))
     parent_id = await h.writer.upsert_node(
@@ -86,15 +85,14 @@ async def test_faculty_page_creates_pagination_followup_and_form_nodes(tmp_path)
         raw_html=html,
     )
     await _create_url_pagination_nodes(node, snap, deps)
-    await _create_followup_nodes(node, snap, deps)
     await _create_form_pagination_nodes(node, snap, deps)
 
     async with h.session_factory() as s:
         nodes = (await s.execute(select(GraphNode))).scalars().all()
         edges = (await s.execute(select(GraphEdge))).scalars().all()
         assert sum(1 for n in nodes if n.type == NodeType.pagination_url) == 2
-        assert sum(1 for n in nodes if n.type == NodeType.faculty_followup_url) == 1
-        assert {e.edge_type for e in edges} == {EdgeType.pagination_of, EdgeType.discovered_on_page}
+        assert sum(1 for n in nodes if n.type == NodeType.faculty_followup_url) == 0
+        assert {e.edge_type for e in edges} == {EdgeType.pagination_of}
         form_node = next(n for n in nodes if (n.metadata_json or {}).get("pagination_kind") == "form")
         action = fetch_action_from_metadata(form_node.metadata_json)
         assert action.synthetic_url == form_node.metadata_json["identity_url"]
@@ -328,6 +326,221 @@ async def test_faculty_page_skips_scu_confirmed_excluded_page(tmp_path):
         row = (await s.execute(select(GraphNode).where(GraphNode.id == node_id))).scalar_one()
         assert row.status == NodeStatus.skipped
         assert row.last_error == "excluded:postdoc"
+    await _close(h)
+
+
+async def test_faculty_page_skips_explicit_admin_page_title(tmp_path):
+    h = await _storage(tmp_path)
+    org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="法学院", url="https://law.scu.edu.cn/"))
+    node_id = await h.writer.upsert_node(
+        node_spec(
+            NodeType.faculty_list_url,
+            url="https://law.scu.edu.cn/szdw/xz.htm",
+            settings=_settings(),
+            run_id=1,
+            org_unit_id=org_id,
+            org_unit_name="法学院",
+        )
+    )
+    html = "<html><head><title>专职行政-四川大学法学院</title></head><body>专职行政</body></html>"
+    snap = build_snapshot(
+        html,
+        "https://law.scu.edu.cn/szdw/xz.htm",
+        "https://law.scu.edu.cn/szdw/xz.htm",
+        "专职行政-四川大学法学院",
+    )
+    node = ClaimedNode(
+        id=node_id,
+        node_key="faculty",
+        type=NodeType.faculty_list_url,
+        url=snap.url,
+        org_unit_id=org_id,
+        org_unit_name="法学院",
+        depth=1,
+        attempt_count=1,
+        priority_score=80,
+        content_hash=None,
+        metadata=None,
+    )
+    deps = HandlerDeps(
+        storage=h,
+        llm_client=None,
+        settings=_settings(),
+        run_id=1,
+        university_name="四川大学",
+        extract_queue=asyncio.Queue(),
+        raw_html=html,
+    )
+    await handle_faculty_page(node, snap, deps)
+
+    async with h.session_factory() as s:
+        row = (await s.execute(select(GraphNode).where(GraphNode.id == node_id))).scalar_one()
+        assert row.status == NodeStatus.skipped
+        assert row.last_error == "excluded:administration"
+    await _close(h)
+
+
+async def test_faculty_page_llm_followup_decision_creates_category_nodes(tmp_path):
+    h = await _storage(tmp_path)
+    org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="法学院（律师学院）", url="https://law.scu.edu.cn/"))
+    node_id = await h.writer.upsert_node(
+        node_spec(
+            NodeType.faculty_list_url,
+            url="https://law.scu.edu.cn/szdw/zzjzg_link/zgzc.htm",
+            settings=_settings(),
+            run_id=1,
+            org_unit_id=org_id,
+            org_unit_name="法学院（律师学院）",
+        )
+    )
+    html = """
+    <html><body>
+      <a href="/szdw/zzjzg_link/fgzc.htm">副高职称</a>
+      <a href="/szdw/zzjzg_link/zjzc.htm">中级职称</a>
+      <a href="/info/1360/15754.htm">左卫民</a>
+    </body></html>
+    """
+    snap = build_snapshot(
+        html,
+        "https://law.scu.edu.cn/szdw/zzjzg_link/zgzc.htm",
+        "https://law.scu.edu.cn/szdw/zzjzg_link/zgzc.htm",
+        "正高职称-四川大学法学院",
+    )
+
+    async def _fake_decide(*args, **kwargs):
+        return SimpleNamespace(
+            links=[
+                SimpleNamespace(
+                    url="https://law.scu.edu.cn/szdw/zzjzg_link/fgzc.htm",
+                    label="followup",
+                    confidence=0.95,
+                    is_leaf=False,
+                ),
+                SimpleNamespace(
+                    url="https://law.scu.edu.cn/szdw/zzjzg_link/zjzc.htm",
+                    label="followup",
+                    confidence=0.95,
+                    is_leaf=False,
+                ),
+                SimpleNamespace(
+                    url="https://law.scu.edu.cn/info/1360/15754.htm",
+                    label="detail",
+                    confidence=0.9,
+                    is_leaf=True,
+                ),
+            ],
+            parse_error=None,
+        )
+
+    import dext.engine.handlers as handlers_mod
+
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = _fake_decide
+    try:
+        node = ClaimedNode(
+            id=node_id,
+            node_key="faculty",
+            type=NodeType.faculty_list_url,
+            url=snap.url,
+            org_unit_id=org_id,
+            org_unit_name="法学院（律师学院）",
+            depth=1,
+            attempt_count=1,
+            priority_score=80,
+            content_hash=None,
+            metadata=None,
+        )
+        deps = HandlerDeps(
+            storage=h,
+            llm_client=None,
+            settings=_settings(),
+            run_id=1,
+            university_name="四川大学",
+            extract_queue=asyncio.Queue(),
+            raw_html=html,
+        )
+        await handle_faculty_page(node, snap, deps)
+    finally:
+        handlers_mod.decide_links = orig
+
+    async with h.session_factory() as s:
+        nodes = (await s.execute(select(GraphNode))).scalars().all()
+        followups = [n for n in nodes if n.type == NodeType.faculty_followup_url]
+        details = [n for n in nodes if n.type == NodeType.detail_url]
+        parent = next(n for n in nodes if n.id == node_id)
+        assert parent.status == NodeStatus.done
+        assert {n.url for n in followups} == {
+            "https://law.scu.edu.cn/szdw/zzjzg_link/fgzc.htm",
+            "https://law.scu.edu.cn/szdw/zzjzg_link/zjzc.htm",
+        }
+        assert [n.url for n in details] == ["https://law.scu.edu.cn/info/1360/15754.htm"]
+    await _close(h)
+
+
+async def test_faculty_page_retries_when_llm_selects_no_navigation(tmp_path):
+    h = await _storage(tmp_path)
+    org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="法学院（律师学院）", url="https://law.scu.edu.cn/"))
+    node_id = await h.writer.upsert_node(
+        node_spec(
+            NodeType.faculty_list_url,
+            url="https://law.scu.edu.cn/szdw/zzjzg_link/zgzc.htm",
+            settings=_settings(),
+            run_id=1,
+            org_unit_id=org_id,
+            org_unit_name="法学院（律师学院）",
+        )
+    )
+    html = """
+    <html><body>
+      <a href="/szdw/zzjzg_link/fgzc.htm">副高职称</a>
+      <a href="/szdw/zzjzg_link/zjzc.htm">中级职称</a>
+    </body></html>
+    """
+    snap = build_snapshot(
+        html,
+        "https://law.scu.edu.cn/szdw/zzjzg_link/zgzc.htm",
+        "https://law.scu.edu.cn/szdw/zzjzg_link/zgzc.htm",
+        "正高职称-四川大学法学院",
+    )
+
+    async def _fake_decide(*args, **kwargs):
+        return SimpleNamespace(links=[], parse_error=None)
+
+    import dext.engine.handlers as handlers_mod
+
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = _fake_decide
+    try:
+        node = ClaimedNode(
+            id=node_id,
+            node_key="faculty",
+            type=NodeType.faculty_list_url,
+            url=snap.url,
+            org_unit_id=org_id,
+            org_unit_name="法学院（律师学院）",
+            depth=1,
+            attempt_count=1,
+            priority_score=80,
+            content_hash=None,
+            metadata=None,
+        )
+        deps = HandlerDeps(
+            storage=h,
+            llm_client=None,
+            settings=_settings(),
+            run_id=1,
+            university_name="四川大学",
+            extract_queue=asyncio.Queue(),
+            raw_html=html,
+        )
+        await handle_faculty_page(node, snap, deps)
+    finally:
+        handlers_mod.decide_links = orig
+
+    async with h.session_factory() as s:
+        row = (await s.execute(select(GraphNode).where(GraphNode.id == node_id))).scalar_one()
+        assert row.status == NodeStatus.retry
+        assert row.last_error == "decider_no_navigation_links"
     await _close(h)
 
 
