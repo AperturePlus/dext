@@ -9,12 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from dext.exclusions import classify_excluded_page_link
 from dext.page.links import LinkSignal, PageSnapshot
 from dext.page.urls import is_offsite
 
 _DROP_CODES = (
-    "excluded", "external", "duplicate", "already_enriched",
+    "external", "duplicate", "already_enriched",
 )
 
 
@@ -46,9 +45,6 @@ def filter_navigation_candidates(snapshot: PageSnapshot, context: FilterContext)
         seen.add(url)
         if context.same_site_only and is_offsite(url, context.faculty_list_url):
             dropped["external"] += 1
-            continue
-        if classify_excluded_page_link(url=url, anchor_text=sig.anchor_text, heading=sig.heading):
-            dropped["excluded"] += 1
             continue
         kept.append(sig)
     return FilterResult(kept=kept, dropped=dropped)

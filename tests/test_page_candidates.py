@@ -4,12 +4,6 @@ from dext.page.candidates import (
     filter_detail_candidates,
     filter_navigation_candidates,
 )
-from dext.exclusions import (
-    BASIC_EDUCATION_CENTER,
-    EXPERIMENT_CENTER,
-    classify_excluded_org_unit,
-    classify_excluded_page_link,
-)
 from dext.page.links import LinkSignal, PageSnapshot
 
 _LIST_URL = "https://x.edu.cn/szdw/index.htm"
@@ -89,43 +83,7 @@ def test_drop_already_enriched():
 
 def test_dropped_dict_always_has_all_reason_codes():
     res = filter_detail_candidates(_snap([_sig("https://x.edu.cn/szdw/z.htm", "张三")]), _ctx())
-    assert set(res.dropped) == {"excluded", "external", "duplicate", "already_enriched"}
-
-
-def test_drop_scu_confirmed_excluded_faculty_pages():
-    sigs = [
-        _sig("https://sesu.scu.edu.cn/szdw/ltxjs.htm", "离退休教师"),
-        _sig("https://sesu.scu.edu.cn/szdw/bshldz.htm", "博士后流动站"),
-        _sig("https://lj.scu.edu.cn/szzr/ltxjzg.htm", "离退休教职工"),
-        _sig("https://x.edu.cn/szdw/zhangsan.htm", "张三 教授"),
-    ]
-    res = filter_detail_candidates(_snap(sigs), _ctx(same_site_only=False))
-    assert [s.url for s in res.kept] == ["https://x.edu.cn/szdw/zhangsan.htm"]
-    assert res.dropped["excluded"] == 3
-
-
-def test_drop_explicit_staff_and_admin_exclusion_links():
-    sigs = [
-        _sig("https://x.edu.cn/szdw/rsgz.htm", "人事工作"),
-        _sig("https://x.edu.cn/szdw/jjzx.htm", "基教中心"),
-        _sig("https://x.edu.cn/szdw/syzx.htm", "实验中心"),
-        _sig("https://x.edu.cn/szdw/jfg.htm", "教辅岗"),
-        _sig("https://x.edu.cn/szdw/xzg.htm", "行政岗"),
-        _sig("https://x.edu.cn/szdw/zzxz.htm", "专职行政"),
-        _sig("https://x.edu.cn/szdw/xzry.htm", "行政人员"),
-        _sig("https://x.edu.cn/szdw/xztd.htm", "行政团队"),
-        _sig("https://x.edu.cn/szdw/xz.htm", "行政"),
-        _sig("https://x.edu.cn/szdw/zhangsan.htm", "张三"),
-    ]
-    res = filter_navigation_candidates(_snap(sigs), _ctx())
-    assert [s.anchor_text for s in res.kept] == ["张三"]
-    assert res.dropped["excluded"] == 9
-
-
-def test_org_unit_excludes_basic_education_and_experiment_centers():
-    assert classify_excluded_org_unit("基教中心") == BASIC_EDUCATION_CENTER
-    assert classify_excluded_org_unit("基础教学中心") == BASIC_EDUCATION_CENTER
-    assert classify_excluded_org_unit("实验中心") == EXPERIMENT_CENTER
+    assert set(res.dropped) == {"external", "duplicate", "already_enriched"}
 
 
 def test_keeps_admin_law_and_admin_management_teacher_signals():
@@ -142,9 +100,6 @@ def test_keeps_admin_law_and_admin_management_teacher_signals():
         "张三 行政职务：系主任",
         "李四 行政管理研究方向",
     ]
-    assert res.dropped["excluded"] == 0
-    assert classify_excluded_page_link(title="行政法教师团队") is None
-    assert classify_excluded_page_link(heading="行政管理系教师") is None
 
 
 def test_navigation_candidates_keep_scu_law_title_categories_for_llm():
