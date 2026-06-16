@@ -53,3 +53,28 @@ def test_parse_invalid_json_sets_error():
 def test_parse_page_is_leaf_flag():
     d = _parse_decision('{"links": [], "page_is_leaf": true}', [])
     assert d.page_is_leaf is True
+
+
+def test_parse_keeps_valid_link_exclusion_reason():
+    cands = [_sig("https://x/a")]
+    raw = ('{"links": [{"url": "https://x/a", "label": "noise", "confidence": 0.9, '
+           '"is_leaf": false, "exclusion_reason": "retired"}], "page_is_leaf": false}')
+    d = _parse_decision(raw, cands)
+    assert d.links[0].exclusion_reason == "retired"
+
+
+def test_parse_nulls_invalid_link_exclusion_reason():
+    cands = [_sig("https://x/a")]
+    raw = ('{"links": [{"url": "https://x/a", "label": "noise", "confidence": 0.9, '
+           '"is_leaf": false, "exclusion_reason": "bogus"}]}')
+    d = _parse_decision(raw, cands)
+    assert d.links[0].exclusion_reason is None
+
+
+def test_parse_page_exclusion_reason_valid_and_invalid():
+    valid = _parse_decision('{"links": [], "page_exclusion_reason": "sino_foreign_joint"}', [])
+    assert valid.page_exclusion_reason == "sino_foreign_joint"
+    invalid = _parse_decision('{"links": [], "page_exclusion_reason": "nope"}', [])
+    assert invalid.page_exclusion_reason is None
+    missing = _parse_decision('{"links": []}', [])
+    assert missing.page_exclusion_reason is None

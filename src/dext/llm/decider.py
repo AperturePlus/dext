@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
+from dext.exclusions import is_valid_exclusion_reason
 from dext.llm.client import LLMClient
 from dext.llm.prompts import build_decider_messages
 from dext.page.links import LinkSignal, PageSnapshot
@@ -39,12 +40,14 @@ class DecidedLink:
     confidence: float
     is_leaf: bool
     org_unit_name: str | None = None
+    exclusion_reason: str | None = None
 
 
 @dataclass
 class Decision:
     links: list[DecidedLink] = field(default_factory=list)
     page_is_leaf: bool = False
+    page_exclusion_reason: str | None = None
     raw_preview: str = ""
     parse_error: str | None = None
 
@@ -68,6 +71,7 @@ def _parse_decision(raw_content: str, candidates: list[LinkSignal]) -> Decision:
             conf = float(item.get("confidence", 0.0))
         except (TypeError, ValueError):
             conf = 0.0
+        raw_reason = item.get("exclusion_reason")
         links.append(
             DecidedLink(
                 url=url,
@@ -75,9 +79,16 @@ def _parse_decision(raw_content: str, candidates: list[LinkSignal]) -> Decision:
                 confidence=conf,
                 is_leaf=bool(item.get("is_leaf", False)),
                 org_unit_name=item.get("org_unit_name"),
+                exclusion_reason=raw_reason if is_valid_exclusion_reason(raw_reason) else None,
             )
         )
-    return Decision(links=links, page_is_leaf=bool(data.get("page_is_leaf", False)), raw_preview=raw[:500])
+    page_reason = data.get("page_exclusion_reason")
+    return Decision(
+        links=links,
+        page_is_leaf=bool(data.get("page_is_leaf", False)),
+        page_exclusion_reason=page_reason if is_valid_exclusion_reason(page_reason) else None,
+        raw_preview=raw[:500],
+    )
 
 
 async def decide_links(snapshot: PageSnapshot, candidates: list[LinkSignal],
