@@ -364,3 +364,37 @@ async def test_decider_runs_concurrently_off_the_fetch_loop(tmp_path):
         assert len(nodes) == 4
         assert all(n.status == NodeStatus.done for n in nodes)
     await _close(storage)
+
+
+async def test_single_fetch_in_flight_across_sibling_nodes(tmp_path):
+    storage = await _storage(tmp_path)
+    settings = _settings(llm_workers=4)
+    parent = "https://x.edu.cn/szdw.htm"
+    pagination_urls = [
+        "https://x.edu.cn/szdw/2.htm",
+        "https://x.edu.cn/szdw/3.htm",
+        "https://x.edu.cn/szdw/4.htm",
+    ]
+    pages = {parent: "<html><body>师资</body></html>"}
+    for u in pagination_urls:
+        pages[u] = "<html><body>末页</body></html>"
+    bridge = CountingBridge(pages, fetch_delay=0.01)
+    decider = FakeDecider(parent, pagination_urls, child_delay=0.03)
+
+    await storage.writer.upsert_node(
+        node_spec(NodeType.faculty_list_url, url=parent, settings=settings, run_id=1)
+    )
+
+    import dext.engine.handlers as handlers_mod
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = decider
+    try:
+        summary = await CrawlEngine(storage, bridge, llm_client=None, settings=settings,
+                                    run_id=1, university_name="测试大学").run()
+    finally:
+        handlers_mod.decide_links = orig
+
+    assert bridge.max_in_flight == 1
+    assert bridge.fetch_count == 4
+    assert summary.status == "completed"
+    await _close(storage)
