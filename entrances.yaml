@@ -90,10 +90,151 @@ universities:
   - name: 复旦大学
     url: https://www.fudan.edu.cn/
     location: 上海市
-    org_unit_listing_urls:
-      - https://www.fudan.edu.cn/489/list.htm#
-      - https://www.fudan.edu.cn/491/list.htm
-      - https://shmc.fudan.edu.cn/szll/list.htm
+    org_units:
+      - name: 中国语言文学系
+        kind: department
+        faculty_urls:
+          - https://chinese.fudan.edu.cn/xktd/list.htm
+      - name: 外国语言文学学院
+        kind: college
+        faculty_urls:
+          - https://dfll.fudan.edu.cn/27647/list.htm
+      - name: 历史学系
+        kind: department
+        faculty_urls:
+          - https://history.fudan.edu.cn/szdw/zzjs.htm
+      - name: 旅游学系
+        kind: department
+        faculty_urls:
+          - https://tourism.fudan.edu.cn/szdw/jsml.htm
+      - name: 文物与博物馆学系
+        kind: department
+        faculty_urls:
+          - https://www.chm.fudan.edu.cn/11397/list.htm
+      - name: 哲学学院
+        kind: college
+        faculty_urls:
+          - https://philosophy.fudan.edu.cn/14253/list.htm
+      - name: 法学院
+        kind: college
+        faculty_urls:
+          - https://law.fudan.edu.cn/zrjs/list.htm
+      - name: 国际关系与公共事务学院
+        kind: college
+        faculty_urls:
+          - https://sirpa.fudan.edu.cn/jsdw/list.htm
+      - name: 社会发展与公共政策学院
+        kind: college
+        faculty_urls:
+          - https://ssdpp.fudan.edu.cn/jsml/list.htm
+      - name: 新闻学院
+        kind: college
+        faculty_urls:
+          - https://xwxy.fudan.edu.cn/jzygw/list.htm
+      - name: 经济学院
+        kind: college
+        faculty_urls:
+          - https://econ.fudan.edu.cn/szdw1/jsml1/zzjs1.htm
+      - name: 基础医学院
+        kind: college
+        faculty_urls:
+          - https://basicmed.fudan.edu.cn/azc/list.htm
+      - name: 泛海国际金融学院
+        kind: college
+        faculty_urls:
+          - https://fisf.fudan.edu.cn/lists-Professor_introducti.html
+      - name: 管理学院
+        kind: college
+        faculty_urls:
+          - https://www.fdsm.fudan.edu.cn/AboutUs/teachers_dir.html
+      - name: 数学科学学院
+        kind: college
+        faculty_urls:
+          - https://math.fudan.edu.cn/jzyg/list.htm
+      - name: 物理学系
+        kind: department
+        faculty_urls:
+          - https://phys.fudan.edu.cn/7476/list.htm
+      - name: 现代物理研究所核科学与技术系
+        kind: institute
+        faculty_urls:
+          - https://imp.fudan.edu.cn/48903/list.htm
+      - name: 化学系
+        kind: department
+        faculty_urls:
+          - https://chemistry.fudan.edu.cn/45118/list.htm
+      - name: 马克思主义学院
+        kind: college
+        faculty_urls:
+          - https://som.fudan.edu.cn/15040/list.htm
+      - name: 高分子科学系
+        kind: department
+        faculty_urls:
+          - https://polymer.fudan.edu.cn/31402/list.htm
+      - name: 环境科学与工程系
+        kind: department
+        faculty_urls:
+          - https://environment.fudan.edu.cn/26241/list.htm
+      - name: 大气与海洋科学系
+        kind: department
+        faculty_urls:
+          - https://aos.fudan.edu.cn/people/list.htm
+      - name: 微电子学院
+        kind: college
+        faculty_urls:
+          - https://sme.fudan.edu.cn/apy/list.htm
+      - name: 航空航天系
+        kind: department
+        faculty_urls:
+          - https://aero-mech.fudan.edu.cn/szdw/list.htm
+      - name: 生命科学学院
+        kind: college
+        faculty_urls:
+          - https://life.fudan.edu.cn/28175/list.htm
+      - name: 大数据学院
+        kind: college
+        faculty_urls:
+          - https://sds.fudan.edu.cn/17415/list.htm
+      - name: 护理学院
+        kind: college
+        faculty_urls:
+          - https://nursing.fudan.edu.cn/38887/list.htm
+      - name: 药学院
+        kind: college
+        faculty_urls:
+          - https://spfdu.fudan.edu.cn/zzjs/list.htm
+      - name: 未来信息创新学院
+        kind: college
+        faculty_urls:
+          - https://fit.fudan.edu.cn/Data/List/adw
+      - name: 计算与智能创新学院
+        kind: college
+        faculty_urls:
+          - https://ai.fudan.edu.cn/53161/list.htm
+      - name: 智能材料与未来能源创新学院
+        kind: college
+        faculty_urls:
+          - https://icome.fudan.edu.cn/49292/list.htm
+      - name: 生物医学工程学院
+        kind: college
+        faculty_urls:
+          - https://bme-college.fudan.edu.cn/szdw/list.htm
+      - name: 智能机器人与先进制造创新学院
+        kind: college
+        faculty_urls:
+          - https://ciram.fudan.edu.cn/cslm/list.htm
+      - name: 公共卫生学院
+        kind: college
+        faculty_urls:
+          - https://sph.fudan.edu.cn/employees?cid=23
+      - name: 生物医学研究院
+        kind: institute
+        faculty_urls:
+          - https://ibs.fudan.edu.cn/ysfc/list.htm
+      - name: 脑科学转化研究院
+        kind: institute
+        faculty_urls:
+          - https://itbr.fudan.edu.cn/yjdw1.htm
 
   - name: 同济大学
     url: https://www.tongji.edu.cn/
