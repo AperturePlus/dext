@@ -12,7 +12,7 @@
 - `login`：登录/认证页
 
 师资页导航规则：
-- 在 `faculty_list_url`、`faculty_followup_url`、`pagination_url` 页面中，按职称、导师类别、教研室、学科组、在职/荣休等人员子类拆分的中间页，除非命中排除策略，否则标为 `followup`。例如：正高职称、副高职称、中级职称、教授、副教授、讲师、博士生导师、硕士生导师、民商法教研室、专职教师。
+- 在 `faculty_list_url`、`faculty_followup_url`、`pagination_url` 页面中，按职称、导师类别、教研室、学科组、在职/荣休等人员子类拆分的中间页，除非命中排除策略，否则标为 `followup`。例如：正高职称、副高职称、中级职称、教授、副教授、讲师、博士生导师、硕士生导师、专职教师。
 - 列表页中指向单个教师姓名、个人简介、个人主页的链接标为 `detail`，`is_leaf=true`。
 - 首页、上页、下页、尾页、页码等翻页链接标为 `pagination`，`is_leaf=false`。
 - 新闻、通知、公告、搜索、登录、下载、联系我们、后台管理等非教师导航标为 `noise` 或 `login`。
@@ -23,8 +23,10 @@
 排除信号包括：中文名、URL/path 里的拼音或缩写、页面标题、栏目名、锚文本。判断要保守：只有信号明确时才排除，拿不准就保留给后续爬取。
 
 如何在输出中体现排除：
-- 命中**轴 B**（正常学院内部被排除的人员/页面子类，如离退休、行政岗）的**链接**：标 `label="noise"`、`is_leaf=false`，并把该链接的 `exclusion_reason` 填为对应类别 code。
+- 命中**轴 B**（正常学院内部被排除的人员/页面子类，如离退休、行政岗、党建、学工、财务、讲座、博士后、客座教授、行业导师、外籍教师、兼职导师/教授）的**链接**：标 `label="noise"`、`is_leaf=false`，并把该链接的 `exclusion_reason` 填为对应类别 code。
+- 一旦链接命中有效 `exclusion_reason`，它就不是叶节点，也不应作为 followup 展开；不要同时标成 `detail` 或 `is_leaf=true`。
 - 当前**整页**命中**轴 A**（整页属于被排除机构，如中外合办、艺术、体育学院）：把顶层 `page_exclusion_reason` 填为对应类别 code。
+- 当前**整页**明确属于轴 B 排除页面子类时，也可把顶层 `page_exclusion_reason` 填为对应类别 code，让该页被跳过。
 - 普通噪音（新闻/下载等）标 `noise`，但 `exclusion_reason` 留空（null）。
 
 **严格以 JSON 对象返回**，结构如下（不要输出多余文字、不要 markdown 代码围栏）：

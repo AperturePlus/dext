@@ -126,3 +126,22 @@ def test_navigation_candidates_keep_scu_law_title_categories_for_llm():
         "https://law.scu.edu.cn/szdw/zzjzg_link/zjzc.htm",
         "https://law.scu.edu.cn/info/1360/15754.htm",
     ]
+
+
+def test_semantic_exclusion_terms_are_kept_for_llm_not_prefiltered():
+    sigs = [
+        _sig("https://x.edu.cn/djgz/index.htm", "党建工作"),
+        _sig("https://x.edu.cn/xsgz/index.htm", "学工队伍"),
+        _sig("https://x.edu.cn/cwgl/index.htm", "财务管理"),
+        _sig("https://x.edu.cn/jz/index.htm", "学术讲座"),
+        _sig("https://x.edu.cn/bsh/index.htm", "博士后"),
+        _sig("https://x.edu.cn/kzjs/index.htm", "客座教授"),
+        _sig("https://x.edu.cn/hyds/index.htm", "行业导师"),
+        _sig("https://x.edu.cn/wjjs/index.htm", "外籍教师"),
+        _sig("https://x.edu.cn/jzds/index.htm", "兼职导师"),
+    ]
+
+    res = filter_navigation_candidates(_snap(sigs), _ctx())
+
+    assert [s.url for s in res.kept] == [s.url for s in sigs]
+    assert sum(res.dropped.values()) == 0
