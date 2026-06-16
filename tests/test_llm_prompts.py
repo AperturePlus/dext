@@ -147,3 +147,11 @@ def test_truncate_under_budget_unchanged_over_budget_shrinks():
     out = truncate_to_budget(long_text, 50)
     assert 0 < len(out) < len(long_text)
     assert truncate_to_budget("", 50) == ""
+
+
+def test_save_professors_tool_has_optional_exclusion_reason():
+    props = SAVE_PROFESSORS_TOOL["function"]["parameters"]["properties"]
+    assert "exclusion_reason" in props
+    assert props["exclusion_reason"]["type"] == "string"
+    # professors 仍是唯一必填项
+    assert SAVE_PROFESSORS_TOOL["function"]["parameters"]["required"] == ["professors"]

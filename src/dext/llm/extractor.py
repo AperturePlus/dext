@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from dext.exclusions import is_valid_exclusion_reason
 from dext.llm.client import LLMClient, LLMResponse
 from dext.llm.prompts import SAVE_PROFESSORS_TOOL, build_extractor_messages
 from dext.llm.retry import assess_no_data
@@ -31,9 +32,10 @@ class OrgUnitContext:
 @dataclass
 class ExtractionResult:
     payloads: list[ProfessorPayload] = field(default_factory=list)
-    failure_type: str | None = None  # invalid_json | no_structured_data | None
+    failure_type: str | None = None  # invalid_json | no_structured_data | excluded | None
     raw_preview: str = ""
     recoverable: bool | None = None  # meaningful only for no_structured_data
+    exclusion_reason: str | None = None  # set when failure_type == "excluded"
 
 
 def _result_from_response(resp: LLMResponse, snapshot: PageSnapshot) -> ExtractionResult:
@@ -42,13 +44,25 @@ def _result_from_response(resp: LLMResponse, snapshot: PageSnapshot) -> Extracti
         return ExtractionResult(failure_type="invalid_json", raw_preview=raw[:500])
 
     records: list[dict] = []
+    exclusion_reason: str | None = None
     for tc in resp.tool_calls:
         if tc.get("name") == "save_professors":
-            records.extend(tc["arguments"].get("professors") or [])
+            args = tc["arguments"]
+            records.extend(args.get("professors") or [])
+            er = args.get("exclusion_reason")
+            if exclusion_reason is None and is_valid_exclusion_reason(er):
+                exclusion_reason = er
 
     payloads = [p for p in (sanitize(r) for r in records) if p is not None]
     if payloads:
         return ExtractionResult(payloads=payloads, raw_preview=(resp.content or "")[:500])
+
+    if exclusion_reason:
+        return ExtractionResult(
+            failure_type="excluded",
+            exclusion_reason=exclusion_reason,
+            raw_preview=(resp.content or "")[:500],
+        )
 
     verdict = assess_no_data(snapshot)
     return ExtractionResult(

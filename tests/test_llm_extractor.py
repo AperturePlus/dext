@@ -53,3 +53,35 @@ def test_no_records_sparse_page_terminal():
     out = _result_from_response(resp, _snap("欢迎光临"))
     assert out.failure_type == "no_structured_data"
     assert out.recoverable is False
+
+
+def test_empty_with_valid_exclusion_reason_is_excluded():
+    resp = LLMResponse(content=None, tool_calls=[{
+        "name": "save_professors",
+        "arguments": {"professors": [], "exclusion_reason": "administration"},
+    }])
+    out = _result_from_response(resp, _snap(_RICH))
+    assert out.payloads == []
+    assert out.failure_type == "excluded"
+    assert out.exclusion_reason == "administration"
+
+
+def test_payloads_win_over_exclusion_reason():
+    resp = LLMResponse(content=None, tool_calls=[{
+        "name": "save_professors",
+        "arguments": {"professors": [{"name": "张三"}], "exclusion_reason": "arts"},
+    }])
+    out = _result_from_response(resp, _snap(_RICH))
+    assert len(out.payloads) == 1
+    assert out.failure_type is None
+    assert out.exclusion_reason is None
+
+
+def test_invalid_exclusion_reason_falls_through_to_no_data():
+    resp = LLMResponse(content=None, tool_calls=[{
+        "name": "save_professors",
+        "arguments": {"professors": [], "exclusion_reason": "bogus"},
+    }])
+    out = _result_from_response(resp, _snap(_RICH))
+    assert out.failure_type == "no_structured_data"
+    assert out.exclusion_reason is None

@@ -73,7 +73,11 @@ SAVE_PROFESSORS_TOOL = {
                 "professors": {
                     "type": "array",
                     "items": {"type": "object", "properties": _PROFESSOR_FIELDS, "required": ["name"]},
-                }
+                },
+                "exclusion_reason": {
+                    "type": "string",
+                    "description": "当前整页属被排除类别时，填类别 code 并把 professors 传空数组；否则不填",
+                },
             },
             "required": ["professors"],
         },
