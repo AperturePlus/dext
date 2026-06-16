@@ -525,6 +525,8 @@
     }
   }
   const ERROR_PATTERNS = /502 bad gateway|503 service|504 gateway|500 internal|error occurred|server error|nginx/i;
+  const NOT_FOUND_PATTERNS = /\b404\b|not found|page not found|页面不存在|网页不存在|未找到页面|找不到页面|访问的页面不存在|您访问的页面不存在|信息不存在|该信息不存在|文章不存在/i;
+  const REMOVED_PATTERNS = /内容已撤销|内容被撤销|该内容已被删除|内容已被删除|文章已被删除|信息已被删除|该信息已删除|已下线|页面已下线|内容已失效/i;
   function isErrorPage() {
     var _a;
     const title = document.title || "";
@@ -532,15 +534,27 @@
     if (bodyText.length < 2e3 && ERROR_PATTERNS.test(title + " " + bodyText)) return true;
     return false;
   }
-  const POLL_INTERVAL = 1500;
-  const FAST_POLL_INTERVAL = 500;
+  function terminalUnavailableReason() {
+    var _a;
+    const title = document.title || "";
+    const bodyText = ((_a = document.body) == null ? void 0 : _a.innerText) || "";
+    const haystack = `${title} ${bodyText}`;
+    if (bodyText.length < 4e3 && NOT_FOUND_PATTERNS.test(haystack)) return "not_found";
+    if (bodyText.length < 4e3 && REMOVED_PATTERNS.test(haystack)) return "content_removed";
+    if (document.readyState === "complete" && document.body !== null && bodyText.trim().length === 0 && document.links.length === 0) {
+      return "empty_page";
+    }
+    return null;
+  }
+  const POLL_INTERVAL = 1e3;
+  const FAST_POLL_INTERVAL = 250;
   const FAST_POLL_ROUNDS = 4;
-  const AUTO_CHECK_INTERVAL = 1e3;
-  const AUTO_SUBMIT_DELAY = 1e3;
-  const CAPTURE_STABLE_INTERVAL = 200;
+  const AUTO_CHECK_INTERVAL = 750;
+  const AUTO_SUBMIT_DELAY = 600;
+  const CAPTURE_STABLE_INTERVAL = 100;
   const CAPTURE_STABLE_ROUNDS = 3;
   const CAPTURE_MAX_WAIT = 8e3;
-  const DECISION_POLL_INTERVAL = 5e3;
+  const DECISION_POLL_INTERVAL = 2500;
   const ERROR_RETRY_DELAY = 5e3;
   const MAX_ERROR_RETRIES = 3;
   const DEFAULT_DECISION_ACTION = "switch_failed_to_human";
@@ -686,6 +700,9 @@
     window.location.href = job.url;
   }
   function isSameSiteRedirectReady(job) {
+    return isSameSiteRedirectFromJob(job) && !isErrorPage() && terminalUnavailableReason() === null;
+  }
+  function isSameSiteRedirectFromJob(job) {
     if (job.action) return false;
     if (urlMatches(window.location.href, job.url)) return false;
     const attempt = readNavigationAttempt();
@@ -693,7 +710,22 @@
       return false;
     }
     if (attempt.documentId === DOCUMENT_ID) return false;
-    return sameSite(window.location.href, job.url) && !isErrorPage();
+    return sameSite(window.location.href, job.url);
+  }
+  async function failTerminalUnavailable(job, reason) {
+    if (submitting) return;
+    submitting = true;
+    try {
+      await failJob(job.id, `terminal_unavailable:${reason}`);
+      clearNavigationAttempt(job.id);
+      clearJob();
+      showToast("页面不可用，已跳过当前任务");
+      triggerFastPollBurst();
+    } catch (e) {
+      showToast(`不可用页面上报失败: ${e instanceof Error ? e.message : e}`);
+    }
+    submitting = false;
+    notify();
   }
   function autoCheck() {
     if (state.instanceRole !== "owner") return;
@@ -702,7 +734,15 @@
       matchedSince = null;
       return;
     }
-    if (isErrorPage()) {
+    const exactMatch = urlMatches(window.location.href, job.url);
+    const redirectCandidate = isSameSiteRedirectFromJob(job);
+    const terminalReason = exactMatch || redirectCandidate ? terminalUnavailableReason() : null;
+    if (terminalReason !== null) {
+      matchedSince = null;
+      void failTerminalUnavailable(job, terminalReason);
+      return;
+    }
+    if ((exactMatch || redirectCandidate) && isErrorPage()) {
       matchedSince = null;
       if (errorRetries < MAX_ERROR_RETRIES) {
         errorRetries++;
@@ -716,7 +756,6 @@
       return;
     }
     errorRetries = 0;
-    const exactMatch = urlMatches(window.location.href, job.url);
     const redirectMatch = !exactMatch && isSameSiteRedirectReady(job);
     if (exactMatch || redirectMatch) {
       if (job.action && !actionMatchesCurrentPage(job.action, window.location.href, job.url)) {
@@ -862,6 +901,11 @@
     if (state.instanceRole !== "owner") return;
     const job = state.currentJob;
     if (!job || submitting) return;
+    const terminalReason = terminalUnavailableReason();
+    if (terminalReason !== null) {
+      await failTerminalUnavailable(job, terminalReason);
+      return;
+    }
     if (isErrorPage()) {
       showToast("当前是错误页面，无法提交");
       return;

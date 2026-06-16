@@ -3,17 +3,17 @@ import { actionMatchesCurrentPage, collectFormPaginationStates, performFetchActi
 import { clearJob, notify, setJob, state } from './state';
 import type { FetchJob, PendingDecision, StatusResponse } from './types';
 import { showToast } from './ui/toast';
-import { isErrorPage, sameSite, urlMatches } from './utils';
+import { isErrorPage, sameSite, terminalUnavailableReason, urlMatches } from './utils';
 
-const POLL_INTERVAL = 1500;
-const FAST_POLL_INTERVAL = 500;
+const POLL_INTERVAL = 1000;
+const FAST_POLL_INTERVAL = 250;
 const FAST_POLL_ROUNDS = 4;
-const AUTO_CHECK_INTERVAL = 1000;
-const AUTO_SUBMIT_DELAY = 1000;
-const CAPTURE_STABLE_INTERVAL = 200;
+const AUTO_CHECK_INTERVAL = 750;
+const AUTO_SUBMIT_DELAY = 600;
+const CAPTURE_STABLE_INTERVAL = 100;
 const CAPTURE_STABLE_ROUNDS = 3;
 const CAPTURE_MAX_WAIT = 8000;
-const DECISION_POLL_INTERVAL = 5000;
+const DECISION_POLL_INTERVAL = 2500;
 const ERROR_RETRY_DELAY = 5000;
 const MAX_ERROR_RETRIES = 3;
 const DEFAULT_DECISION_ACTION = 'switch_failed_to_human';
@@ -201,6 +201,10 @@ function navigateToJob(job: FetchJob): void {
 }
 
 function isSameSiteRedirectReady(job: FetchJob): boolean {
+  return isSameSiteRedirectFromJob(job) && !isErrorPage() && terminalUnavailableReason() === null;
+}
+
+function isSameSiteRedirectFromJob(job: FetchJob): boolean {
   if (job.action) return false;
   if (urlMatches(window.location.href, job.url)) return false;
   const attempt = readNavigationAttempt();
@@ -208,7 +212,23 @@ function isSameSiteRedirectReady(job: FetchJob): boolean {
     return false;
   }
   if (attempt.documentId === DOCUMENT_ID) return false;
-  return sameSite(window.location.href, job.url) && !isErrorPage();
+  return sameSite(window.location.href, job.url);
+}
+
+async function failTerminalUnavailable(job: FetchJob, reason: string): Promise<void> {
+  if (submitting) return;
+  submitting = true;
+  try {
+    await api.failJob(job.id, `terminal_unavailable:${reason}`);
+    clearNavigationAttempt(job.id);
+    clearJob();
+    showToast('页面不可用，已跳过当前任务');
+    triggerFastPollBurst();
+  } catch (e) {
+    showToast(`不可用页面上报失败: ${e instanceof Error ? e.message : e}`);
+  }
+  submitting = false;
+  notify();
 }
 
 function autoCheck(): void {
@@ -219,8 +239,17 @@ function autoCheck(): void {
     return;
   }
 
-  // Detect error pages (502, 503, etc.) — auto-retry navigation.
-  if (isErrorPage()) {
+  const exactMatch = urlMatches(window.location.href, job.url);
+  const redirectCandidate = isSameSiteRedirectFromJob(job);
+  const terminalReason = exactMatch || redirectCandidate ? terminalUnavailableReason() : null;
+  if (terminalReason !== null) {
+    matchedSince = null;
+    void failTerminalUnavailable(job, terminalReason);
+    return;
+  }
+
+  // Detect temporary error pages (502, 503, etc.) — auto-retry navigation.
+  if ((exactMatch || redirectCandidate) && isErrorPage()) {
     matchedSince = null;
     if (errorRetries < MAX_ERROR_RETRIES) {
       errorRetries++;
@@ -234,7 +263,6 @@ function autoCheck(): void {
 
   errorRetries = 0;
 
-  const exactMatch = urlMatches(window.location.href, job.url);
   const redirectMatch = !exactMatch && isSameSiteRedirectReady(job);
   if (exactMatch || redirectMatch) {
     if (job.action && !actionMatchesCurrentPage(job.action, window.location.href, job.url)) {
@@ -392,6 +420,11 @@ export async function submitCurrent(): Promise<void> {
   if (state.instanceRole !== 'owner') return;
   const job = state.currentJob;
   if (!job || submitting) return;
+  const terminalReason = terminalUnavailableReason();
+  if (terminalReason !== null) {
+    await failTerminalUnavailable(job, terminalReason);
+    return;
+  }
   if (isErrorPage()) {
     showToast('当前是错误页面，无法提交');
     return;
