@@ -34,6 +34,7 @@ def test_defaults_are_sane():
     assert s.max_depth == 4
     assert s.max_attempts == 3
     assert s.followup_page_limit == 36
+    assert s.facet_node_budget == 150
     assert s.attempt_penalty == 5.0
     assert s.log_level == "INFO"
 

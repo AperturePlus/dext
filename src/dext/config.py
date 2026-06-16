@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     max_depth: int = 4
     max_attempts: int = 3
     followup_page_limit: int = 36
+    facet_node_budget: int = 150  # per-org_unit facet/list/pagination node cap (deterministic anti-explosion backstop)
     attempt_penalty: float = 5.0
 
     # Logging
