@@ -56,7 +56,6 @@ _PROFESSOR_FIELDS = {
     "research_areas": {"type": "array", "items": {"type": "string"}, "description": "研究方向，多值"},
     "email": {"type": "string"},
     "phone": {"type": "string"},
-    "homepage": {"type": "string", "description": "校内个人主页 URL"},
     "external_link": {"type": "string", "description": "外部/第三方主页 URL"},
     "bio": {"type": "string", "description": "个人简介/教育经历等"},
     "enrollment_pref": {"type": "string", "description": "招生偏好，如 博导/硕导"},
