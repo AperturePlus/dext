@@ -506,6 +506,7 @@ function captureSignature(): string {
 function serializePageWithoutOverlay(): string {
   const clone = document.documentElement.cloneNode(true) as HTMLElement;
   clone.querySelectorAll('#ycl-panel,#ycl-toast,[data-yanclaw-overlay]').forEach((node) => node.remove());
+  clone.querySelectorAll('svg,style,canvas').forEach((node) => node.remove());
   return clone.outerHTML;
 }
 

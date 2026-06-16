@@ -5,6 +5,7 @@ const PAGE_ASSIGN_RE =
 const GOTO_FIELD_RE = /\b([A-Za-z0-9_]*?)GOPAGE\b/i;
 
 export function collectFormPaginationStates(currentUrl: string = window.location.href): PaginationState[] {
+  if (hasExplicitPort(currentUrl)) return [];
   const anchors = [...document.querySelectorAll<HTMLAnchorElement>('a[href^="javascript:"]')];
   const byFormField = new Map<string, { formName: string; fieldName: string; pages: Set<number> }>();
 
@@ -48,6 +49,26 @@ export function collectFormPaginationStates(currentUrl: string = window.location
   }
 
   return states.sort((a, b) => a.page_index - b.page_index || a.synthetic_url.localeCompare(b.synthetic_url));
+}
+
+function hasExplicitPort(url: string): boolean {
+  const raw = url.trim();
+  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(raw);
+  let rest = '';
+  if (scheme) {
+    rest = raw.slice(scheme[0].length);
+  } else if (raw.startsWith('//')) {
+    rest = raw.slice(2);
+  } else {
+    return false;
+  }
+  const authority = rest.split(/[/?#]/, 1)[0] ?? '';
+  const hostport = authority.split('@').at(-1) ?? '';
+  if (hostport.startsWith('[')) {
+    const closing = hostport.indexOf(']');
+    return closing !== -1 && hostport.slice(closing + 1).startsWith(':');
+  }
+  return hostport.includes(':');
 }
 
 export function actionMatchesCurrentPage(action: FetchAction | null | undefined, currentUrl: string, targetUrl: string): boolean {

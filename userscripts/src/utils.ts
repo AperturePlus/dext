@@ -1,5 +1,6 @@
 export function urlMatches(a: string, b: string): boolean {
   try {
+    if (hasExplicitPort(a) || hasExplicitPort(b)) return false;
     const u1 = new URL(a);
     const u2 = new URL(b);
     // Ignore protocol (http vs https) — many university sites redirect.
@@ -25,8 +26,11 @@ function normalizedSearch(url: URL): string {
 /** Match hostname only (ignoring protocol and path). Handles www prefix and http/https redirects. */
 export function sameHost(a: string, b: string): boolean {
   try {
-    const h1 = new URL(a).hostname.replace(/^www\./, '');
-    const h2 = new URL(b).hostname.replace(/^www\./, '');
+    if (hasExplicitPort(a) || hasExplicitPort(b)) return false;
+    const u1 = new URL(a);
+    const u2 = new URL(b);
+    const h1 = u1.hostname.replace(/^www\./, '');
+    const h2 = u2.hostname.replace(/^www\./, '');
     return h1 === h2;
   } catch {
     return false;
@@ -36,10 +40,34 @@ export function sameHost(a: string, b: string): boolean {
 /** Loose check: same site root (e.g. both *.pku.edu.cn). */
 export function sameSite(a: string, b: string): boolean {
   try {
-    return siteRoot(new URL(a).hostname) === siteRoot(new URL(b).hostname);
+    if (hasExplicitPort(a) || hasExplicitPort(b)) return false;
+    const u1 = new URL(a);
+    const u2 = new URL(b);
+    return siteRoot(u1.hostname) === siteRoot(u2.hostname);
   } catch {
     return false;
   }
+}
+
+export function hasExplicitPort(url: string | URL): boolean {
+  if (url instanceof URL) return url.port !== '';
+  const raw = url.trim();
+  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(raw);
+  let rest = '';
+  if (scheme) {
+    rest = raw.slice(scheme[0].length);
+  } else if (raw.startsWith('//')) {
+    rest = raw.slice(2);
+  } else {
+    return false;
+  }
+  const authority = rest.split(/[/?#]/, 1)[0] ?? '';
+  const hostport = authority.split('@').at(-1) ?? '';
+  if (hostport.startsWith('[')) {
+    const closing = hostport.indexOf(']');
+    return closing !== -1 && hostport.slice(closing + 1).startsWith(':');
+  }
+  return hostport.includes(':');
 }
 
 function siteRoot(host: string): string {

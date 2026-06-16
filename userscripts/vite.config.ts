@@ -10,7 +10,7 @@ export default defineConfig({
         namespace: 'https://github.com/yanclaw',
         version: '1.0.0',
         description: 'Human-assisted crawler frontend for Yanclaw',
-        match: ['*://*.edu.cn/*', '*://*.ac.cn/*'],
+        match: ['*://*.edu.cn/*', '*://*.ac.cn/*','//*.github.io'],
         exclude: ['*://dx.scu.edu.cn/*', '*://mail.scu.edu.cn/*'],
         noframes: true,
         'run-at': 'document-idle',

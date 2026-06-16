@@ -5,6 +5,7 @@
 // @description  Human-assisted crawler frontend for Yanclaw
 // @match        *://*.edu.cn/*
 // @match        *://*.ac.cn/*
+// @match        //*.github.io
 // @exclude      *://dx.scu.edu.cn/*
 // @exclude      *://mail.scu.edu.cn/*
 // @connect      127.0.0.1
@@ -135,6 +136,7 @@
   const PAGE_ASSIGN_RE = /document\.forms\[['"]([^'"]+)['"]\]\.([A-Za-z0-9_]+)\.value\s*=\s*['"]?(\d+)['"]?/i;
   const GOTO_FIELD_RE = /\b([A-Za-z0-9_]*?)GOPAGE\b/i;
   function collectFormPaginationStates(currentUrl = window.location.href) {
+    if (hasExplicitPort$1(currentUrl)) return [];
     const anchors = [...document.querySelectorAll('a[href^="javascript:"]')];
     const byFormField = new Map();
     for (const anchor of anchors) {
@@ -175,6 +177,25 @@
       }
     }
     return states.sort((a, b) => a.page_index - b.page_index || a.synthetic_url.localeCompare(b.synthetic_url));
+  }
+  function hasExplicitPort$1(url) {
+    const raw = url.trim();
+    const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(raw);
+    let rest = "";
+    if (scheme) {
+      rest = raw.slice(scheme[0].length);
+    } else if (raw.startsWith("//")) {
+      rest = raw.slice(2);
+    } else {
+      return false;
+    }
+    const authority = rest.split(/[/?#]/, 1)[0] ?? "";
+    const hostport = authority.split("@").at(-1) ?? "";
+    if (hostport.startsWith("[")) {
+      const closing = hostport.indexOf("]");
+      return closing !== -1 && hostport.slice(closing + 1).startsWith(":");
+    }
+    return hostport.includes(":");
   }
   function actionMatchesCurrentPage(action, currentUrl, targetUrl) {
     if (!action || action.kind !== "form_submit") return true;
@@ -488,6 +509,7 @@
   }
   function urlMatches(a, b) {
     try {
+      if (hasExplicitPort(a) || hasExplicitPort(b)) return false;
       const u1 = new URL(a);
       const u2 = new URL(b);
       return u1.hostname === u2.hostname && u1.pathname.replace(/\/+$/, "") === u2.pathname.replace(/\/+$/, "") && normalizedSearch(u1) === normalizedSearch(u2);
@@ -505,10 +527,33 @@
   }
   function sameSite(a, b) {
     try {
-      return siteRoot(new URL(a).hostname) === siteRoot(new URL(b).hostname);
+      if (hasExplicitPort(a) || hasExplicitPort(b)) return false;
+      const u1 = new URL(a);
+      const u2 = new URL(b);
+      return siteRoot(u1.hostname) === siteRoot(u2.hostname);
     } catch {
       return false;
     }
+  }
+  function hasExplicitPort(url) {
+    if (url instanceof URL) return url.port !== "";
+    const raw = url.trim();
+    const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(raw);
+    let rest = "";
+    if (scheme) {
+      rest = raw.slice(scheme[0].length);
+    } else if (raw.startsWith("//")) {
+      rest = raw.slice(2);
+    } else {
+      return false;
+    }
+    const authority = rest.split(/[/?#]/, 1)[0] ?? "";
+    const hostport = authority.split("@").at(-1) ?? "";
+    if (hostport.startsWith("[")) {
+      const closing = hostport.indexOf("]");
+      return closing !== -1 && hostport.slice(closing + 1).startsWith(":");
+    }
+    return hostport.includes(":");
   }
   function siteRoot(host) {
     const parts = host.split(".");
@@ -980,6 +1025,7 @@
   function serializePageWithoutOverlay() {
     const clone = document.documentElement.cloneNode(true);
     clone.querySelectorAll("#ycl-panel,#ycl-toast,[data-yanclaw-overlay]").forEach((node) => node.remove());
+    clone.querySelectorAll("svg,style,canvas").forEach((node) => node.remove());
     return clone.outerHTML;
   }
   async function skipCurrent() {
