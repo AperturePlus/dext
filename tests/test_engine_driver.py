@@ -1,7 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from dext.bridge.fetcher import HumanFetcherBridge
 from dext.engine import CrawlEngine
@@ -105,6 +105,8 @@ def _settings(**overrides):
         max_depth=4,
         followup_page_limit=36,
         llm_workers=1,
+        decision_workers=1,
+        extract_workers=1,
         invalid_json_max_retry=2,
         fetch_timeout_seconds=60,
     )
@@ -328,7 +330,7 @@ async def test_summary_fails_when_nodes_are_not_terminal(tmp_path):
 
 async def test_decider_runs_concurrently_off_the_fetch_loop(tmp_path):
     storage = await _storage(tmp_path)
-    settings = _settings(llm_workers=4)
+    settings = _settings(llm_workers=6, decision_workers=3, extract_workers=3)
     parent = "https://x.edu.cn/szdw.htm"
     pagination_urls = [
         "https://x.edu.cn/szdw/2.htm",
@@ -368,7 +370,7 @@ async def test_decider_runs_concurrently_off_the_fetch_loop(tmp_path):
 
 async def test_single_fetch_in_flight_across_sibling_nodes(tmp_path):
     storage = await _storage(tmp_path)
-    settings = _settings(llm_workers=4)
+    settings = _settings(llm_workers=6, decision_workers=3, extract_workers=3)
     parent = "https://x.edu.cn/szdw.htm"
     pagination_urls = [
         "https://x.edu.cn/szdw/2.htm",
@@ -402,7 +404,7 @@ async def test_single_fetch_in_flight_across_sibling_nodes(tmp_path):
 
 async def test_engine_does_not_terminate_while_decider_in_flight(tmp_path):
     storage = await _storage(tmp_path)
-    settings = _settings(llm_workers=2)
+    settings = _settings(llm_workers=6, decision_workers=3, extract_workers=3)
     parent = "https://x.edu.cn/szdw.htm"
     pagination_urls = [
         "https://x.edu.cn/szdw/2.htm",
@@ -436,6 +438,83 @@ async def test_engine_does_not_terminate_while_decider_in_flight(tmp_path):
         )).scalars().all()
         assert len(pag) == 3                                  # children materialized post-decide
         assert all(n.status == NodeStatus.done for n in pag)  # and fully processed
+    await _close(storage)
+
+
+async def test_extract_pool_saves_result_while_decider_pool_is_busy(tmp_path, monkeypatch):
+    import dext.engine.handlers as handlers_mod
+    import dext.engine.workers as workers_mod
+    from dext.llm.extractor import ExtractionResult
+    from dext.types import ProfessorPayload
+
+    storage = await _storage(tmp_path)
+    settings = _settings(llm_workers=6, decision_workers=1, extract_workers=1)
+    slow_list = "https://x.edu.cn/szdw.htm"
+    detail = "https://x.edu.cn/t/zhang.htm"
+    bridge = CountingBridge(
+        {
+            slow_list: "<html><body>师资</body></html>",
+            detail: "<html><body>张三 教授</body></html>",
+        }
+    )
+    decision_started = asyncio.Event()
+    allow_decision_finish = asyncio.Event()
+    professor_saved = asyncio.Event()
+
+    async def _slow_decide(*args, **kwargs):
+        decision_started.set()
+        await allow_decision_finish.wait()
+        return SimpleNamespace(links=[], parse_error=None)
+
+    async def _fake_extract(*args, **kwargs):
+        return ExtractionResult(
+            payloads=[ProfessorPayload(name="张三", title="教授")],
+            failure_type=None,
+            raw_preview="{...}",
+        )
+
+    org_id = await storage.writer.upsert_org_unit(OrgUnitSpec(name="数学学院", url="https://x.edu.cn/math"))
+    await storage.writer.upsert_node(
+        node_spec(NodeType.faculty_list_url, url=slow_list, settings=settings, run_id=1,
+                  org_unit_id=org_id, org_unit_name="数学学院")
+    )
+    await storage.writer.upsert_node(
+        node_spec(NodeType.detail_url, url=detail, settings=settings, run_id=1,
+                  org_unit_id=org_id, org_unit_name="数学学院")
+    )
+
+    orig_decide = handlers_mod.decide_links
+    handlers_mod.decide_links = _slow_decide
+    monkeypatch.setattr(workers_mod, "extract_professors", _fake_extract)
+
+    async def wait_for_professor():
+        for _ in range(100):
+            async with storage.session() as s:
+                count = (await s.execute(select(func.count()).select_from(Professor))).scalar_one()
+            if count:
+                professor_saved.set()
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("extract result was not saved while decider was busy")
+
+    try:
+        engine_task = asyncio.create_task(
+            CrawlEngine(storage, bridge, llm_client=None, settings=settings,
+                        run_id=1, university_name="测试大学").run()
+        )
+        await asyncio.wait_for(decision_started.wait(), timeout=1)
+        await asyncio.wait_for(wait_for_professor(), timeout=2)
+        assert professor_saved.is_set()
+        allow_decision_finish.set()
+        summary = await asyncio.wait_for(engine_task, timeout=2)
+    finally:
+        handlers_mod.decide_links = orig_decide
+
+    assert bridge.max_in_flight == 1
+    assert summary.status == "completed"
+    async with storage.session() as s:
+        prof = (await s.execute(select(Professor))).scalar_one()
+        assert prof.name == "张三"
     await _close(storage)
 
 

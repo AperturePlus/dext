@@ -54,7 +54,14 @@ async def _close(handle):
 
 def _settings(live_settings):
     data = live_settings.model_dump()
-    data.update(max_depth=3, llm_workers=1, followup_page_limit=12, fetch_timeout_seconds=60)
+    data.update(
+        max_depth=3,
+        llm_workers=2,
+        decision_workers=1,
+        extract_workers=1,
+        followup_page_limit=12,
+        fetch_timeout_seconds=60,
+    )
     return SimpleNamespace(**data)
 
 

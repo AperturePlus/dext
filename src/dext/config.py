@@ -39,7 +39,9 @@ class Settings(BaseSettings):
     llm_reasoning_effort: str = "high"  # first-pass effort tier
     llm_reasoning_effort_retry: str = "max"  # escalated on strict retry
     llm_max_page_tokens: int = 24000  # page-text truncation budget
-    llm_workers: int = 4
+    llm_workers: int = 6  # compatibility/summary total; runtime uses the split pools below
+    decision_workers: int = 3
+    extract_workers: int = 3
     invalid_json_max_retry: int = 2
 
     # Scheduling / retry

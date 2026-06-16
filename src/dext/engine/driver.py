@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from dext.bridge.queue import JobContext
 from dext.engine.handlers import HandlerDeps, fetch_action_from_metadata, identity_url_for
 from dext.engine.retry import assess_terminal_unavailable_page, classify_fetch_failure
-from dext.engine.workers import DecideTask, ExtractionTracker, ExtractTask, llm_worker
+from dext.engine.workers import DecideTask, ExtractTask, InFlightTracker, decision_worker, extract_worker
 from dext.page import build_snapshot
 from dext.storage.models import GraphNode, NodeStatus, NodeType, PageCache, Professor, ProfessorAffiliation
 from dext.storage.writer import PageCachePayload
@@ -71,30 +71,43 @@ class CrawlEngine:
         self.decision_center = decision_center
         self.redirect_guard = redirect_guard
         self.org_unit_ids = set(org_unit_ids or set())
+        self.decision_queue: asyncio.Queue = asyncio.Queue()
         self.extract_queue: asyncio.Queue = asyncio.Queue()
         self._attempted_this_run: set[str] = set()
-        self._tracker = ExtractionTracker()
+        self._decision_tracker = InFlightTracker()
+        self._extract_tracker = InFlightTracker()
         self._summary = CrawlSummary()
 
     async def run(self) -> CrawlSummary:
-        worker_tasks = [
+        decision_worker_tasks = [
             asyncio.create_task(
-                llm_worker(
-                    f"llm-{i}",
+                decision_worker(
+                    f"decision-{i}",
+                    self.decision_queue,
+                    self._decision_tracker,
+                    deps_factory=self._deps_factory,
+                )
+            )
+            for i in range(max(1, self.settings.decision_workers))
+        ]
+        extract_worker_tasks = [
+            asyncio.create_task(
+                extract_worker(
+                    f"extract-{i}",
                     self.extract_queue,
                     self.storage,
                     self.llm_client,
                     self.settings,
-                    self._tracker,
-                    deps_factory=self._deps_factory,
+                    self._extract_tracker,
                 )
             )
-            for i in range(max(1, self.settings.llm_workers))
+            for i in range(max(1, self.settings.extract_workers))
         ]
         if not self.org_unit_ids:
             await self.storage.writer.update_university_status("in_progress")
         try:
             await self._driver_loop()
+            await self.decision_queue.join()
             await self.extract_queue.join()
             final = await self._build_summary()
             await self.storage.writer.finish_run(self.run_id, status=final.status, summary=final.asdict())
@@ -104,10 +117,13 @@ class CrawlEngine:
                 )
             return final
         finally:
-            for _ in worker_tasks:
+            for _ in decision_worker_tasks:
+                await self.decision_queue.put(None)
+            for _ in extract_worker_tasks:
                 await self.extract_queue.put(None)
+            await self.decision_queue.join()
             await self.extract_queue.join()
-            await asyncio.gather(*worker_tasks)
+            await asyncio.gather(*decision_worker_tasks, *extract_worker_tasks)
 
     async def _driver_loop(self) -> None:
         while True:
@@ -117,7 +133,12 @@ class CrawlEngine:
                 org_unit_ids=self.org_unit_ids,
             )
             if node is None:
-                if self.extract_queue.empty() and self._tracker.in_flight == 0:
+                if (
+                    self.decision_queue.empty()
+                    and self.extract_queue.empty()
+                    and self._decision_tracker.in_flight == 0
+                    and self._extract_tracker.in_flight == 0
+                ):
                     return
                 await asyncio.sleep(0.05)
                 continue
@@ -197,7 +218,7 @@ class CrawlEngine:
                 )
             )
         else:
-            await self.extract_queue.put(
+            await self.decision_queue.put(
                 DecideTask(
                     node=node,
                     snapshot=snapshot,

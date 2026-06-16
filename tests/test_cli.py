@@ -95,7 +95,9 @@ def _settings(tmp_path: Path, *, api_key: str = "sk-test") -> Settings:
         _env_file=None,
         seed_path=_seed_file(tmp_path),
         data_dir=tmp_path / "universities",
-        llm_workers=1,
+        llm_workers=2,
+        decision_workers=1,
+        extract_workers=1,
         bridge_port=25000,
         **{"DEEPSEEK_API_KEY": api_key},
     )

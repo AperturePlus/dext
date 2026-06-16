@@ -35,24 +35,24 @@ class DecideTask:
     reported_pagination_states: list
 
 
-class ExtractionTracker:
+class InFlightTracker:
     def __init__(self) -> None:
         self.in_flight = 0
+
+
+ExtractionTracker = InFlightTracker
 
 
 def _payloads_with_system_homepage(payloads: list[ProfessorPayload], homepage: str) -> list[ProfessorPayload]:
     return [replace(payload, homepage=homepage) for payload in payloads]
 
 
-async def llm_worker(
+async def decision_worker(
     name: str,
     queue: asyncio.Queue,
-    storage,
-    llm_client,
-    settings,
-    tracker: ExtractionTracker,
+    tracker: InFlightTracker,
     *,
-    deps_factory=None,
+    deps_factory,
 ) -> None:
     # Deferred import: handlers imports ExtractTask from this module, so a top-level
     # `from dext.engine.handlers import dispatch` would create an import cycle.
@@ -65,10 +65,65 @@ async def llm_worker(
             return
         tracker.in_flight += 1  # no await between get() and increment — closes the DONE-race window
         try:
+            if not isinstance(task, DecideTask):
+                raise TypeError(f"decision_worker expected DecideTask, got {type(task).__name__}")
+            await dispatch(task.node, task.snapshot, deps_factory(task))
+        finally:
+            tracker.in_flight -= 1
+            queue.task_done()
+
+
+async def extract_worker(
+    name: str,
+    queue: asyncio.Queue,
+    storage,
+    llm_client,
+    settings,
+    tracker: InFlightTracker,
+) -> None:
+    while True:
+        task = await queue.get()
+        if task is None:
+            queue.task_done()
+            return
+        tracker.in_flight += 1  # no await between get() and increment — closes the DONE-race window
+        try:
+            if not isinstance(task, ExtractTask):
+                raise TypeError(f"extract_worker expected ExtractTask, got {type(task).__name__}")
+            await process_extract_task(task, storage, llm_client, settings)
+        finally:
+            tracker.in_flight -= 1
+            queue.task_done()
+
+
+async def llm_worker(
+    name: str,
+    queue: asyncio.Queue,
+    storage,
+    llm_client,
+    settings,
+    tracker: InFlightTracker,
+    *,
+    deps_factory=None,
+) -> None:
+    # Compatibility wrapper for older tests/importers. New runtime uses split pools.
+    # Deferred import: handlers imports ExtractTask from this module, so a top-level
+    # `from dext.engine.handlers import dispatch` would create an import cycle.
+    from dext.engine.handlers import dispatch
+
+    while True:
+        task = await queue.get()
+        if task is None:
+            queue.task_done()
+            return
+        tracker.in_flight += 1
+        try:
             if isinstance(task, DecideTask):
                 await dispatch(task.node, task.snapshot, deps_factory(task))
-            else:
+            elif isinstance(task, ExtractTask):
                 await process_extract_task(task, storage, llm_client, settings)
+            else:
+                raise TypeError(f"llm_worker expected DecideTask or ExtractTask, got {type(task).__name__}")
         finally:
             tracker.in_flight -= 1
             queue.task_done()

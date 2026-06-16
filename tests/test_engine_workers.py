@@ -10,7 +10,7 @@ from dext.llm.extractor import ExtractionResult
 from dext.page.links import build_snapshot
 from dext.storage.db import create_all, create_engine_for_path, make_session_factory
 from dext.storage.models import GraphNode, NodeStatus, NodeType
-from dext.storage.writer import DBWriter
+from dext.storage.writer import DBWriter, OrgUnitSpec
 from dext.types import ProfessorPayload
 
 
@@ -83,10 +83,10 @@ async def test_excluded_extraction_skips_node(tmp_path, monkeypatch):
     await _close(h)
 
 
-async def test_llm_worker_routes_decide_task_to_dispatch(tmp_path):
+async def test_decision_worker_routes_decide_task_to_dispatch(tmp_path):
     import dext.engine.handlers as handlers_mod
     from dext.engine.handlers import HandlerDeps
-    from dext.engine.workers import DecideTask, ExtractionTracker, llm_worker
+    from dext.engine.workers import DecideTask, InFlightTracker, decision_worker
     from dext.storage.models import OrgUnit
     from dext.storage.writer import ClaimedNode
 
@@ -107,7 +107,7 @@ async def test_llm_worker_routes_decide_task_to_dispatch(tmp_path):
                        url=snap.url, org_unit_id=None, org_unit_name=None, depth=0,
                        attempt_count=1, priority_score=100, content_hash=None, metadata=None)
     q = asyncio.Queue()
-    tracker = ExtractionTracker()
+    tracker = InFlightTracker()
 
     def deps_factory(task):
         return HandlerDeps(storage=h, llm_client=None, settings=_settings(), run_id=1,
@@ -121,7 +121,7 @@ async def test_llm_worker_routes_decide_task_to_dispatch(tmp_path):
     orig = handlers_mod.decide_links
     handlers_mod.decide_links = _fake_decide
     try:
-        await llm_worker("w", q, h, None, _settings(), tracker, deps_factory=deps_factory)
+        await decision_worker("decision-0", q, tracker, deps_factory=deps_factory)
     finally:
         handlers_mod.decide_links = orig
 
@@ -133,4 +133,92 @@ async def test_llm_worker_routes_decide_task_to_dispatch(tmp_path):
         assert org_node.org_unit_name == "数学学院"
         assert org.name == "数学学院"
     assert tracker.in_flight == 0
+    await _close(h)
+
+
+async def test_extract_worker_processes_extract_task(tmp_path, monkeypatch):
+    from dext.engine.workers import InFlightTracker, extract_worker
+    from dext.storage.models import Professor
+
+    h = await _storage(tmp_path)
+    org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="数学学院", url="https://x.edu.cn/math"))
+    node_id = await h.writer.upsert_node(
+        node_spec(NodeType.detail_url, url="https://x.edu.cn/t/zhang.htm",
+                  settings=_settings(), run_id=1, org_unit_id=org_id, org_unit_name="数学学院")
+    )
+    snap = build_snapshot("<html><body>张三 教授</body></html>",
+                          "https://x.edu.cn/t/zhang.htm", "https://x.edu.cn/t/zhang.htm", "张三")
+
+    async def _fake_extract(*args, **kwargs):
+        return ExtractionResult(
+            payloads=[ProfessorPayload(name="张三", title="教授")],
+            failure_type=None,
+            raw_preview="{...}",
+        )
+
+    monkeypatch.setattr(workers_mod, "extract_professors", _fake_extract)
+
+    q = asyncio.Queue()
+    tracker = InFlightTracker()
+    await q.put(ExtractTask(node_id=node_id, node_key="n", snapshot=snap,
+                            org_unit_id=org_id, org_unit_name="数学学院", attempt_count=1))
+    await q.put(None)
+    await extract_worker("extract-0", q, h, None, _settings(), tracker)
+
+    async with h.session_factory() as s:
+        node = (await s.execute(select(GraphNode).where(GraphNode.id == node_id))).scalar_one()
+        prof = (await s.execute(select(Professor))).scalar_one()
+        assert node.status == NodeStatus.done
+        assert prof.name == "张三"
+    assert tracker.in_flight == 0
+    await _close(h)
+
+
+async def test_split_workers_reject_wrong_task_type(tmp_path):
+    from dext.engine.handlers import HandlerDeps
+    from dext.engine.workers import DecideTask, InFlightTracker, decision_worker, extract_worker
+    from dext.storage.writer import ClaimedNode
+
+    h = await _storage(tmp_path)
+    node_id = await h.writer.upsert_node(
+        node_spec(NodeType.detail_url, url="https://x.edu.cn/t/zhang.htm",
+                  settings=_settings(), run_id=1)
+    )
+    snap = build_snapshot("<html><body>张三</body></html>",
+                          "https://x.edu.cn/t/zhang.htm", "https://x.edu.cn/t/zhang.htm", "张三")
+
+    extract_q = asyncio.Queue()
+    extract_tracker = InFlightTracker()
+    await extract_q.put(DecideTask(
+        node=ClaimedNode(id=node_id, node_key="n", type=NodeType.detail_url, url=snap.url,
+                         org_unit_id=None, org_unit_name=None, depth=0, attempt_count=1,
+                         priority_score=0, content_hash=None, metadata=None),
+        snapshot=snap,
+        raw_html="<html></html>",
+        reported_pagination_states=[],
+    ))
+    await extract_q.put(None)
+    try:
+        await extract_worker("extract-0", extract_q, h, None, _settings(), extract_tracker)
+        raise AssertionError("extract_worker accepted DecideTask")
+    except TypeError as exc:
+        assert "expected ExtractTask" in str(exc)
+    assert extract_tracker.in_flight == 0
+
+    decision_q = asyncio.Queue()
+    decision_tracker = InFlightTracker()
+    await decision_q.put(ExtractTask(node_id=node_id, node_key="n", snapshot=snap,
+                                     org_unit_id=None, org_unit_name="", attempt_count=1))
+    await decision_q.put(None)
+
+    def deps_factory(task):
+        return HandlerDeps(storage=h, llm_client=None, settings=_settings(), run_id=1,
+                           university_name="测试大学", extract_queue=asyncio.Queue())
+
+    try:
+        await decision_worker("decision-0", decision_q, decision_tracker, deps_factory=deps_factory)
+        raise AssertionError("decision_worker accepted ExtractTask")
+    except TypeError as exc:
+        assert "expected DecideTask" in str(exc)
+    assert decision_tracker.in_flight == 0
     await _close(h)
