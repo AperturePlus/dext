@@ -229,3 +229,26 @@ async def test_update_org_unit_status(tmp_path):
         row = (await s.execute(select(OrgUnit).where(OrgUnit.id == oid))).scalar_one()
         assert row.status == "no_faculty_page"
     await _close(eng, w, task)
+
+
+async def test_count_subtree_facet_nodes(tmp_path):
+    eng = create_engine_for_path(tmp_path / "count.db")
+    await create_all(eng)
+    w = DBWriter(make_session_factory(eng))
+    task = asyncio.create_task(w.run())
+    try:
+        org = await w.upsert_org_unit(OrgUnitSpec(name="某院", url="https://x.edu.cn/c/"))
+        other = await w.upsert_org_unit(OrgUnitSpec(name="它院", url="https://x.edu.cn/o/"))
+        for i, t in enumerate(
+            [NodeType.faculty_list_url, NodeType.faculty_followup_url, NodeType.pagination_url, NodeType.detail_url]
+        ):
+            await w.upsert_node(NodeSpec(node_key=f"k{i}", type=t, url=f"https://x.edu.cn/c/{i}", org_unit_id=org))
+        await w.upsert_node(NodeSpec(node_key="ko", type=NodeType.faculty_followup_url,
+                                     url="https://x.edu.cn/o/1", org_unit_id=other))
+        # org subtree: faculty_list + followup + pagination = 3 (detail_url NOT counted)
+        assert await w.count_subtree_facet_nodes(org) == 3
+        assert await w.count_subtree_facet_nodes(other) == 1
+    finally:
+        await w.stop()
+        await task
+        await eng.dispose()

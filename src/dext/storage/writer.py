@@ -12,7 +12,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from dext.storage.models import (
     CrawlRun,
@@ -149,6 +149,9 @@ class DBWriter:
         org_unit_ids=None,
     ) -> ClaimedNode | None:
         return await self._run(lambda s: _claim_next(s, run_id, exclude_node_keys, types, now, org_unit_ids))
+
+    async def count_subtree_facet_nodes(self, org_unit_id) -> int:
+        return await self._run(lambda s: _count_subtree_facet_nodes(s, org_unit_id))
 
     # --- page cache / extraction / run-meta commands ---
     async def save_page_cache(self, payload: "PageCachePayload") -> str:
@@ -312,6 +315,20 @@ async def _claim_next(session, run_id, exclude_node_keys, types, now, org_unit_i
         priority_score=node.priority_score, content_hash=node.content_hash,
         metadata=node.metadata_json,
     )
+
+
+async def _count_subtree_facet_nodes(session, org_unit_id) -> int:
+    stmt = (
+        select(func.count())
+        .select_from(GraphNode)
+        .where(
+            GraphNode.org_unit_id == org_unit_id,
+            GraphNode.type.in_(
+                [NodeType.faculty_list_url, NodeType.faculty_followup_url, NodeType.pagination_url]
+            ),
+        )
+    )
+    return (await session.execute(stmt)).scalar_one()
 
 
 async def _save_page_cache(session, payload: PageCachePayload) -> str:
