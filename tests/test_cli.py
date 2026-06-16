@@ -11,7 +11,8 @@ from dext.config import Settings, get_settings
 from dext.engine import CrawlSummary
 from dext.seed import UniversitySeed, resolve_abbr
 from dext.storage.lifecycle import open_fresh
-from dext.storage.models import CrawlRun
+from dext.storage.models import CrawlRun, OrgUnit
+from dext.storage.writer import OrgUnitSpec
 
 
 @pytest.fixture(autouse=True)
@@ -36,13 +37,26 @@ class _DummyServer:
 class _DummyEngine:
     statuses: list[str] = []
     calls: list[str] = []
+    org_unit_id_calls: list[set[int]] = []
     exc = None
 
-    def __init__(self, storage, bridge, llm_client, settings, run_id, *, university_name, decision_center=None):
+    def __init__(
+        self,
+        storage,
+        bridge,
+        llm_client,
+        settings,
+        run_id,
+        *,
+        university_name,
+        decision_center=None,
+        org_unit_ids=None,
+    ):
         self.storage = storage
         self.run_id = run_id
         self.university_name = university_name
         self.__class__.calls.append(university_name)
+        self.__class__.org_unit_id_calls.append(set(org_unit_ids or set()))
 
     async def run(self):
         if self.__class__.exc is not None:
@@ -95,6 +109,7 @@ def _install_runtime(monkeypatch, settings: Settings):
 
     _DummyEngine.statuses = []
     _DummyEngine.calls = []
+    _DummyEngine.org_unit_id_calls = []
     _DummyEngine.exc = None
 
     monkeypatch.setattr(cli._FACTORIES, "bridge_factory", lambda settings: object())
@@ -125,6 +140,29 @@ async def _run_rows(settings: Settings, university: UniversitySeed) -> list[Craw
     try:
         async with handle.session() as sess:
             return (await sess.execute(select(CrawlRun).order_by(CrawlRun.id))).scalars().all()
+    finally:
+        await handle.close()
+
+
+async def _seed_org_units(settings: Settings, university: UniversitySeed) -> list[int]:
+    handle = await open_fresh(university, resolve_abbr(university), settings)
+    try:
+        ids = [
+            await handle.writer.upsert_org_unit(OrgUnitSpec(name="数学学院", url="https://alpha.edu.cn/math")),
+            await handle.writer.upsert_org_unit(OrgUnitSpec(name="物理学院", url="https://alpha.edu.cn/physics")),
+        ]
+        return ids
+    finally:
+        await handle.close()
+
+
+async def _org_unit_ids(settings: Settings, university: UniversitySeed) -> list[int]:
+    from dext.storage.lifecycle import open_resume
+
+    handle = await open_resume(university, resolve_abbr(university), settings)
+    try:
+        async with handle.session() as sess:
+            return (await sess.execute(select(OrgUnit.id).order_by(OrgUnit.id))).scalars().all()
     finally:
         await handle.close()
 
@@ -208,6 +246,37 @@ def test_completed_resume_quick_check_creates_completed_resume_run(tmp_path, mon
     assert rows[0].mode == "resume"
     assert rows[0].status == "completed"
     assert rows[0].backup_path is None
+
+
+def test_org_units_id_implies_resume_and_passes_targets(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    alpha = _university("Alpha University", "https://alpha.edu.cn/")
+    org_ids = asyncio.run(_seed_org_units(settings, alpha))
+    cli = _install_runtime(monkeypatch, settings)
+
+    result = _runner().invoke(cli.main, ["-u", "Alpha University", "-oid", str(org_ids[0])])
+
+    assert result.exit_code == 0, result.output
+    rows = asyncio.run(_run_rows(settings, alpha))
+    assert len(rows) == 1
+    assert rows[0].mode == "resume"
+    assert rows[0].backup_path is None
+    assert _DummyEngine.org_unit_id_calls == [{org_ids[0]}]
+    assert asyncio.run(_org_unit_ids(settings, alpha)) == org_ids
+
+
+def test_org_units_id_validates_existing_ids_before_server_or_engine(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    alpha = _university("Alpha University", "https://alpha.edu.cn/")
+    asyncio.run(_seed_org_units(settings, alpha))
+    cli = _install_runtime(monkeypatch, settings)
+
+    result = _runner().invoke(cli.main, ["-u", "Alpha University", "--org_units_id", "999"])
+
+    assert result.exit_code == 1
+    assert "unknown org_units_id: 999" in result.output
+    assert _DummyEngine.calls == []
+    assert asyncio.run(_run_rows(settings, alpha)) == []
 
 
 def test_multi_school_is_sequential_and_aggregates_failures(tmp_path, monkeypatch):

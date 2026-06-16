@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import click
+from sqlalchemy import select
 
 from dext.bridge import DecisionCenter, HumanFetcherBridge, create_app, run_server
 from dext.config import Settings, get_settings
@@ -17,6 +18,7 @@ from dext.engine import CrawlEngine, CrawlSummary, load_seed_nodes
 from dext.llm import LLMClient
 from dext.seed import Manifest, SeedError, get_university, load_manifest, resolve_abbr
 from dext.storage.lifecycle import open_fresh, open_resume
+from dext.storage.models import OrgUnit
 
 logger = logging.getLogger("dext.cli")
 
@@ -89,12 +91,20 @@ def _validate_api_key(settings: Settings) -> None:
         )
 
 
-async def _safe_finish_run(storage, run_id: int | None, *, status: str, summary: dict) -> None:
+async def _safe_finish_run(
+    storage,
+    run_id: int | None,
+    *,
+    status: str,
+    summary: dict,
+    update_university_status: bool = True,
+) -> None:
     if storage is None or run_id is None:
         return
     try:
         await storage.writer.finish_run(run_id, status=status, summary=summary)
-        await storage.writer.update_university_status("failed")
+        if update_university_status:
+            await storage.writer.update_university_status("failed")
     except Exception:  # noqa: BLE001 -- preserve the original crawl failure
         logger.exception("failed to mark run %s as %s", run_id, status)
 
@@ -104,19 +114,44 @@ async def _cleanup_server(server) -> None:
         await server.cleanup()
 
 
-async def run_university(name: str, *, resume: bool, settings: Settings) -> CrawlSummary:
+async def _validate_org_unit_ids(storage, org_unit_ids: set[int]) -> None:
+    if not org_unit_ids:
+        return
+    ordered = sorted(org_unit_ids)
+    async with storage.session() as session:
+        rows = (
+            await session.execute(select(OrgUnit.id).where(OrgUnit.id.in_(ordered)))
+        ).scalars().all()
+    missing = sorted(set(ordered) - set(rows))
+    if missing:
+        raise click.ClickException(
+            "unknown org_units_id: " + ", ".join(str(org_id) for org_id in missing)
+        )
+
+
+async def run_university(
+    name: str,
+    *,
+    resume: bool,
+    settings: Settings,
+    org_unit_ids: set[int] | None = None,
+) -> CrawlSummary:
     factories = _FACTORIES
     manifest = load_manifest(settings.seed_path)
     university = get_university(manifest, name)
     abbr = resolve_abbr(university)
+    target_org_unit_ids = set(org_unit_ids or set())
+    effective_resume = resume or bool(target_org_unit_ids)
+    targeted = bool(target_org_unit_ids)
 
     storage = None
     server = None
     run_id: int | None = None
-    mode = "resume" if resume else "fresh"
+    mode = "resume" if effective_resume else "fresh"
     try:
-        opener = factories.open_resume if resume else factories.open_fresh
+        opener = factories.open_resume if effective_resume else factories.open_fresh
         storage = await opener(university, abbr, settings)
+        await _validate_org_unit_ids(storage, target_org_unit_ids)
         run_id = await storage.writer.start_run(
             mode=mode,
             settings=_settings_snapshot(settings),
@@ -145,6 +180,7 @@ async def run_university(name: str, *, resume: bool, settings: Settings) -> Craw
             run_id,
             university_name=university.name,
             decision_center=decision_center,
+            org_unit_ids=target_org_unit_ids,
         )
         return await engine.run()
     except asyncio.CancelledError:
@@ -153,6 +189,7 @@ async def run_university(name: str, *, resume: bool, settings: Settings) -> Craw
             run_id,
             status="cancelled",
             summary={"status": "cancelled", "university": name},
+            update_university_status=not targeted,
         )
         raise
     except Exception as exc:
@@ -161,6 +198,7 @@ async def run_university(name: str, *, resume: bool, settings: Settings) -> Craw
             run_id,
             status="failed",
             summary={"status": "failed", "university": name, "error": repr(exc)},
+            update_university_status=not targeted,
         )
         raise
     finally:
@@ -169,12 +207,25 @@ async def run_university(name: str, *, resume: bool, settings: Settings) -> Craw
             await storage.close()
 
 
-async def _run_all(universities: list[str], *, resume: bool, settings: Settings) -> int:
+async def _run_all(
+    universities: list[str],
+    *,
+    resume: bool,
+    settings: Settings,
+    org_unit_ids: set[int] | None = None,
+) -> int:
     failed = False
+    target_org_unit_ids = set(org_unit_ids or set())
+    effective_resume = resume or bool(target_org_unit_ids)
     for name in universities:
-        logger.info("starting crawl university=%s mode=%s", name, "resume" if resume else "fresh")
+        logger.info("starting crawl university=%s mode=%s", name, "resume" if effective_resume else "fresh")
         try:
-            summary = await run_university(name, resume=resume, settings=settings)
+            summary = await run_university(
+                name,
+                resume=effective_resume,
+                settings=settings,
+                org_unit_ids=target_org_unit_ids,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 -- aggregate per-university failures
@@ -201,9 +252,24 @@ async def _run_all(universities: list[str], *, resume: bool, settings: Settings)
     help="University name from entrances.yaml. Repeatable.",
 )
 @click.option("-r", "--resume", is_flag=True, help="Resume an existing university DB instead of fresh rebuild.")
+@click.option(
+    "-oid",
+    "--org_units_id",
+    "org_units_id",
+    multiple=True,
+    type=click.IntRange(min=1),
+    metavar="ID",
+    help="Resume only the selected org_units.id. Repeatable; implies --resume.",
+)
 @click.option("--log-file", type=click.Path(dir_okay=False, path_type=Path), help="Optional UTF-8 log file.")
 @click.argument("extra_universities", nargs=-1)
-def main(universities: tuple[str, ...], resume: bool, log_file: Path | None, extra_universities: tuple[str, ...]) -> None:
+def main(
+    universities: tuple[str, ...],
+    resume: bool,
+    org_units_id: tuple[int, ...],
+    log_file: Path | None,
+    extra_universities: tuple[str, ...],
+) -> None:
     """Run the graph-driven human-assisted crawler."""
     settings = get_settings()
     _configure_logging(settings, str(log_file) if log_file else None)
@@ -217,7 +283,9 @@ def main(universities: tuple[str, ...], resume: bool, log_file: Path | None, ext
     _validate_api_key(settings)
 
     try:
-        exit_code = asyncio.run(_run_all(names, resume=resume, settings=settings))
+        exit_code = asyncio.run(
+            _run_all(names, resume=resume, settings=settings, org_unit_ids=set(org_units_id))
+        )
     except (KeyboardInterrupt, asyncio.CancelledError):
         click.echo("Interrupted.", err=True)
         raise click.exceptions.Exit(130) from None

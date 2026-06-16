@@ -139,8 +139,16 @@ class DBWriter:
             lambda s: _mark_node(s, node_id, status, last_error, content_hash, next_retry_at, attempt_inc)
         )
 
-    async def claim_next(self, *, run_id, exclude_node_keys=None, types=None, now=None) -> ClaimedNode | None:
-        return await self._run(lambda s: _claim_next(s, run_id, exclude_node_keys, types, now))
+    async def claim_next(
+        self,
+        *,
+        run_id,
+        exclude_node_keys=None,
+        types=None,
+        now=None,
+        org_unit_ids=None,
+    ) -> ClaimedNode | None:
+        return await self._run(lambda s: _claim_next(s, run_id, exclude_node_keys, types, now, org_unit_ids))
 
     # --- page cache / extraction / run-meta commands ---
     async def save_page_cache(self, payload: "PageCachePayload") -> str:
@@ -272,7 +280,7 @@ async def _mark_node(session, node_id, status: NodeStatus, last_error, content_h
     await session.flush()
 
 
-async def _claim_next(session, run_id, exclude_node_keys, types, now) -> ClaimedNode | None:
+async def _claim_next(session, run_id, exclude_node_keys, types, now, org_unit_ids) -> ClaimedNode | None:
     now = now or utcnow_iso()
     stmt = (
         select(GraphNode)
@@ -285,6 +293,8 @@ async def _claim_next(session, run_id, exclude_node_keys, types, now) -> Claimed
     )
     if types:
         stmt = stmt.where(GraphNode.type.in_([t.value for t in types]))
+    if org_unit_ids:
+        stmt = stmt.where(GraphNode.org_unit_id.in_(list(org_unit_ids)))
     if exclude_node_keys:
         stmt = stmt.where(GraphNode.node_key.notin_(list(exclude_node_keys)))
     node = (await session.execute(stmt.limit(1))).scalar_one_or_none()

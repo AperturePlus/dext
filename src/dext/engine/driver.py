@@ -12,7 +12,7 @@ from dext.engine.handlers import HandlerDeps, dispatch, fetch_action_from_metada
 from dext.engine.retry import classify_fetch_failure
 from dext.engine.workers import ExtractionTracker, llm_worker
 from dext.page import build_snapshot
-from dext.storage.models import GraphNode, NodeStatus, NodeType, PageCache, Professor
+from dext.storage.models import GraphNode, NodeStatus, NodeType, PageCache, Professor, ProfessorAffiliation
 from dext.storage.writer import PageCachePayload
 
 
@@ -60,6 +60,7 @@ class CrawlEngine:
         university_name: str = "",
         decision_center=None,
         redirect_guard=None,
+        org_unit_ids: set[int] | None = None,
     ) -> None:
         self.storage = storage
         self.bridge = bridge
@@ -69,6 +70,7 @@ class CrawlEngine:
         self.university_name = university_name
         self.decision_center = decision_center
         self.redirect_guard = redirect_guard
+        self.org_unit_ids = set(org_unit_ids or set())
         self.extract_queue: asyncio.Queue = asyncio.Queue()
         self._attempted_this_run: set[str] = set()
         self._tracker = ExtractionTracker()
@@ -81,13 +83,17 @@ class CrawlEngine:
             )
             for i in range(max(1, self.settings.llm_workers))
         ]
-        await self.storage.writer.update_university_status("in_progress")
+        if not self.org_unit_ids:
+            await self.storage.writer.update_university_status("in_progress")
         try:
             await self._driver_loop()
             await self.extract_queue.join()
             final = await self._build_summary()
             await self.storage.writer.finish_run(self.run_id, status=final.status, summary=final.asdict())
-            await self.storage.writer.update_university_status("completed" if final.status == "completed" else "failed")
+            if not self.org_unit_ids:
+                await self.storage.writer.update_university_status(
+                    "completed" if final.status == "completed" else "failed"
+                )
             return final
         finally:
             for _ in worker_tasks:
@@ -100,6 +106,7 @@ class CrawlEngine:
             node = await self.storage.writer.claim_next(
                 run_id=self.run_id,
                 exclude_node_keys=self._attempted_this_run,
+                org_unit_ids=self.org_unit_ids,
             )
             if node is None:
                 if self.extract_queue.empty() and self._tracker.in_flight == 0:
@@ -182,9 +189,19 @@ class CrawlEngine:
 
     async def _build_summary(self) -> CrawlSummary:
         async with self.storage.session() as session:
-            rows = (await session.execute(select(GraphNode.status, func.count()).group_by(GraphNode.status))).all()
+            node_stmt = select(GraphNode.status, func.count()).group_by(GraphNode.status)
+            prof_stmt = select(func.count()).select_from(Professor)
+            if self.org_unit_ids:
+                node_stmt = node_stmt.where(GraphNode.org_unit_id.in_(list(self.org_unit_ids)))
+                prof_stmt = (
+                    select(func.count(func.distinct(Professor.id)))
+                    .select_from(Professor)
+                    .join(ProfessorAffiliation, ProfessorAffiliation.professor_id == Professor.id)
+                    .where(ProfessorAffiliation.org_unit_id.in_(list(self.org_unit_ids)))
+                )
+            rows = (await session.execute(node_stmt)).all()
             counts = {str(status): count for status, count in rows}
-            prof_count = (await session.execute(select(func.count()).select_from(Professor))).scalar_one()
+            prof_count = (await session.execute(prof_stmt)).scalar_one()
         self._summary.node_status_counts = counts
         self._summary.done = counts.get(NodeStatus.done.value, 0)
         self._summary.failed = counts.get(NodeStatus.failed.value, 0)

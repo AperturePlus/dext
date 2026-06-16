@@ -95,6 +95,37 @@ async def test_claim_next_honors_exclude_set(tmp_path):
     await _close(eng, w, task)
 
 
+async def test_claim_next_honors_org_unit_filter(tmp_path):
+    eng, sf, w, task = await _writer(tmp_path)
+    org1 = await w.upsert_org_unit(OrgUnitSpec(name="数学学院", url="https://x/math"))
+    org2 = await w.upsert_org_unit(OrgUnitSpec(name="物理学院", url="https://x/physics"))
+    await w.upsert_node(
+        NodeSpec(
+            node_key="org1-low",
+            type=NodeType.detail_url,
+            url="https://x/org1",
+            org_unit_id=org1,
+            priority_score=1.0,
+        )
+    )
+    await w.upsert_node(
+        NodeSpec(
+            node_key="org2-high",
+            type=NodeType.detail_url,
+            url="https://x/org2",
+            org_unit_id=org2,
+            priority_score=9.0,
+        )
+    )
+
+    claimed = await w.claim_next(run_id=1, org_unit_ids={org1})
+
+    assert claimed is not None
+    assert claimed.node_key == "org1-low"
+    assert claimed.org_unit_id == org1
+    await _close(eng, w, task)
+
+
 async def test_claim_next_returns_none_when_nothing_claimable(tmp_path):
     eng, sf, w, task = await _writer(tmp_path)
     nid = await w.upsert_node(NodeSpec(node_key="d", type=NodeType.detail_url, url="https://x/d"))
