@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict
 
+from dext.exclusions import is_valid_exclusion_reason
 from dext.engine.names import clean_org_unit_name
 from dext.engine.seeds import node_spec, org_node_spec
 from dext.engine.workers import ExtractTask
@@ -95,6 +96,16 @@ def _detail_like_urls(snapshot: PageSnapshot) -> set[str]:
     return {sig.url for sig in filtered.kept if not _looks_like_pager_label(sig.anchor_text)}
 
 
+def _link_exclusion_reason(link) -> str | None:
+    reason = getattr(link, "exclusion_reason", None)
+    return reason if is_valid_exclusion_reason(reason) else None
+
+
+def _page_exclusion_reason(decision) -> str | None:
+    reason = getattr(decision, "page_exclusion_reason", None)
+    return reason if is_valid_exclusion_reason(reason) else None
+
+
 async def dispatch(node: ClaimedNode, snapshot: PageSnapshot, deps: HandlerDeps) -> None:
     node_type = NodeType(node.type)
     if node_type == NodeType.org_listing_url:
@@ -126,6 +137,8 @@ async def handle_org_listing(node: ClaimedNode, snapshot: PageSnapshot, deps: Ha
     decision = await _decide(snapshot, snapshot.link_signals, node, deps)
     created = 0
     for link in decision.links:
+        if _link_exclusion_reason(link):
+            continue
         if link.label != "college":
             continue
         name = clean_org_unit_name(link.org_unit_name)
@@ -187,20 +200,23 @@ async def handle_org_unit(node: ClaimedNode, snapshot: PageSnapshot, deps: Handl
     if node.org_unit_id is not None:
         await deps.storage.writer.update_org_unit_status(node.org_unit_id, "in_progress")
     decision = await _decide(snapshot, snapshot.link_signals, node, deps)
-    if decision.page_exclusion_reason:
+    page_exclusion_reason = _page_exclusion_reason(decision)
+    if page_exclusion_reason:
         if node.org_unit_id is not None:
             await deps.storage.writer.update_org_unit_status(node.org_unit_id, "no_faculty_page")
         await deps.storage.writer.mark_node(
             node.id,
             NodeStatus.skipped,
-            last_error=f"excluded:{decision.page_exclusion_reason}",
+            last_error=f"excluded:{page_exclusion_reason}",
             content_hash=snapshot.content_hash,
         )
-        logger.info("skipped excluded org unit %s reason=%s", snapshot.url, decision.page_exclusion_reason)
+        logger.info("skipped excluded org unit %s reason=%s", snapshot.url, page_exclusion_reason)
         return
     created = 0
     if _within_depth(node, deps.settings):
         for link in decision.links:
+            if _link_exclusion_reason(link):
+                continue
             if link.label == "faculty_list":
                 await _create_child(
                     deps,
@@ -316,6 +332,8 @@ async def _materialize_decided(node: ClaimedNode, snapshot: PageSnapshot, deps: 
     if not _within_depth(node, deps.settings):
         return 0
     for link in decision.links:
+        if _link_exclusion_reason(link):
+            continue
         if link.label == "detail" or link.is_leaf:
             await _create_child(
                 deps,
@@ -359,7 +377,7 @@ async def _materialize_decided(node: ClaimedNode, snapshot: PageSnapshot, deps: 
     )
     if decision.parse_error:
         raise RuntimeError("decider_invalid_json")
-    if filter_result.kept and count == 0:
+    if filter_result.kept and count == 0 and not decision.links:
         raise RuntimeError("decider_no_navigation_links")
     return count
 
@@ -370,14 +388,15 @@ async def handle_faculty_page(node: ClaimedNode, snapshot: PageSnapshot, deps: H
         FilterContext(faculty_list_url=snapshot.url, already_enriched=set()),
     )
     decision = await _decide(snapshot, filter_result.kept, node, deps)
-    if decision.page_exclusion_reason:
+    page_exclusion_reason = _page_exclusion_reason(decision)
+    if page_exclusion_reason:
         await deps.storage.writer.mark_node(
             node.id,
             NodeStatus.skipped,
-            last_error=f"excluded:{decision.page_exclusion_reason}",
+            last_error=f"excluded:{page_exclusion_reason}",
             content_hash=snapshot.content_hash,
         )
-        logger.info("skipped excluded faculty page %s reason=%s", snapshot.url, decision.page_exclusion_reason)
+        logger.info("skipped excluded faculty page %s reason=%s", snapshot.url, page_exclusion_reason)
         return
     created = 0
     detail_like_urls = _detail_like_urls(snapshot)
