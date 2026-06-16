@@ -437,3 +437,33 @@ async def test_engine_does_not_terminate_while_decider_in_flight(tmp_path):
         assert len(pag) == 3                                  # children materialized post-decide
         assert all(n.status == NodeStatus.done for n in pag)  # and fully processed
     await _close(storage)
+
+
+async def test_decider_parse_error_marks_node_retry_via_worker(tmp_path):
+    storage = await _storage(tmp_path)
+    settings = _settings()
+    url = "https://x.edu.cn/szdw.htm"
+    bridge = CountingBridge({url: "<html><body>师资</body></html>"})
+
+    async def _fake_decide(*args, **kwargs):
+        return SimpleNamespace(links=[], parse_error=True)
+
+    node_id = await storage.writer.upsert_node(
+        node_spec(NodeType.faculty_list_url, url=url, settings=settings, run_id=1)
+    )
+
+    import dext.engine.handlers as handlers_mod
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = _fake_decide
+    try:
+        summary = await CrawlEngine(storage, bridge, llm_client=None, settings=settings,
+                                    run_id=1, university_name="测试大学").run()
+    finally:
+        handlers_mod.decide_links = orig
+
+    async with storage.session() as s:
+        node = (await s.execute(select(GraphNode).where(GraphNode.id == node_id))).scalar_one()
+        assert node.status == NodeStatus.retry
+        assert node.last_error == "decider_invalid_json"
+    assert summary.status == "failed"
+    await _close(storage)
