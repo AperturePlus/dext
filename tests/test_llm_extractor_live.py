@@ -52,6 +52,19 @@ async def test_extract_admin_page_signals_exclusion(llm_client):
     assert result.exclusion_reason == "administration"
 
 
+async def test_extract_student_affairs_page_signals_exclusion(llm_client):
+    html = ("<html><head><title>韩建汶-专职辅导员-历史学系</title></head><body>"
+            "<h1>韩建汶</h1><p>岗位：专职辅导员</p>"
+            "<p>邮箱：hjw@x.edu.cn</p><p>负责学生工作、奖助贷与日常管理。</p></body></html>")
+    snap = build_snapshot(html, "https://x.edu.cn/history/student-affairs/hjw.htm",
+                          "https://x.edu.cn/history/student-affairs/hjw.htm", "韩建汶-专职辅导员")
+    ctx = OrgUnitContext(org_unit_id=1, org_unit_name="历史学系")
+    result = await extract_professors(snap, ctx, client=llm_client)
+    assert result.payloads == []
+    assert result.failure_type == "excluded"
+    assert result.exclusion_reason == "student_affairs"
+
+
 async def test_extract_admin_law_teacher_not_excluded(llm_client):
     html = ("<html><head><title>张三 - 法学院</title></head><body>"
             "<h1>张三 教授</h1><p>职称：教授，博士生导师</p>"

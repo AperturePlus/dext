@@ -66,7 +66,32 @@ def test_empty_with_valid_exclusion_reason_is_excluded():
     assert out.exclusion_reason == "administration"
 
 
-def test_payloads_win_over_exclusion_reason():
+def test_payloads_with_position_exclusion_reason_are_excluded():
+    resp = LLMResponse(content=None, tool_calls=[{
+        "name": "save_professors",
+        "arguments": {
+            "professors": [{"name": "韩建汶", "title": "专职辅导员", "email": "hjw@x.edu.cn"}],
+            "exclusion_reason": "student_affairs",
+        },
+    }])
+    out = _result_from_response(resp, _snap("韩建汶 专职辅导员 邮箱：hjw@x.edu.cn"))
+    assert out.payloads == []
+    assert out.failure_type == "excluded"
+    assert out.exclusion_reason == "student_affairs"
+
+
+def test_empty_student_affairs_detail_is_excluded():
+    resp = LLMResponse(content=None, tool_calls=[{
+        "name": "save_professors",
+        "arguments": {"professors": [], "exclusion_reason": "student_affairs"},
+    }])
+    out = _result_from_response(resp, _snap("韩建汶 专职辅导员 邮箱：hjw@x.edu.cn"))
+    assert out.payloads == []
+    assert out.failure_type == "excluded"
+    assert out.exclusion_reason == "student_affairs"
+
+
+def test_payloads_win_over_non_position_exclusion_reason():
     resp = LLMResponse(content=None, tool_calls=[{
         "name": "save_professors",
         "arguments": {"professors": [{"name": "张三"}], "exclusion_reason": "arts"},

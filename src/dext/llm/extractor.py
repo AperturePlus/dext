@@ -21,6 +21,13 @@ from dext.llm.sanitizer import sanitize
 from dext.page.links import PageSnapshot
 from dext.types import ProfessorPayload
 
+_EXCLUSION_REASONS_THAT_OVERRIDE_PAYLOADS = frozenset({
+    "student_affairs",
+    "administration",
+    "support_role",
+    "personnel_work",
+})
+
 
 @dataclass
 class OrgUnitContext:
@@ -52,6 +59,14 @@ def _result_from_response(resp: LLMResponse, snapshot: PageSnapshot) -> Extracti
             er = args.get("exclusion_reason")
             if exclusion_reason is None and is_valid_exclusion_reason(er):
                 exclusion_reason = er
+
+    if exclusion_reason:
+        if not records or exclusion_reason in _EXCLUSION_REASONS_THAT_OVERRIDE_PAYLOADS:
+            return ExtractionResult(
+                failure_type="excluded",
+                exclusion_reason=exclusion_reason,
+                raw_preview=(resp.content or "")[:500],
+            )
 
     payloads = [p for p in (sanitize(r) for r in records) if p is not None]
     if payloads:

@@ -90,6 +90,9 @@ def test_prompts_use_generic_exclusion_policy_not_scu_specifics():
     assert "exclusion_reason" in decider
     assert "is_leaf=false" in decider
     assert "空的 professors 数组" in extractor
+    for prompt in (extractor, retry):
+        for term in ("专职辅导员", "学生工作岗位", "学生工作经历", "辅导学生", "班主任"):
+            assert term in prompt, term
 
 
 def test_extractor_strict_prompt_differs_from_default():
