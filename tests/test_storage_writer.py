@@ -46,6 +46,67 @@ async def test_concurrent_submits_are_serialized_and_each_future_resolves(tmp_pa
     await _close(eng, w, task)
 
 
+async def test_upsert_node_dedups_detail_url_across_org_units(tmp_path):
+    # Regression for the node_key scheme change (commit 210a66a): the same detail
+    # URL discovered under two org_units must collapse to a single graph node, so it
+    # is extracted once — not once per org_unit (which caused mass token waste).
+    from dext.engine.seeds import node_spec
+    from dext.config import Settings
+
+    eng, sf, w, task = await _writer(tmp_path)
+    settings = Settings()
+    org_a = await w.upsert_org_unit(OrgUnitSpec(name="学院A", url="https://x/a"))
+    org_b = await w.upsert_org_unit(OrgUnitSpec(name="学院B", url="https://x/b"))
+    url = "https://x.edu.cn/t/zhang.htm"
+    id_a = await w.upsert_node(
+        node_spec(NodeType.detail_url, url=url, settings=settings, run_id=1,
+                  org_unit_id=org_a, org_unit_name="学院A", subtree=True)
+    )
+    id_b = await w.upsert_node(
+        node_spec(NodeType.detail_url, url=url, settings=settings, run_id=1,
+                  org_unit_id=org_b, org_unit_name="学院B", subtree=True)
+    )
+    assert id_a == id_b  # same node — dedup by canonical URL
+    async with sf() as s:
+        rows = (await s.execute(select(GraphNode).where(GraphNode.url == url))).scalars().all()
+        assert len(rows) == 1
+    await _close(eng, w, task)
+
+
+async def test_find_done_detail_node_for_url_skips_self_and_matches_other(tmp_path):
+    eng, sf, w, task = await _writer(tmp_path)
+    url = "https://x/dup"
+    a = await w.upsert_node(NodeSpec(node_key="url:https://x/dup", type=NodeType.detail_url, url=url))
+    b = await w.upsert_node(NodeSpec(node_key="legacy:https://x/dup", type=NodeType.detail_url, url=url))
+    await w.mark_node(a, NodeStatus.done)
+    # self-excluded → None; the other done node is found when querying from b
+    assert await w.find_done_detail_node_for_url(url, exclude_node_id=a) is None
+    assert await w.find_done_detail_node_for_url(url, exclude_node_id=b) == a
+    await _close(eng, w, task)
+
+
+async def test_find_done_detail_node_matches_cross_scheme(tmp_path):
+    # A page discovered as http:// and https:// is the SAME page; the done node under
+    # one scheme must satisfy the dedup guard for the other scheme's node. This was the
+    # core bug: 627 URLs had both http and https detail nodes, causing 225 redundant
+    # re-extractions of already-extracted (professors-saved) pages.
+    eng, sf, w, task = await _writer(tmp_path)
+    http_node = await w.upsert_node(
+        NodeSpec(node_key="url:http://x/p", type=NodeType.detail_url, url="http://x/p")
+    )
+    https_node = await w.upsert_node(
+        NodeSpec(node_key="url:https://x/p", type=NodeType.detail_url, url="https://x/p")
+    )
+    await w.mark_node(http_node, NodeStatus.done)
+    # the https twin should find the http done node
+    assert await w.find_done_detail_node_for_url("https://x/p", exclude_node_id=https_node) == http_node
+    # and symmetrically
+    await w.mark_node(https_node, NodeStatus.done)
+    await w.mark_node(http_node, NodeStatus.pending)  # reset to test the other direction
+    assert await w.find_done_detail_node_for_url("http://x/p", exclude_node_id=http_node) == https_node
+    await _close(eng, w, task)
+
+
 async def test_add_edge_is_idempotent(tmp_path):
     eng, sf, w, task = await _writer(tmp_path)
     a = await w.upsert_node(NodeSpec(node_key="a", type=NodeType.org_unit, url="about:org_unit:a"))

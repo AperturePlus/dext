@@ -10,7 +10,7 @@ from dext.llm.extractor import ExtractionResult
 from dext.page.links import build_snapshot
 from dext.storage.db import create_all, create_engine_for_path, make_session_factory
 from dext.storage.models import GraphNode, NodeStatus, NodeType
-from dext.storage.writer import DBWriter, OrgUnitSpec
+from dext.storage.writer import DBWriter, NodeSpec, OrgUnitSpec
 from dext.types import ProfessorPayload
 
 
@@ -56,6 +56,78 @@ async def _close(h):
 
 def _settings():
     return SimpleNamespace(max_attempts=3, max_depth=4, followup_page_limit=36, invalid_json_max_retry=2)
+
+
+async def test_extract_skips_llm_when_same_url_already_done(tmp_path, monkeypatch):
+    # Part A regression guard: a duplicate detail_url node (same URL as an already
+    # `done` node) must NOT call the LLM — it reuses the prior extraction. This is
+    # the runtime safety net for the node_key-dedup regression that caused mass
+    # token waste (commit 210a66a changed the key format with no data migration).
+    h = await _storage(tmp_path)
+    org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="数学学院", url="https://x.edu.cn/math"))
+    url = "https://x.edu.cn/t/zhang.htm"
+    done_id = await h.writer.upsert_node(
+        node_spec(NodeType.detail_url, url=url, settings=_settings(), run_id=1,
+                  org_unit_id=org_id, org_unit_name="数学学院")
+    )
+    await h.writer.mark_node(done_id, NodeStatus.done)
+    # A second node for the SAME url but a different node_key (simulating the
+    # legacy-vs-new key collision that the migration misses at runtime).
+    dup_id = await h.writer.upsert_node(
+        NodeSpec(node_key="legacy:url:https://x.edu.cn/t/zhang.htm", type=NodeType.detail_url,
+                 url=url, org_unit_id=org_id, org_unit_name="数学学院")
+    )
+    snap = build_snapshot("<html><body>张三 教授</body></html>", url, url, "张三")
+
+    async def _must_not_call(*args, **kwargs):
+        raise AssertionError("LLM extract_professors must not be called for a duplicate-url node")
+
+    monkeypatch.setattr(workers_mod, "extract_professors", _must_not_call)
+
+    task = ExtractTask(node_id=dup_id, node_key="legacy", snapshot=snap,
+                       org_unit_id=org_id, org_unit_name="数学学院", attempt_count=1)
+    await process_extract_task(task, h, llm_client=None, settings=_settings())
+
+    async with h.session_factory() as s:
+        node = (await s.execute(select(GraphNode).where(GraphNode.id == dup_id))).scalar_one()
+        assert node.status == NodeStatus.done
+        assert node.last_error == f"duplicate_url_reused:{done_id}"
+    await _close(h)
+
+
+async def test_extract_skips_llm_for_cross_scheme_done_twin(tmp_path, monkeypatch):
+    # The second waste class: a page discovered as http:// (extracted, done) and
+    # re-discovered as https:// (pending). The runtime guard must treat them as the
+    # same page (scheme-insensitive) and skip the LLM call. 627 URLs hit this in
+    # fudan.db → 225 redundant re-extractions of already-saved professors.
+    h = await _storage(tmp_path)
+    http_url = "http://phys.example.edu.cn/p1.htm"
+    https_url = "https://phys.example.edu.cn/p1.htm"
+    done_id = await h.writer.upsert_node(
+        NodeSpec(node_key=f"url:{http_url}", type=NodeType.detail_url, url=http_url,
+                 org_unit_name="物理学院")
+    )
+    await h.writer.mark_node(done_id, NodeStatus.done)
+    dup_id = await h.writer.upsert_node(
+        NodeSpec(node_key=f"url:{https_url}", type=NodeType.detail_url, url=https_url,
+                 org_unit_name="物理学院")
+    )
+    snap = build_snapshot("<html><body>彭瑞 教授</body></html>", https_url, https_url, "彭瑞")
+
+    async def _must_not_call(*args, **kwargs):
+        raise AssertionError("LLM must not be called for a cross-scheme duplicate")
+
+    monkeypatch.setattr(workers_mod, "extract_professors", _must_not_call)
+
+    task = ExtractTask(node_id=dup_id, node_key=f"url:{https_url}", snapshot=snap,
+                       org_unit_id=None, org_unit_name="物理学院", attempt_count=1)
+    await process_extract_task(task, h, llm_client=None, settings=_settings())
+
+    async with h.session_factory() as s:
+        node = (await s.execute(select(GraphNode).where(GraphNode.id == dup_id))).scalar_one()
+        assert node.status == NodeStatus.done
+        assert node.last_error == f"duplicate_url_reused:{done_id}"
+    await _close(h)
 
 
 async def test_excluded_extraction_skips_node(tmp_path, monkeypatch):

@@ -153,6 +153,13 @@ class DBWriter:
     async def count_subtree_facet_nodes(self, org_unit_id) -> int:
         return await self._run(lambda s: _count_subtree_facet_nodes(s, org_unit_id))
 
+    async def find_done_detail_node_for_url(self, url: str, *, exclude_node_id: int) -> int | None:
+        """Return the id of a *different* `done` detail_url node sharing this URL,
+        or None. Used by the extract path to skip a redundant LLM call when the same
+        page was already successfully extracted under another graph node (the
+        node_key-dedup regression safety net)."""
+        return await self._run(lambda s: _find_done_detail_for_url(s, url, exclude_node_id))
+
     # --- page cache / extraction / run-meta commands ---
     async def save_page_cache(self, payload: "PageCachePayload") -> str:
         return await self._run(lambda s: _save_page_cache(s, payload))
@@ -339,6 +346,37 @@ async def _count_subtree_facet_nodes(session, org_unit_id) -> int:
         )
     )
     return (await session.execute(stmt)).scalar_one()
+
+
+def _scheme_variants(url: str) -> list[str]:
+    """Return the URL plus its http/https counterpart, so a page discovered as
+    `http://` matches its `https://` twin (and vice-versa). Same-site pages are
+    frequently linked under both schemes, which historically created duplicate
+    detail nodes that re-invoked the LLM on an already-extracted page."""
+    if url.startswith("https://"):
+        return [url, "http://" + url[len("https://"):]]
+    if url.startswith("http://"):
+        return [url, "https://" + url[len("http://"):]]
+    return [url]
+
+
+async def _find_done_detail_for_url(session, url: str, exclude_node_id: int) -> int | None:
+    """If any *other* `done` detail_url node for the same page exists, the page has
+    already been successfully extracted and the current node is a duplicate that
+    need not re-invoke the LLM. Matching is scheme-insensitive: `http://X` and
+    `https://X` are treated as the same page (same-site links appear under both)."""
+    stmt = (
+        select(GraphNode.id)
+        .where(
+            GraphNode.type == NodeType.detail_url,
+            GraphNode.url.in_(_scheme_variants(url)),
+            GraphNode.status == NodeStatus.done,
+            GraphNode.id != exclude_node_id,
+        )
+        .order_by(GraphNode.id.asc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
 
 
 async def _save_page_cache(session, payload: PageCachePayload) -> str:

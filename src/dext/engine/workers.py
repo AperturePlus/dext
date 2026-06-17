@@ -132,6 +132,37 @@ async def llm_worker(
 async def process_extract_task(task: ExtractTask, storage, llm_client, settings) -> None:
     org_unit_id = task.org_unit_id
     org_unit_name = task.org_unit_name or ""
+
+    # Per-URL extraction dedup (node_key regression safety net): if the same page
+    # was already successfully extracted under another graph node, do NOT re-invoke
+    # the LLM — rebuild/reuse the prior result instead. The page cache already
+    # prevented an HTTP re-fetch; this prevents the LLM re-fetch (the token waste).
+    reused_node_id = await storage.writer.find_done_detail_node_for_url(
+        task.snapshot.url, exclude_node_id=task.node_id
+    )
+    if reused_node_id is not None:
+        attempt_id = await storage.writer.record_extraction_attempt(
+            graph_node_id=task.node_id,
+            attempt=task.attempt_count,
+            input_cache_url=task.snapshot.url,
+        )
+        await storage.writer.finish_extraction_attempt(
+            attempt_id, status="skipped", failure_type="duplicate_url",
+        )
+        await storage.writer.mark_node(
+            task.node_id,
+            NodeStatus.done,
+            last_error=f"duplicate_url_reused:{reused_node_id}",
+            content_hash=task.snapshot.content_hash,
+        )
+        logger.info(
+            "extract skipped duplicate_url node_id=%s url=%s reused_node=%s",
+            task.node_id,
+            task.snapshot.url,
+            reused_node_id,
+        )
+        return
+
     attempt_id = await storage.writer.record_extraction_attempt(
         graph_node_id=task.node_id,
         attempt=task.attempt_count,

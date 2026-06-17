@@ -20,6 +20,26 @@ def test_node_key_url_node_without_org_unit_is_same_shape():
     assert key == "url:https://x/list"
 
 
+def test_node_key_is_org_independent_for_url_nodes():
+    # Regression guard for the node_key scheme change (commit 210a66a): URL nodes
+    # must key on the canonical URL ONLY, so the same page discovered under
+    # different org_units collapses to one node instead of being re-extracted.
+    k_org_a = node_key_for(NodeType.detail_url, normalized_url="https://x/p1", org_unit_id=24)
+    k_org_b = node_key_for(NodeType.detail_url, normalized_url="https://x/p1", org_unit_id=33)
+    k_none = node_key_for(NodeType.detail_url, normalized_url="https://x/p1")
+    assert k_org_a == k_org_b == k_none == "url:https://x/p1"
+
+
+def test_node_key_has_no_legacy_type_or_org_prefix():
+    # The legacy format "<type>:org:<id>:url:<url>" must NEVER be produced again —
+    # it caused cross-version duplicate nodes (each re-discovery created a new node
+    # because the new key never matched the legacy key).
+    key = node_key_for(NodeType.detail_url, normalized_url="https://x/p1", org_unit_id=10)
+    assert not key.startswith("detail_url:")
+    assert ":org:" not in key
+
+
+
 def test_form_pagination_pages_get_distinct_keys():
     # Different synthetic/identity URLs (per page) → different node_keys.
     k1 = node_key_for(NodeType.pagination_url, normalized_url="https://x?__ycl_page=1", org_unit_id=3)
