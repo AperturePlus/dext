@@ -6,7 +6,9 @@ from sqlalchemy import func, select
 from dext.bridge.fetcher import HumanFetcherBridge
 from dext.engine import CrawlEngine
 from dext.engine.seeds import node_spec
+from dext.seed import UniversitySeed
 from dext.storage.db import StorageHandle, create_all, create_engine_for_path, make_session_factory
+from dext.storage.lifecycle import open_fresh, open_resume
 from dext.storage.models import (
     CrawlRun,
     GraphNode,
@@ -237,8 +239,14 @@ async def test_driver_extracts_cached_detail_after_resume_reset(tmp_path, monkey
     from dext.llm.extractor import ExtractionResult
     from dext.types import ProfessorPayload
 
-    storage = await _storage(tmp_path)
-    settings = _settings()
+    settings = _settings(data_dir=tmp_path / "universities")
+    university = UniversitySeed(
+        name="复旦大学",
+        url="https://www.fudan.edu.cn/",
+        org_unit_listing_urls=["https://www.fudan.edu.cn/schools.htm"],
+    )
+    storage = await open_fresh(university, "fudan", settings)
+    first_run_id = await storage.writer.start_run(mode="fresh", settings={}, backup_path=None)
     org_id = await storage.writer.upsert_org_unit(OrgUnitSpec(name="计算与智能创新学院", url="https://ai.fudan.edu.cn"))
     url = "http://ai.fudan.edu.cn/xy_37635/list.htm"
     node_id = await storage.writer.upsert_node(
@@ -246,7 +254,7 @@ async def test_driver_extracts_cached_detail_after_resume_reset(tmp_path, monkey
             NodeType.detail_url,
             url=url,
             settings=settings,
-            run_id=1,
+            run_id=first_run_id,
             org_unit_id=org_id,
             org_unit_name="计算与智能创新学院",
         )
@@ -267,11 +275,11 @@ async def test_driver_extracts_cached_detail_after_resume_reset(tmp_path, monkey
     await storage.writer.mark_node(node_id, NodeStatus.in_progress)
     await storage.close()
 
-    storage = await _storage(tmp_path)
+    storage = await open_resume(university, "fudan", settings)
+    resume_run_id = await storage.writer.start_run(mode="resume", settings={}, backup_path=None)
     async with storage.session() as s:
         node = (await s.execute(select(GraphNode).where(GraphNode.id == node_id))).scalar_one()
-        node.status = NodeStatus.retry
-        await s.commit()
+        assert node.status == NodeStatus.retry
 
     async def _fake_extract(*args, **kwargs):
         return ExtractionResult(
@@ -287,7 +295,7 @@ async def test_driver_extracts_cached_detail_after_resume_reset(tmp_path, monkey
         bridge,
         llm_client=None,
         settings=settings,
-        run_id=1,
+        run_id=resume_run_id,
         university_name="复旦大学",
     ).run()
 
