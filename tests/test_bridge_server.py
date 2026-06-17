@@ -154,11 +154,47 @@ async def test_status_reports_counts_and_utf8(harness):
     data = json.loads(raw)
     assert data["queue"]["assigned"] == 1
     assert data["current_job"]["url"] == "https://x/list"
+    assert data["frontend_health"]["alive"] is False
+    assert data["frontend_health"]["last_seen_seconds_ago"] is None
     assert isinstance(data["server_uptime_seconds"], (int, float))
     assert data["pending_decision"] is None
     await _post(harness.client, f"/api/jobs/{data['current_job']['id']}/complete",
                 {"html": "", "url": "https://x/list", "title": "", "pagination_states": []})
     await task
+
+
+async def test_heartbeat_updates_status_frontend_health(harness):
+    resp = await _post(
+        harness.client,
+        "/api/heartbeat",
+        {
+            "owner_tab_id": "tab-1",
+            "url": "https://x/list",
+            "current_job_id": "job-1",
+            "auto_mode": True,
+            "paused": False,
+            "timestamp": 123456,
+        },
+    )
+    assert resp.status == 200
+    assert await resp.json() == {"status": "ok"}
+
+    status = await harness.client.get("/api/status")
+    body = await status.json()
+    health = body["frontend_health"]
+    assert health["alive"] is True
+    assert health["owner_tab_id"] == "tab-1"
+    assert health["url"] == "https://x/list"
+    assert health["current_job_id"] == "job-1"
+    assert health["auto_mode"] is True
+    assert health["paused"] is False
+    assert health["client_timestamp_ms"] == 123456.0
+    assert isinstance(health["last_seen_seconds_ago"], (int, float))
+
+
+async def test_heartbeat_requires_owner_tab_id(harness):
+    resp = await _post(harness.client, "/api/heartbeat", {"url": "https://x/list"})
+    assert resp.status == 400
 
 
 async def test_decision_get_204_then_resolve(harness):

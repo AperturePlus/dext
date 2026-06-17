@@ -116,11 +116,37 @@ async def test_unknown_job_id_ignored_everywhere():
 
 async def test_timeout_returns_block_reason_timeout_and_counts_failed():
     b = _bridge(timeout=0.02)
+    b.record_frontend_heartbeat(owner_tab_id="tab1", url="https://assistant.local")
     result = await b.fetch(url="https://x/list", context=_ctx())
     assert result.block_reason == "timeout"
     assert result.final_url == "https://x/list"
     assert b.stats().failed == 1
     assert b.current_job() is None
+
+
+async def test_timeout_pauses_while_frontend_heartbeat_is_absent():
+    b = _bridge(timeout=0.02)
+    task = asyncio.ensure_future(b.fetch(url="https://x/list", context=_ctx()))
+    job = await _await_job(b)
+    await asyncio.sleep(0.06)
+    assert not task.done()
+    assert b.current_job() is job
+    b.complete(job.id, html="ok", final_url="https://x/list", title="")
+    assert (await task).block_reason is None
+    assert b.stats().completed == 1
+    assert b.stats().failed == 0
+
+
+async def test_timeout_resumes_after_frontend_heartbeat_returns():
+    b = _bridge(timeout=0.02)
+    task = asyncio.ensure_future(b.fetch(url="https://x/list", context=_ctx()))
+    await _await_job(b)
+    await asyncio.sleep(0.03)
+    assert not task.done()
+    b.record_frontend_heartbeat(owner_tab_id="tab1", url="https://assistant.local")
+    result = await asyncio.wait_for(task, timeout=0.2)
+    assert result.block_reason == "timeout"
+    assert b.stats().failed == 1
 
 
 async def test_override_swaps_url_keeps_job_and_future():

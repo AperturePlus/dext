@@ -16,6 +16,7 @@ from aiohttp import web
 
 from dext.bridge.decision import DecisionCenter, PendingDecision
 from dext.bridge.fetcher import HumanFetcherBridge
+from dext.bridge.health import FrontendHealthSnapshot
 from dext.bridge.queue import FetchJob, JobContext, QueueStats
 from dext.types import FetchAction, PaginationState
 from dext.url_policy import has_explicit_port
@@ -73,6 +74,20 @@ def serialize_decision(d: PendingDecision) -> dict:
 def serialize_stats(stats: QueueStats) -> dict:
     return {"pending": stats.pending, "assigned": stats.assigned, "completed": stats.completed,
             "failed": stats.failed, "skipped": stats.skipped}
+
+
+def serialize_frontend_health(snapshot: FrontendHealthSnapshot) -> dict:
+    return {
+        "alive": snapshot.alive,
+        "last_seen_seconds_ago": snapshot.last_seen_seconds_ago,
+        "owner_tab_id": snapshot.owner_tab_id,
+        "url": snapshot.url,
+        "current_job_id": snapshot.current_job_id,
+        "auto_mode": snapshot.auto_mode,
+        "paused": snapshot.paused,
+        "client_timestamp_ms": snapshot.client_timestamp_ms,
+        "stale_after_seconds": snapshot.stale_after_seconds,
+    }
 
 
 # ---------- deserialization (script JSON → backend dataclass) ----------
@@ -170,9 +185,28 @@ async def handle_status(request: web.Request) -> web.Response:
         "queue": serialize_stats(bridge.stats()),
         "current_job": serialize_job(current) if current is not None else None,
         "pending_decision": serialize_decision(pending) if pending is not None else None,
+        "frontend_health": serialize_frontend_health(bridge.frontend_health()),
         "agent": {},
         "server_uptime_seconds": time.monotonic() - request.app[START_TIME],
     })
+
+
+async def handle_heartbeat(request: web.Request) -> web.Response:
+    body = await _read_json(request)
+    owner_tab_id = str(body.get("owner_tab_id", "")).strip()
+    if not owner_tab_id:
+        return web.Response(status=400, text="owner_tab_id required")
+    current_job_id = body.get("current_job_id")
+    client_timestamp_ms = body.get("timestamp")
+    _bridge(request).record_frontend_heartbeat(
+        owner_tab_id=owner_tab_id,
+        url=str(body.get("url", "")),
+        current_job_id=str(current_job_id) if current_job_id is not None else None,
+        auto_mode=bool(body.get("auto_mode", False)),
+        paused=bool(body.get("paused", False)),
+        client_timestamp_ms=float(client_timestamp_ms) if isinstance(client_timestamp_ms, (int, float)) else None,
+    )
+    return json_response({"status": "ok"})
 
 
 async def handle_decision(request: web.Request) -> web.Response:
@@ -200,6 +234,7 @@ def create_app(bridge: HumanFetcherBridge, decision_center: DecisionCenter) -> w
         web.post(f"{API_PREFIX}/jobs/{{id}}/skip", handle_skip),
         web.post(f"{API_PREFIX}/jobs/{{id}}/override", handle_override),
         web.get(f"{API_PREFIX}/status", handle_status),
+        web.post(f"{API_PREFIX}/heartbeat", handle_heartbeat),
         web.get(f"{API_PREFIX}/decision", handle_decision),
         web.post(f"{API_PREFIX}/decision/{{id}}/resolve", handle_resolve_decision),
     ])
