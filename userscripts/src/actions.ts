@@ -464,24 +464,25 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function captureCurrentHtml(job: FetchJob): Promise<string> {
-  await waitForCaptureReady();
-  return serializePageWithoutOverlay({ stripHeader: job.context.intent === 'detail_extract' });
+  const skipImages = job.context.intent === 'detail_extract';
+  await waitForCaptureReady(skipImages);
+  return serializePageWithoutOverlay({ stripHeader: skipImages });
 }
 
-async function waitForCaptureReady(): Promise<void> {
+async function waitForCaptureReady(skipImages: boolean = false): Promise<void> {
   const started = Date.now();
   let lastSignature = '';
   let stableRounds = 0;
   let scrolled = false;
 
   while (Date.now() - started < CAPTURE_MAX_WAIT) {
-    if (document.readyState === 'complete') {
+    if (skipImages ? document.readyState !== 'loading' : document.readyState === 'complete') {
       if (!scrolled && Date.now() - started >= Math.floor(AUTO_SUBMIT_DELAY / 2)) {
         scrolled = true;
         window.scrollTo({ top: document.body?.scrollHeight ?? 0, behavior: 'auto' });
       }
 
-      const signature = captureSignature();
+      const signature = captureSignature(skipImages);
       if (signature === lastSignature) {
         stableRounds += 1;
       } else {
@@ -497,10 +498,10 @@ async function waitForCaptureReady(): Promise<void> {
   }
 }
 
-function captureSignature(): string {
+function captureSignature(skipImages: boolean = false): string {
   const textLength = document.body?.innerText?.length ?? 0;
   const nodeCount = document.getElementsByTagName('*').length;
-  const imageCount = document.images.length;
+  const imageCount = skipImages ? 0 : document.images.length;
   return `${textLength}:${nodeCount}:${imageCount}`;
 }
 
