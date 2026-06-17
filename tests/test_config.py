@@ -29,7 +29,6 @@ def test_defaults_are_sane():
     assert s.llm_reasoning_effort == "high"
     assert s.llm_reasoning_effort_retry == "max"
     assert s.llm_max_page_tokens == 24000
-    assert s.llm_workers == 6
     assert s.decision_workers == 3
     assert s.extract_workers == 3
     assert s.invalid_json_max_retry == 2
@@ -55,13 +54,11 @@ def test_deepseek_api_key_read_from_unprefixed_env(monkeypatch):
 
 def test_dext_prefixed_env_overrides_defaults(monkeypatch):
     monkeypatch.setenv("DEXT_LLM_MODEL", "custom-model")
-    monkeypatch.setenv("DEXT_LLM_WORKERS", "8")
     monkeypatch.setenv("DEXT_DECISION_WORKERS", "2")
     monkeypatch.setenv("DEXT_EXTRACT_WORKERS", "6")
     monkeypatch.setenv("DEXT_BRIDGE_PORT", "30000")
     s = Settings(_env_file=None)
     assert s.llm_model == "custom-model"
-    assert s.llm_workers == 8
     assert s.decision_workers == 2
     assert s.extract_workers == 6
     assert s.bridge_port == 30000

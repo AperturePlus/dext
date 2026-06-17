@@ -1,4 +1,4 @@
-"""Concurrent LLM extraction workers for detail nodes."""
+"""Decision + extraction worker pools for the crawl engine."""
 
 from __future__ import annotations
 
@@ -91,39 +91,6 @@ async def extract_worker(
             if not isinstance(task, ExtractTask):
                 raise TypeError(f"extract_worker expected ExtractTask, got {type(task).__name__}")
             await process_extract_task(task, storage, llm_client, settings)
-        finally:
-            tracker.in_flight -= 1
-            queue.task_done()
-
-
-async def llm_worker(
-    name: str,
-    queue: asyncio.Queue,
-    storage,
-    llm_client,
-    settings,
-    tracker: InFlightTracker,
-    *,
-    deps_factory=None,
-) -> None:
-    # Compatibility wrapper for older tests/importers. New runtime uses split pools.
-    # Deferred import: handlers imports ExtractTask from this module, so a top-level
-    # `from dext.engine.handlers import dispatch` would create an import cycle.
-    from dext.engine.handlers import dispatch
-
-    while True:
-        task = await queue.get()
-        if task is None:
-            queue.task_done()
-            return
-        tracker.in_flight += 1
-        try:
-            if isinstance(task, DecideTask):
-                await dispatch(task.node, task.snapshot, deps_factory(task))
-            elif isinstance(task, ExtractTask):
-                await process_extract_task(task, storage, llm_client, settings)
-            else:
-                raise TypeError(f"llm_worker expected DecideTask or ExtractTask, got {type(task).__name__}")
         finally:
             tracker.in_flight -= 1
             queue.task_done()

@@ -106,7 +106,6 @@ def _settings(**overrides):
         max_attempts=3,
         max_depth=4,
         followup_page_limit=36,
-        llm_workers=1,
         decision_workers=1,
         extract_workers=1,
         invalid_json_max_retry=2,
@@ -451,7 +450,7 @@ async def test_summary_fails_when_nodes_are_not_terminal(tmp_path):
 
 async def test_decider_runs_concurrently_off_the_fetch_loop(tmp_path):
     storage = await _storage(tmp_path)
-    settings = _settings(llm_workers=6, decision_workers=3, extract_workers=3)
+    settings = _settings(decision_workers=3, extract_workers=3)
     parent = "https://x.edu.cn/szdw.htm"
     pagination_urls = [
         "https://x.edu.cn/szdw/2.htm",
@@ -491,7 +490,7 @@ async def test_decider_runs_concurrently_off_the_fetch_loop(tmp_path):
 
 async def test_single_fetch_in_flight_across_sibling_nodes(tmp_path):
     storage = await _storage(tmp_path)
-    settings = _settings(llm_workers=6, decision_workers=3, extract_workers=3)
+    settings = _settings(decision_workers=3, extract_workers=3)
     parent = "https://x.edu.cn/szdw.htm"
     pagination_urls = [
         "https://x.edu.cn/szdw/2.htm",
@@ -525,7 +524,7 @@ async def test_single_fetch_in_flight_across_sibling_nodes(tmp_path):
 
 async def test_engine_does_not_terminate_while_decider_in_flight(tmp_path):
     storage = await _storage(tmp_path)
-    settings = _settings(llm_workers=6, decision_workers=3, extract_workers=3)
+    settings = _settings(decision_workers=3, extract_workers=3)
     parent = "https://x.edu.cn/szdw.htm"
     pagination_urls = [
         "https://x.edu.cn/szdw/2.htm",
@@ -569,7 +568,7 @@ async def test_extract_pool_saves_result_while_decider_pool_is_busy(tmp_path, mo
     from dext.types import ProfessorPayload
 
     storage = await _storage(tmp_path)
-    settings = _settings(llm_workers=6, decision_workers=1, extract_workers=1)
+    settings = _settings(decision_workers=1, extract_workers=1)
     slow_list = "https://x.edu.cn/szdw.htm"
     detail = "https://x.edu.cn/t/zhang.htm"
     bridge = CountingBridge(
