@@ -1,5 +1,6 @@
 import * as api from './api';
 import { actionMatchesCurrentPage, collectFormPaginationStates, performFetchAction } from './formPagination';
+import { stripCaptureNoise } from './htmlCleanup';
 import { clearJob, notify, setJob, state } from './state';
 import type { FetchJob, PendingDecision, StatusResponse } from './types';
 import { showToast } from './ui/toast';
@@ -440,7 +441,7 @@ export async function submitCurrent(): Promise<void> {
   }
   submitting = true;
   try {
-    const html = await captureCurrentHtml();
+    const html = await captureCurrentHtml(job);
     const paginationStates = collectFormPaginationStates(window.location.href);
     const res = await api.completeJob(job.id, html, window.location.href, document.title, paginationStates);
     clearNavigationAttempt(job.id);
@@ -462,9 +463,9 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function captureCurrentHtml(): Promise<string> {
+async function captureCurrentHtml(job: FetchJob): Promise<string> {
   await waitForCaptureReady();
-  return serializePageWithoutOverlay();
+  return serializePageWithoutOverlay({ stripHeader: job.context.intent === 'detail_extract' });
 }
 
 async function waitForCaptureReady(): Promise<void> {
@@ -503,10 +504,9 @@ function captureSignature(): string {
   return `${textLength}:${nodeCount}:${imageCount}`;
 }
 
-function serializePageWithoutOverlay(): string {
+function serializePageWithoutOverlay(options: { stripHeader: boolean }): string {
   const clone = document.documentElement.cloneNode(true) as HTMLElement;
-  clone.querySelectorAll('#ycl-panel,#ycl-toast,[data-yanclaw-overlay]').forEach((node) => node.remove());
-  clone.querySelectorAll('svg,style,canvas').forEach((node) => node.remove());
+  stripCaptureNoise(clone, options);
   return clone.outerHTML;
 }
 

@@ -1,6 +1,13 @@
 import { GM, GM_xmlhttpRequest } from '$';
 import { isAssistantBlockedHost } from './hostPolicy';
-import type { CompleteResponse, FetchJob, PaginationState, PendingDecision, StatusResponse } from './types';
+import type {
+  CompleteResponse,
+  FetchJob,
+  HeartbeatPayload,
+  PaginationState,
+  PendingDecision,
+  StatusResponse,
+} from './types';
 
 const API_BASE = 'http://127.0.0.1:21520/api';
 const TIMEOUT = 10_000;
@@ -100,6 +107,10 @@ export async function overrideJobUrl(id: string, newUrl: string): Promise<FetchJ
 
 export async function fetchStatus(): Promise<StatusResponse | null> {
   return request<StatusResponse>('GET', '/status');
+}
+
+export async function sendHeartbeat(payload: HeartbeatPayload): Promise<void> {
+  await request('POST', '/heartbeat', payload);
 }
 
 export async function fetchDecision(): Promise<PendingDecision | null> {

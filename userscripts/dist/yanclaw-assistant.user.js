@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Yanclaw Assistant
-// @namespace    https://github.com/yanclaw
+// @name         Dexter
+// @namespace    https://github.com/AperturePlus/dext
 // @version      1.0.0
-// @description  Human-assisted crawler frontend for Yanclaw
+// @description  Human-assisted crawler frontend
 // @match        *://*.edu.cn/*
 // @match        *://*.ac.cn/*
 // @match        //*.github.io
@@ -126,6 +126,9 @@
   }
   async function fetchStatus() {
     return request("GET", "/status");
+  }
+  async function sendHeartbeat$1(payload) {
+    await request("POST", "/heartbeat", payload);
   }
   async function fetchDecision() {
     return request("GET", "/decision");
@@ -288,6 +291,59 @@
   }
   function stripSlash(value) {
     return value.replace(/\/+$/, "");
+  }
+  const FOOTER_NAMES = new Set(["footer", "foot", "copyright", "copy-right", "site-footer", "page-footer"]);
+  const FOOTER_BOUNDARY_NAMES = new Set(["footer", "foot", "copyright", "copy-right"]);
+  const HEADER_NAMES = new Set(["header", "head", "site-header", "page-header", "topbar", "top-bar", "nav-header"]);
+  const HEADER_BOUNDARY_NAMES = new Set(["header", "topbar", "top-bar"]);
+  const FOOTER_ROLES = new Set(["contentinfo"]);
+  const HEADER_ROLES = new Set(["banner"]);
+  function stripCaptureNoise(root, options = {}) {
+    root.querySelectorAll("#ycl-panel,#ycl-toast,[data-yanclaw-overlay]").forEach((node) => node.remove());
+    root.querySelectorAll("svg,style,canvas").forEach((node) => node.remove());
+    stripStructuralNoise(root, "footer");
+    if (options.stripHeader) {
+      stripStructuralNoise(root, "header");
+    }
+  }
+  function shouldStripElementDescriptor(kind, descriptor) {
+    const tagName = (descriptor.tagName ?? "").toLowerCase();
+    const role = (descriptor.role ?? "").toLowerCase();
+    if (kind === "footer") {
+      return tagName === "footer" || FOOTER_ROLES.has(role) || attributeHasStructuralName(descriptor.id, FOOTER_NAMES, FOOTER_BOUNDARY_NAMES) || attributeHasStructuralName(descriptor.className, FOOTER_NAMES, FOOTER_BOUNDARY_NAMES);
+    }
+    return tagName === "header" || HEADER_ROLES.has(role) || attributeHasStructuralName(descriptor.id, HEADER_NAMES, HEADER_BOUNDARY_NAMES) || attributeHasStructuralName(descriptor.className, HEADER_NAMES, HEADER_BOUNDARY_NAMES);
+  }
+  function stripStructuralNoise(root, kind) {
+    root.querySelectorAll("*").forEach((node) => {
+      if (shouldStripElement(kind, node)) {
+        node.remove();
+      }
+    });
+  }
+  function shouldStripElement(kind, element) {
+    return shouldStripElementDescriptor(kind, {
+      tagName: element.tagName,
+      role: element.getAttribute("role"),
+      id: element.getAttribute("id"),
+      className: element.getAttribute("class")
+    });
+  }
+  function attributeHasStructuralName(value, names, boundaryNames) {
+    if (!value) return false;
+    return value.split(/\s+/).some((segment) => segmentMatchesName(segment, names, boundaryNames));
+  }
+  function segmentMatchesName(segment, names, boundaryNames) {
+    const canonical = canonicalizeIdentifier(segment);
+    if (!canonical) return false;
+    if (matchesName(canonical, names)) return true;
+    return canonical.split("-").some((token) => matchesName(token, boundaryNames));
+  }
+  function matchesName(value, names) {
+    return names.has(value) || names.has(value.replaceAll("-", ""));
+  }
+  function canonicalizeIdentifier(value) {
+    return value.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   }
   const YCL_PREFIX = "ycl_";
   const UI_PREFS_KEY = "ycl_ui_prefs_v2";
@@ -966,7 +1022,7 @@
     }
     submitting = true;
     try {
-      const html = await captureCurrentHtml();
+      const html = await captureCurrentHtml(job);
       const paginationStates = collectFormPaginationStates(window.location.href);
       const res = await completeJob(job.id, html, window.location.href, document.title, paginationStates);
       clearNavigationAttempt(job.id);
@@ -985,9 +1041,9 @@
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
-  async function captureCurrentHtml() {
+  async function captureCurrentHtml(job) {
     await waitForCaptureReady();
-    return serializePageWithoutOverlay();
+    return serializePageWithoutOverlay({ stripHeader: job.context.intent === "detail_extract" });
   }
   async function waitForCaptureReady() {
     var _a;
@@ -1022,10 +1078,9 @@
     const imageCount = document.images.length;
     return `${textLength}:${nodeCount}:${imageCount}`;
   }
-  function serializePageWithoutOverlay() {
+  function serializePageWithoutOverlay(options) {
     const clone = document.documentElement.cloneNode(true);
-    clone.querySelectorAll("#ycl-panel,#ycl-toast,[data-yanclaw-overlay]").forEach((node) => node.remove());
-    clone.querySelectorAll("svg,style,canvas").forEach((node) => node.remove());
+    stripCaptureNoise(clone, options);
     return clone.outerHTML;
   }
   async function skipCurrent() {
@@ -1062,6 +1117,48 @@
       const updated = await overrideJobUrl(job.id, url);
       if (updated) setJob(updated);
     } catch {
+    }
+  }
+  const HEARTBEAT_INTERVAL$1 = 2e3;
+  const ownerTabId = (() => {
+    try {
+      if (typeof (crypto == null ? void 0 : crypto.randomUUID) === "function") {
+        return crypto.randomUUID();
+      }
+    } catch {
+    }
+    return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  })();
+  let heartbeatTimer = null;
+  let heartbeatInFlight = false;
+  async function sendHeartbeat() {
+    var _a;
+    if (state.instanceRole !== "owner" || heartbeatInFlight) return;
+    heartbeatInFlight = true;
+    try {
+      await sendHeartbeat$1({
+        owner_tab_id: ownerTabId,
+        url: window.location.href,
+        current_job_id: ((_a = state.currentJob) == null ? void 0 : _a.id) ?? null,
+        auto_mode: state.autoMode,
+        paused: state.paused,
+        timestamp: Date.now()
+      });
+    } catch {
+    }
+    heartbeatInFlight = false;
+  }
+  function startHeartbeat() {
+    if (heartbeatTimer !== null) return;
+    void sendHeartbeat();
+    heartbeatTimer = setInterval(() => {
+      void sendHeartbeat();
+    }, HEARTBEAT_INTERVAL$1);
+  }
+  function stopHeartbeat() {
+    if (heartbeatTimer !== null) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
     }
   }
   const HEARTBEAT_INTERVAL = 2e3;
@@ -1318,6 +1415,7 @@
     const previousRole = state.instanceRole;
     setInstanceRole(role);
     if (role === "owner") {
+      startHeartbeat();
       await recoverState();
       startPolling();
       startAutoWatcher();
@@ -1326,6 +1424,7 @@
       }
       return;
     }
+    stopHeartbeat();
     stopPolling();
     stopAutoWatcher();
   }
@@ -1342,6 +1441,7 @@
       void onRoleChange(role);
     });
     window.addEventListener("beforeunload", () => {
+      stopHeartbeat();
       stopInstanceLock();
     });
   }

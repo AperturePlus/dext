@@ -59,6 +59,27 @@ export interface QueueStats {
   skipped: number;
 }
 
+export interface FrontendHealth {
+  alive: boolean;
+  last_seen_seconds_ago: number | null;
+  owner_tab_id: string | null;
+  url: string | null;
+  current_job_id: string | null;
+  auto_mode: boolean;
+  paused: boolean;
+  client_timestamp_ms: number | null;
+  stale_after_seconds: number;
+}
+
+export interface HeartbeatPayload {
+  owner_tab_id: string;
+  url: string;
+  current_job_id?: string | null;
+  auto_mode: boolean;
+  paused: boolean;
+  timestamp: number;
+}
+
 export interface PendingDecision {
   id: string;
   kind: string;
@@ -76,6 +97,7 @@ export interface StatusResponse {
   queue: QueueStats;
   current_job?: FetchJob;
   pending_decision?: PendingDecision;
+  frontend_health?: FrontendHealth;
   agent?: Record<string, unknown>;
   server_uptime_seconds: number;
 }

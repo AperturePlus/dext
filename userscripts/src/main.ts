@@ -1,5 +1,6 @@
 import './style.css';
 import { recoverState, startAutoWatcher, startPolling, stopAutoWatcher, stopPolling } from './actions';
+import { startHeartbeat, stopHeartbeat } from './heartbeat';
 import { startInstanceLock, stopInstanceLock } from './instanceLock';
 import { isAssistantBlockedHost } from './hostPolicy';
 import { cleanupLegacyStorage, hydratePrefs, setInstanceRole, state, subscribe } from './state';
@@ -26,6 +27,7 @@ async function onRoleChange(role: 'owner' | 'standby'): Promise<void> {
   const previousRole = state.instanceRole;
   setInstanceRole(role);
   if (role === 'owner') {
+    startHeartbeat();
     await recoverState();
     startPolling();
     startAutoWatcher();
@@ -34,6 +36,7 @@ async function onRoleChange(role: 'owner' | 'standby'): Promise<void> {
     }
     return;
   }
+  stopHeartbeat();
   stopPolling();
   stopAutoWatcher();
 }
@@ -51,6 +54,7 @@ async function bootstrap(): Promise<void> {
     void onRoleChange(role);
   });
   window.addEventListener('beforeunload', () => {
+    stopHeartbeat();
     stopInstanceLock();
   });
 }
