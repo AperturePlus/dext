@@ -19,7 +19,7 @@ from dext.bridge.queue import (
     FetchJob, FetchQueue, JobContext, JobStatus, QueueStats, new_job_id, utcnow,
 )
 from dext.types import FetchAction, FetchResult, PaginationState
-from dext.url_policy import has_explicit_port
+from dext.url_policy import has_explicit_port, is_allowed_fetch_host
 
 if TYPE_CHECKING:
     from dext.config import Settings
@@ -38,6 +38,13 @@ class HumanFetcherBridge:
     async def fetch(self, *, url: str, context: JobContext,
                     identity_url: str | None = None,
                     action: FetchAction | None = None) -> FetchResult:
+        if not is_allowed_fetch_host(url):
+            logger.info("rejecting fetch with disallowed host url=%s", url)
+            return FetchResult(
+                identity_url=identity_url or url, requested_url=url, final_url=url,
+                status_code=None, html="", title="", pagination_states=[],
+                block_reason="invalid_url:host_not_allowed",
+            )
         loop = asyncio.get_running_loop()
         job = FetchJob(
             id=new_job_id(), url=url, context=context, created_at=utcnow(),
@@ -91,6 +98,9 @@ class HumanFetcherBridge:
         """Swap the in-flight job's URL, keeping the same id/future/assigned status."""
         if has_explicit_port(new_url):
             logger.info("rejecting override for job %s with explicit-port url=%s", job_id, new_url)
+            return None
+        if not is_allowed_fetch_host(new_url):
+            logger.info("rejecting override for job %s with disallowed host url=%s", job_id, new_url)
             return None
         job = self._queue.find(job_id)
         if job is None:

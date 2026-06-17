@@ -4,6 +4,27 @@ from __future__ import annotations
 
 from urllib.parse import SplitResult, urlsplit
 
+ALLOWED_FETCH_HOST_SUFFIXES = ("edu.cn", "github.io")
+
+
+def is_allowed_fetch_host(url: str) -> bool:
+    """True when an http(s) URL's host is on the fetch allowlist.
+
+    Non-http schemes (e.g. ``about:org_unit:...`` and bare test strings) are
+    never browser fetches, so they pass through unchanged. Dot-boundary checks
+    ensure ``notedu.cn`` / ``evilgithub.io`` are rejected.
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        return True
+    host = (parts.hostname or "").lower()
+    if not host:
+        return False
+    return (
+        host == "edu.cn" or host.endswith(".edu.cn")
+        or host == "github.io" or host.endswith(".github.io")
+    )
+
 
 def has_explicit_port(url: str) -> bool:
     """True when the URL authority contains an explicit host port.

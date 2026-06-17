@@ -11,6 +11,7 @@ from dext.seed import OrgUnitSeed, UniversitySeed
 from dext.storage.dedup import node_key_for
 from dext.storage.models import EdgeType, NodeStatus, NodeType
 from dext.storage.writer import NodeSpec, OrgUnitSpec
+from dext.url_policy import is_allowed_fetch_host
 from dext.engine.priorities import BASE_PRIORITY_BY_TYPE, priority_for as base_priority_for, subtree_priority_for
 
 PRIORITY_BY_TYPE: dict[NodeType, float] = BASE_PRIORITY_BY_TYPE
@@ -31,16 +32,20 @@ async def resolve_discovered_url(
     redirect_guard: RedirectGuard | None = None,
 ) -> tuple[str | None, dict[str, object]]:
     if redirect_guard is None:
-        return url, {"source_url": url}
-    verdict = await redirect_guard.probe_redirect(url)
-    if verdict.verdict in {BLOCKED, PROBE_FAILED}:
+        final_url = url
+        metadata: dict[str, object] = {"source_url": url}
+    else:
+        verdict = await redirect_guard.probe_redirect(url)
+        if verdict.verdict in {BLOCKED, PROBE_FAILED}:
+            return None, {}
+        final_url = verdict.final_url or url
+        metadata = {"source_url": url}
+        if final_url != url:
+            metadata["redirect_verdict"] = verdict.verdict
+            if verdict.reason:
+                metadata["redirect_reason"] = verdict.reason
+    if not is_allowed_fetch_host(final_url):
         return None, {}
-    final_url = verdict.final_url or url
-    metadata: dict[str, object] = {"source_url": url}
-    if final_url != url:
-        metadata["redirect_verdict"] = verdict.verdict
-        if verdict.reason:
-            metadata["redirect_reason"] = verdict.reason
     return final_url, metadata
 
 
