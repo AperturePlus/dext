@@ -11,18 +11,18 @@ import {
   renderStandbyBanner,
   renderToggles,
 } from './panelSections';
+import { getShadowRoot, mountShadowHost } from './shadowHost';
 
 let panelEl: HTMLDivElement | null = null;
 
 export function mountPanel(): void {
-  panelEl = document.createElement('div');
-  panelEl.id = 'ycl-panel';
-  panelEl.addEventListener('click', (event) => {
+  const shadow = mountShadowHost();
+  panelEl = shadow.querySelector('#ycl-panel') as HTMLDivElement | null;
+  panelEl?.addEventListener('click', (event) => {
     if (state.minimized && event.target === event.currentTarget) {
       setMinimized(false);
     }
   });
-  document.body.appendChild(panelEl);
 }
 
 export function renderPanel(): void {
@@ -53,12 +53,13 @@ export function renderPanel(): void {
 }
 
 function bindEvents(): void {
+  const shadow = getShadowRoot();
   const bind = (id: string, event: string, fn: () => void) => {
-    document.getElementById(id)?.addEventListener(event, fn);
+    shadow?.getElementById(id)?.addEventListener(event, fn);
   };
   const job = state.currentJob;
 
-  document.getElementById('ycl-min')?.addEventListener('click', (event) => {
+  shadow?.getElementById('ycl-min')?.addEventListener('click', (event) => {
     event.stopPropagation();
     setMinimized(true);
   });

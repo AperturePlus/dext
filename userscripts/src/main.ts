@@ -1,4 +1,3 @@
-import './style.css';
 import { recoverState, startAutoWatcher, startPolling, stopAutoWatcher, stopPolling } from './actions';
 import { startHeartbeat, stopHeartbeat } from './heartbeat';
 import { startInstanceLock, stopInstanceLock } from './instanceLock';

@@ -1,10 +1,11 @@
+import { mountShadowHost } from './shadowHost';
+
 let toastEl: HTMLDivElement | null = null;
 let hideTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function mountToast(): void {
-  toastEl = document.createElement('div');
-  toastEl.id = 'ycl-toast';
-  document.body.appendChild(toastEl);
+  const shadow = mountShadowHost();
+  toastEl = shadow.querySelector('#ycl-toast') as HTMLDivElement | null;
 }
 
 export function showToast(msg: string, duration = 3000): void {
