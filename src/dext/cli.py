@@ -139,6 +139,7 @@ async def run_university(
     resume: bool,
     settings: Settings,
     org_unit_ids: set[int] | None = None,
+    reset: bool = False,
 ) -> CrawlSummary:
     factories = _FACTORIES
     manifest = load_manifest(settings.seed_path)
@@ -169,6 +170,13 @@ async def run_university(
         server = await factories.run_server(app, settings.bridge_host, settings.bridge_port)
         llm_client = factories.llm_client_factory(settings)
 
+        if reset and target_org_unit_ids:
+            # Rebuild mode: nuke each targeted org_unit's discovered subtree BEFORE
+            # (re)seeding so entry-point nodes are reset and re-crawled fresh.
+            for org_id in sorted(target_org_unit_ids):
+                counts = await storage.writer.reset_org_unit_subtree(org_id)
+                logger.info("reset(rebuild) org_unit_id=%s %s", org_id, counts)
+
         await factories.load_seed_nodes(
             university,
             storage,
@@ -176,6 +184,13 @@ async def run_university(
             run_id,
             redirect_guard=redirect_guard,
         )
+
+        if reset and not target_org_unit_ids:
+            # Bad-snapshot mode: reset detail leaf nodes whose cached snapshot is
+            # empty (the capture regression) so they are re-fetched and re-extracted.
+            counts = await storage.writer.reset_bad_detail_snapshots()
+            logger.info("reset(bad-snapshots) %s", counts)
+
         logger.info(
             "bridge server ready at http://%s:%s/api; ensure the Tampermonkey "
             "browser tab is visible and has owner",
@@ -225,6 +240,7 @@ async def _run_all(
     resume: bool,
     settings: Settings,
     org_unit_ids: set[int] | None = None,
+    reset: bool = False,
 ) -> int:
     failed = False
     target_org_unit_ids = set(org_unit_ids or set())
@@ -237,6 +253,7 @@ async def _run_all(
                 resume=effective_resume,
                 settings=settings,
                 org_unit_ids=target_org_unit_ids,
+                reset=reset,
             )
         except asyncio.CancelledError:
             raise
@@ -265,6 +282,14 @@ async def _run_all(
 )
 @click.option("-r", "--resume", is_flag=True, help="Resume an existing university DB instead of fresh rebuild.")
 @click.option(
+    "--reset",
+    is_flag=True,
+    help="Requires --resume (or -oid). With -oid: rebuild each targeted college's subtree "
+    "(delete detail/followup/pagination nodes, reset entry-point nodes) and re-crawl. "
+    "Without -oid: reset all detail leaf nodes whose cached snapshot is empty/empty_page, "
+    "then re-crawl.",
+)
+@click.option(
     "-oid",
     "--org_units_id",
     "org_units_id",
@@ -281,6 +306,7 @@ def main(
     org_units_id: tuple[int, ...],
     log_file: Path | None,
     extra_universities: tuple[str, ...],
+    reset: bool,
 ) -> None:
     """Run the graph-driven human-assisted crawler."""
     settings = get_settings()
@@ -288,6 +314,8 @@ def main(
 
     if not universities:
         raise click.UsageError("Missing option '-u' / '--universities'.")
+    if reset and not (resume or org_units_id):
+        raise click.UsageError("--reset requires --resume (or -oid, which implies --resume).")
     names = [*universities, *extra_universities]
 
     manifest = _load_manifest(settings)
@@ -296,7 +324,13 @@ def main(
 
     try:
         exit_code = asyncio.run(
-            _run_all(names, resume=resume, settings=settings, org_unit_ids=set(org_units_id))
+            _run_all(
+                names,
+                resume=resume,
+                settings=settings,
+                org_unit_ids=set(org_units_id),
+                reset=reset,
+            )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):
         click.echo("Interrupted.", err=True)

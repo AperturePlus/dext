@@ -12,7 +12,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 
 from dext.storage.models import (
     CrawlRun,
@@ -202,6 +202,24 @@ class DBWriter:
 
     async def update_university_status(self, status) -> None:
         return await self._run(lambda s: _update_university_status(s, status))
+
+    async def reset_org_unit_subtree(self, org_unit_id) -> dict:
+        """Rebuild mode (`--reset -oid X`): delete the org_unit's discovered
+        subtree (detail / faculty_followup / pagination nodes), reset its
+        entry-point nodes (org_unit + faculty_list_url) to pending, and clear
+        their page_cache so they are re-fetched. Edges, extraction attempts,
+        and page_cache rows touching deleted nodes are removed. The org_unit
+        row itself is kept and its status reset to pending. Professors are
+        intentionally preserved (re-extraction is idempotent via dedup)."""
+        return await self._run(lambda s: _reset_org_unit_subtree(s, org_unit_id))
+
+    async def reset_bad_detail_snapshots(self) -> dict:
+        """Bad-snapshot mode (`--reset` without -oid): find detail_url leaf
+        nodes whose page_cache has an empty/whitespace text_snapshot (or was
+        flagged terminal_unavailable:empty_page) — the snapshot-capture
+        regression footprint — reset them to pending and delete the stale
+        page_cache so they are re-fetched. Returns a count summary."""
+        return await self._run(_reset_bad_detail_snapshots)
 
 
 # --- command implementations (module-level; take the worker's session) ---
@@ -469,3 +487,150 @@ async def _update_university_status(session, status) -> None:
     if meta is not None:
         meta.crawl_status = status
     await session.flush()
+
+
+# --- reset helpers (SP7 --reset) ---
+# Entry-point node types kept (reset to pending) when rebuilding an org_unit's
+# subtree; everything else discovered below them is deleted so it can be
+# re-discovered fresh with the fixed capture pipeline.
+_RESET_ENTRYPOINT_TYPES = {NodeType.org_unit, NodeType.faculty_list_url}
+_RESET_DELETABLE_TYPES = {
+    NodeType.detail_url,
+    NodeType.faculty_followup_url,
+    NodeType.pagination_url,
+}
+
+
+async def _reset_org_unit_subtree(session, org_unit_id) -> dict:
+    # 1. collect deletable nodes (the discovered subtree) and entry-point nodes.
+    deletable_rows = (
+        await session.execute(
+            select(GraphNode.id, GraphNode.url).where(
+                GraphNode.org_unit_id == org_unit_id,
+                GraphNode.type.in_([t.value for t in _RESET_DELETABLE_TYPES]),
+            )
+        )
+    ).all()
+    entrypoint_rows = (
+        await session.execute(
+            select(GraphNode.id, GraphNode.url).where(
+                GraphNode.org_unit_id == org_unit_id,
+                GraphNode.type.in_([t.value for t in _RESET_ENTRYPOINT_TYPES]),
+            )
+        )
+    ).all()
+
+    deletable_ids = [r[0] for r in deletable_rows]
+    deletable_urls = [r[1] for r in deletable_rows if r[1]]
+    entrypoint_ids = [r[0] for r in entrypoint_rows]
+    entrypoint_urls = [r[1] for r in entrypoint_rows if r[1]]
+
+    edges_deleted = 0
+    if deletable_ids:
+        # 2. delete edges touching the deletable nodes.
+        edges_deleted = (
+            await session.execute(
+                delete(GraphEdge).where(
+                    or_(
+                        GraphEdge.from_node_id.in_(deletable_ids),
+                        GraphEdge.to_node_id.in_(deletable_ids),
+                    )
+                )
+            )
+        ).rowcount
+        # 3. delete extraction attempts for the deletable nodes.
+        await session.execute(
+            delete(ExtractionAttempt).where(ExtractionAttempt.graph_node_id.in_(deletable_ids))
+        )
+        # 4. delete the deletable nodes.
+        await session.execute(delete(GraphNode).where(GraphNode.id.in_(deletable_ids)))
+
+    # 5. delete page_cache for both deleted and reset-to-pending entry-point URLs
+    #    so they are re-fetched fresh.
+    cache_urls = deletable_urls + entrypoint_urls
+    caches_deleted = 0
+    if cache_urls:
+        caches_deleted = (
+            await session.execute(delete(PageCache).where(PageCache.url.in_(cache_urls)))
+        ).rowcount
+
+    # 6. reset entry-point nodes back to pending so the engine re-crawls them.
+    if entrypoint_ids:
+        await session.execute(
+            update(GraphNode)
+            .where(GraphNode.id.in_(entrypoint_ids))
+            .values(
+                status=NodeStatus.pending,
+                attempt_count=0,
+                last_error=None,
+                content_hash=None,
+                claimed_at=None,
+                completed_at=None,
+                next_retry_at=None,
+            )
+        )
+
+    # 7. reset the org_unit row's crawl status.
+    await session.execute(
+        update(OrgUnit).where(OrgUnit.id == org_unit_id).values(status="pending")
+    )
+    await session.flush()
+    return {
+        "org_unit_id": org_unit_id,
+        "nodes_deleted": len(deletable_ids),
+        "entrypoints_reset": len(entrypoint_ids),
+        "edges_deleted": int(edges_deleted or 0),
+        "caches_deleted": int(caches_deleted or 0),
+    }
+
+
+async def _reset_bad_detail_snapshots(session) -> dict:
+    # detail_url leaf nodes whose cached snapshot is empty/whitespace or was
+    # flagged terminal_unavailable:empty_page — the capture regression footprint.
+    # SQLite's trim() only strips spaces, so pass an explicit whitespace charset
+    # to also catch tab/newline-only snapshots.
+    _ws = "\t\n\r "
+    trimmed = func.trim(PageCache.text_snapshot, _ws)
+    rows = (
+        await session.execute(
+            select(GraphNode.id, PageCache.url)
+            .join(PageCache, PageCache.url == GraphNode.url)
+            .where(
+                GraphNode.type == NodeType.detail_url,
+                or_(
+                    trimmed.is_(None),
+                    trimmed == "",
+                    PageCache.block_reason.like("terminal_unavailable:empty_page%"),
+                ),
+            )
+        )
+    ).all()
+    if not rows:
+        return {"nodes_reset": 0, "caches_deleted": 0}
+
+    node_ids = [r[0] for r in rows]
+    cache_urls = [r[1] for r in rows if r[1]]
+
+    await session.execute(
+        update(GraphNode)
+        .where(GraphNode.id.in_(node_ids))
+        .values(
+            status=NodeStatus.pending,
+            attempt_count=0,
+            last_error=None,
+            content_hash=None,
+            claimed_at=None,
+            completed_at=None,
+            next_retry_at=None,
+        )
+    )
+    caches_deleted = 0
+    if cache_urls:
+        caches_deleted = (
+            await session.execute(delete(PageCache).where(PageCache.url.in_(cache_urls)))
+        ).rowcount
+    await session.flush()
+    return {
+        "nodes_reset": len(node_ids),
+        "caches_deleted": int(caches_deleted or 0),
+    }
