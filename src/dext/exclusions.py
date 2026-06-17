@@ -31,6 +31,8 @@ EXCLUSION_CATEGORIES: tuple[ExclusionCategory, ...] = (
     ExclusionCategory("under_construction", "筹建学院（学院（筹）/ 筹建 / 筹备）", EXCLUSION_AXIS_ORG),
     ExclusionCategory("excellence_engineer", "卓越工程师学院（专项培养，通常无独立师资名录）", EXCLUSION_AXIS_ORG),
     ExclusionCategory("academy", "书院（住宿制 / 通识，通常无独立教师名录）", EXCLUSION_AXIS_ORG),
+    ExclusionCategory("namesake_college", "以人名命名的纪念性 / 荣誉性学院（如 ××学院以历史人物命名，通常无研究生招生或独立师资）", EXCLUSION_AXIS_ORG),
+    ExclusionCategory("freshman_college", "新生学院 / 本科生院 / 低年级学院（面向低年级本科生，无研究生招生）", EXCLUSION_AXIS_ORG),
     ExclusionCategory("postdoc", "博士后流动站 / 博士后工作站 / 博士后人员栏目（普通教师履历不算）", EXCLUSION_AXIS_UNIT),
     ExclusionCategory("retired", "离退休教师 / 离退休教职工", EXCLUSION_AXIS_UNIT),
     ExclusionCategory("administration", "专职行政 / 行政岗 / 行政人员 / 行政团队 / 管理岗", EXCLUSION_AXIS_UNIT),
