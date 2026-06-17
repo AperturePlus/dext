@@ -49,6 +49,24 @@ def classify_redirect(requested_url: str, final_url: str, *,
     return RedirectVerdict(OK, final_url=final_url, final_host=final_host)
 
 
+def _exception_summary(exc: Exception) -> str:
+    error = type(exc).__name__
+    if error == "TooManyRedirects":
+        history = getattr(exc, "history", None)
+        try:
+            redirects = len(history) if history is not None else None
+        except TypeError:
+            redirects = None
+        return f"error={error} redirects={redirects}" if redirects is not None else f"error={error}"
+
+    message = " ".join(str(exc).split())
+    if not message:
+        return f"error={error}"
+    if len(message) > 160:
+        message = f"{message[:157]}..."
+    return f"error={error} message={message}"
+
+
 async def _aiohttp_resolver(url: str, *, timeout: float = 8.0) -> str:
     import aiohttp
 
@@ -67,6 +85,6 @@ class RedirectGuard:
         try:
             final_url = await self._resolver(url)
         except Exception as exc:  # WAF / timeout / DNS / redirect loop
-            logger.info("redirect probe failed for %s: %r", url, exc)
+            logger.info("redirect probe failed url=%s %s", url, _exception_summary(exc))
             return RedirectVerdict(PROBE_FAILED, reason="probe_failed")
         return classify_redirect(url, final_url, blacklist=self._blacklist)

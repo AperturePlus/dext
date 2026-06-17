@@ -35,3 +35,32 @@ async def test_probe_failure_returns_probe_failed():
     async def resolver(url):
         raise RuntimeError("WAF")
     assert (await RedirectGuard(resolver=resolver).probe_redirect("https://x/p")).verdict == PROBE_FAILED
+
+
+async def test_probe_failure_logs_compact_exception_summary(caplog):
+    async def resolver(url):
+        raise RuntimeError("WAF")
+
+    with caplog.at_level("INFO", logger="dext.bridge.redirect"):
+        verdict = await RedirectGuard(resolver=resolver).probe_redirect("https://x/p")
+
+    assert verdict.verdict == PROBE_FAILED
+    assert "redirect probe failed url=https://x/p error=RuntimeError message=WAF" in caplog.text
+
+
+async def test_probe_too_many_redirects_log_omits_verbose_history(caplog):
+    class FakeTooManyRedirects(Exception):
+        history = ["<ClientResponse(...) [302 None]>\n<CIMultiDictProxy(...)>"] * 10
+
+    FakeTooManyRedirects.__name__ = "TooManyRedirects"
+
+    async def resolver(url):
+        raise FakeTooManyRedirects("verbose redirect history")
+
+    with caplog.at_level("INFO", logger="dext.bridge.redirect"):
+        verdict = await RedirectGuard(resolver=resolver).probe_redirect("https://sirpa.fudan.edu.cn/_redirect")
+
+    assert verdict.verdict == PROBE_FAILED
+    assert "error=TooManyRedirects redirects=10" in caplog.text
+    assert "ClientResponse" not in caplog.text
+    assert "CIMultiDictProxy" not in caplog.text
