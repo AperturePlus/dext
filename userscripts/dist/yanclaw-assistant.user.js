@@ -28,10 +28,6 @@
 (function () {
   'use strict';
 
-  const d=new Set;const importCSS = async e=>{d.has(e)||(d.add(e),(t=>{typeof GM_addStyle=="function"?GM_addStyle(t):(document.head||document.documentElement).appendChild(document.createElement("style")).append(t);})(e));};
-
-  const styleCss = '#ycl-panel{position:fixed;bottom:16px;right:16px;z-index:2147483647;width:380px;max-height:80vh;overflow-y:auto;background:#1e1e2e;color:#cdd6f4;border-radius:12px;box-shadow:0 8px 32px #00000073;font:13px/1.5 system-ui,sans-serif;-webkit-user-select:none;user-select:none;transition:all .2s}#ycl-panel.ycl-minimized{width:48px;height:48px;overflow:hidden;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center}#ycl-panel.ycl-minimized:after{content:"🦀";font-size:22px}#ycl-panel.ycl-minimized *{display:none!important}#ycl-header{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#313244;border-radius:12px 12px 0 0;cursor:move}#ycl-header span{font-weight:600;font-size:14px}#ycl-header button{background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:16px;padding:0 4px}.ycl-section{padding:8px 12px;border-top:1px solid #45475a}.ycl-label{color:#a6adc8;font-size:11px;text-transform:uppercase;letter-spacing:.5px}.ycl-url{color:#89b4fa;word-break:break-all;font-size:12px}.ycl-intent{color:#f9e2af;margin:4px 0}.ycl-hint{color:#94e2d5;font-size:12px}.ycl-btn-row{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px}.ycl-btn{padding:5px 10px;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;transition:filter .15s}.ycl-btn:hover{filter:brightness(1.15)}.ycl-btn:disabled{cursor:not-allowed;opacity:.55;filter:none}.ycl-btn-primary{background:#89b4fa;color:#1e1e2e}.ycl-btn-success{background:#a6e3a1;color:#1e1e2e}.ycl-btn-warn{background:#f9e2af;color:#1e1e2e}.ycl-btn-danger{background:#f38ba8;color:#1e1e2e}.ycl-btn-muted{background:#585b70;color:#cdd6f4}.ycl-toggle{display:flex;align-items:center;gap:6px;padding:4px 12px}.ycl-toggle input{accent-color:#89b4fa}.ycl-status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle}.ycl-dot-on{background:#a6e3a1}.ycl-dot-off{background:#f38ba8}.ycl-match-banner{background:#a6e3a1;color:#1e1e2e;text-align:center;padding:6px;font-weight:600;font-size:12px}.ycl-standby-banner{background:#fab387;color:#1e1e2e;text-align:center;padding:6px;font-weight:600;font-size:12px}.ycl-role-badge{display:inline-flex;align-items:center;margin-left:6px;padding:0 6px;border-radius:999px;font-size:10px;line-height:16px;vertical-align:middle}.ycl-role-owner{background:#a6e3a1;color:#1e1e2e}.ycl-role-standby{background:#f9e2af;color:#1e1e2e}#ycl-toast{position:fixed;top:16px;right:16px;z-index:2147483647;background:#f38ba8;color:#1e1e2e;padding:8px 16px;border-radius:8px;font:13px system-ui,sans-serif;display:none}';
-  importCSS(styleCss);
   var _GM = (() => typeof GM != "undefined" ? GM : void 0)();
   var _GM_deleteValue = (() => typeof GM_deleteValue != "undefined" ? GM_deleteValue : void 0)();
   var _GM_getValue = (() => typeof GM_getValue != "undefined" ? GM_getValue : void 0)();
@@ -547,12 +543,25 @@
     state.currentJob = null;
     notify();
   }
+  const styleCss = '#ycl-panel{position:fixed;bottom:16px;right:16px;z-index:2147483647;width:380px;max-height:80vh;overflow-y:auto;background:#1e1e2e;color:#cdd6f4;border-radius:12px;box-shadow:0 8px 32px #00000073;font:13px/1.5 system-ui,sans-serif;-webkit-user-select:none;user-select:none;transition:all .2s}#ycl-panel.ycl-minimized{width:48px;height:48px;overflow:hidden;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center}#ycl-panel.ycl-minimized:after{content:"🦀";font-size:22px}#ycl-panel.ycl-minimized *{display:none!important}#ycl-header{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#313244;border-radius:12px 12px 0 0;cursor:move}#ycl-header span{font-weight:600;font-size:14px}#ycl-header button{background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:16px;padding:0 4px}.ycl-section{padding:8px 12px;border-top:1px solid #45475a}.ycl-label{color:#a6adc8;font-size:11px;text-transform:uppercase;letter-spacing:.5px}.ycl-url{color:#89b4fa;word-break:break-all;font-size:12px}.ycl-intent{color:#f9e2af;margin:4px 0}.ycl-hint{color:#94e2d5;font-size:12px}.ycl-btn-row{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px}.ycl-btn{padding:5px 10px;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;transition:filter .15s}.ycl-btn:hover{filter:brightness(1.15)}.ycl-btn:disabled{cursor:not-allowed;opacity:.55;filter:none}.ycl-btn-primary{background:#89b4fa;color:#1e1e2e}.ycl-btn-success{background:#a6e3a1;color:#1e1e2e}.ycl-btn-warn{background:#f9e2af;color:#1e1e2e}.ycl-btn-danger{background:#f38ba8;color:#1e1e2e}.ycl-btn-muted{background:#585b70;color:#cdd6f4}.ycl-toggle{display:flex;align-items:center;gap:6px;padding:4px 12px}.ycl-toggle input{accent-color:#89b4fa}.ycl-status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:middle}.ycl-dot-on{background:#a6e3a1}.ycl-dot-off{background:#f38ba8}.ycl-match-banner{background:#a6e3a1;color:#1e1e2e;text-align:center;padding:6px;font-weight:600;font-size:12px}.ycl-standby-banner{background:#fab387;color:#1e1e2e;text-align:center;padding:6px;font-weight:600;font-size:12px}.ycl-role-badge{display:inline-flex;align-items:center;margin-left:6px;padding:0 6px;border-radius:999px;font-size:10px;line-height:16px;vertical-align:middle}.ycl-role-owner{background:#a6e3a1;color:#1e1e2e}.ycl-role-standby{background:#f9e2af;color:#1e1e2e}#ycl-toast{position:fixed;top:16px;right:16px;z-index:2147483647;background:#f38ba8;color:#1e1e2e;padding:8px 16px;border-radius:8px;font:13px system-ui,sans-serif;display:none}';
+  let shadow = null;
+  function mountShadowHost() {
+    if (shadow) return shadow;
+    const host = document.createElement("div");
+    host.dataset.yanclawOverlay = "";
+    shadow = host.attachShadow({ mode: "closed" });
+    shadow.innerHTML = `<style>${styleCss}</style><div id="ycl-panel"></div><div id="ycl-toast"></div>`;
+    document.body.appendChild(host);
+    return shadow;
+  }
+  function getShadowRoot() {
+    return shadow;
+  }
   let toastEl = null;
   let hideTimer = null;
   function mountToast() {
-    toastEl = document.createElement("div");
-    toastEl.id = "ycl-toast";
-    document.body.appendChild(toastEl);
+    const shadow2 = mountShadowHost();
+    toastEl = shadow2.querySelector("#ycl-toast");
   }
   function showToast(msg, duration = 3e3) {
     if (!toastEl) return;
@@ -632,7 +641,7 @@
     var _a;
     const title = document.title || "";
     const bodyText = ((_a = document.body) == null ? void 0 : _a.innerText) || "";
-    if (bodyText.length < 2e3 && ERROR_PATTERNS.test(title + " " + bodyText)) return true;
+    if (bodyText.length < 1500 && ERROR_PATTERNS.test(title + " " + bodyText)) return true;
     return false;
   }
   function terminalUnavailableReason() {
@@ -1042,22 +1051,23 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
   async function captureCurrentHtml(job) {
-    await waitForCaptureReady();
-    return serializePageWithoutOverlay({ stripHeader: job.context.intent === "detail_extract" });
+    const skipImages = job.context.intent === "detail_extract";
+    await waitForCaptureReady(skipImages);
+    return serializePageWithoutOverlay({ stripHeader: skipImages });
   }
-  async function waitForCaptureReady() {
+  async function waitForCaptureReady(skipImages = false) {
     var _a;
     const started2 = Date.now();
     let lastSignature = "";
     let stableRounds = 0;
     let scrolled = false;
     while (Date.now() - started2 < CAPTURE_MAX_WAIT) {
-      if (document.readyState === "complete") {
+      if (skipImages ? document.readyState !== "loading" : document.readyState === "complete") {
         if (!scrolled && Date.now() - started2 >= Math.floor(AUTO_SUBMIT_DELAY / 2)) {
           scrolled = true;
           window.scrollTo({ top: ((_a = document.body) == null ? void 0 : _a.scrollHeight) ?? 0, behavior: "auto" });
         }
-        const signature = captureSignature();
+        const signature = captureSignature(skipImages);
         if (signature === lastSignature) {
           stableRounds += 1;
         } else {
@@ -1071,11 +1081,11 @@
       await sleep(CAPTURE_STABLE_INTERVAL);
     }
   }
-  function captureSignature() {
+  function captureSignature(skipImages = false) {
     var _a, _b;
     const textLength = ((_b = (_a = document.body) == null ? void 0 : _a.innerText) == null ? void 0 : _b.length) ?? 0;
     const nodeCount = document.getElementsByTagName("*").length;
-    const imageCount = document.images.length;
+    const imageCount = skipImages ? 0 : document.images.length;
     return `${textLength}:${nodeCount}:${imageCount}`;
   }
   function serializePageWithoutOverlay(options) {
@@ -1335,14 +1345,13 @@
   }
   let panelEl = null;
   function mountPanel() {
-    panelEl = document.createElement("div");
-    panelEl.id = "ycl-panel";
-    panelEl.addEventListener("click", (event) => {
+    const shadow2 = mountShadowHost();
+    panelEl = shadow2.querySelector("#ycl-panel");
+    panelEl == null ? void 0 : panelEl.addEventListener("click", (event) => {
       if (state.minimized && event.target === event.currentTarget) {
         setMinimized(false);
       }
     });
-    document.body.appendChild(panelEl);
   }
   function renderPanel() {
     if (!panelEl) return;
@@ -1368,12 +1377,13 @@
   }
   function bindEvents() {
     var _a;
+    const shadow2 = getShadowRoot();
     const bind = (id, event, fn) => {
       var _a2;
-      (_a2 = document.getElementById(id)) == null ? void 0 : _a2.addEventListener(event, fn);
+      (_a2 = shadow2 == null ? void 0 : shadow2.getElementById(id)) == null ? void 0 : _a2.addEventListener(event, fn);
     };
     const job = state.currentJob;
-    (_a = document.getElementById("ycl-min")) == null ? void 0 : _a.addEventListener("click", (event) => {
+    (_a = shadow2 == null ? void 0 : shadow2.getElementById("ycl-min")) == null ? void 0 : _a.addEventListener("click", (event) => {
       event.stopPropagation();
       setMinimized(true);
     });
