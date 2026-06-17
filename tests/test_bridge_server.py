@@ -44,26 +44,26 @@ async def test_next_is_204_when_empty(harness):
 
 async def test_full_round_trip_complete(harness):
     ctx = JobContext(university_name="清华大学", intent="org_listing")
-    task = asyncio.ensure_future(harness.bridge.fetch(url="https://x/list", context=ctx))
+    task = asyncio.ensure_future(harness.bridge.fetch(url="https://x.edu.cn/list", context=ctx))
     job = await _poll_next(harness.client)
-    assert job["url"] == "https://x/list"
+    assert job["url"] == "https://x.edu.cn/list"
     assert job["status"] == "assigned"
     assert job["context"]["university_name"] == "清华大学"
     assert job["action"] is None and job["identity_url"] is None
     mojibake = "计算机学院".encode("utf-8").decode("latin-1")
     resp = await _post(harness.client, f"/api/jobs/{job['id']}/complete",
-                       {"html": f"<h1>{mojibake}</h1>", "url": "https://x/list?p=1",
+                       {"html": f"<h1>{mojibake}</h1>", "url": "https://x.edu.cn/list?p=1",
                         "title": "教师", "pagination_states": []})
     assert resp.status == 200
     body = await resp.json()
     assert body["status"] == "ok" and body["next_job"] is None
     result = await task
-    assert result.final_url == "https://x/list?p=1"
+    assert result.final_url == "https://x.edu.cn/list?p=1"
     assert "计算机学院" in result.html
 
 
 async def test_complete_with_explicit_port_final_url_resolves_as_invalid_url(harness):
-    task = asyncio.ensure_future(harness.bridge.fetch(url="https://x/list", context=JobContext()))
+    task = asyncio.ensure_future(harness.bridge.fetch(url="https://x.edu.cn/list", context=JobContext()))
     job = await _poll_next(harness.client)
     resp = await _post(
         harness.client,
@@ -107,31 +107,31 @@ async def test_skip_path_is_human_skip(harness):
 
 
 async def test_override_swaps_url(harness):
-    task = asyncio.ensure_future(harness.bridge.fetch(url="https://x/wrong", context=JobContext()))
+    task = asyncio.ensure_future(harness.bridge.fetch(url="https://x.edu.cn/wrong", context=JobContext()))
     job = await _poll_next(harness.client)
-    resp = await _post(harness.client, f"/api/jobs/{job['id']}/override", {"new_url": "https://x/right"})
+    resp = await _post(harness.client, f"/api/jobs/{job['id']}/override", {"new_url": "https://x.edu.cn/right"})
     assert resp.status == 200
-    assert (await resp.json())["url"] == "https://x/right"
+    assert (await resp.json())["url"] == "https://x.edu.cn/right"
     await _post(harness.client, f"/api/jobs/{job['id']}/complete",
-                {"html": "", "url": "https://x/right", "title": "", "pagination_states": []})
-    assert (await task).requested_url == "https://x/right"
+                {"html": "", "url": "https://x.edu.cn/right", "title": "", "pagination_states": []})
+    assert (await task).requested_url == "https://x.edu.cn/right"
 
 
 async def test_override_rejects_explicit_port_url(harness):
-    task = asyncio.ensure_future(harness.bridge.fetch(url="https://x/wrong", context=JobContext()))
+    task = asyncio.ensure_future(harness.bridge.fetch(url="https://x.edu.cn/wrong", context=JobContext()))
     job = await _poll_next(harness.client)
     resp = await _post(harness.client, f"/api/jobs/{job['id']}/override", {"new_url": "https://x:443/right"})
     assert resp.status == 204
     current = await harness.client.get("/api/status")
     body = await current.json()
-    assert body["current_job"]["url"] == "https://x/wrong"
+    assert body["current_job"]["url"] == "https://x.edu.cn/wrong"
     await _post(harness.client, f"/api/jobs/{job['id']}/complete",
-                {"html": "", "url": "https://x/wrong", "title": "", "pagination_states": []})
-    assert (await task).requested_url == "https://x/wrong"
+                {"html": "", "url": "https://x.edu.cn/wrong", "title": "", "pagination_states": []})
+    assert (await task).requested_url == "https://x.edu.cn/wrong"
 
 
 async def test_override_unknown_job_is_204(harness):
-    resp = await _post(harness.client, "/api/jobs/nope/override", {"new_url": "https://x/y"})
+    resp = await _post(harness.client, "/api/jobs/nope/override", {"new_url": "https://x.edu.cn/y"})
     assert resp.status == 204
 
 
@@ -144,7 +144,7 @@ async def test_stale_complete_is_ignored_200(harness):
 
 async def test_status_reports_counts_and_utf8(harness):
     task = asyncio.ensure_future(
-        harness.bridge.fetch(url="https://x/list", context=JobContext(university_name="北京大学")))
+        harness.bridge.fetch(url="https://x.edu.cn/list", context=JobContext(university_name="北京大学")))
     await _poll_next(harness.client)
     resp = await harness.client.get("/api/status")
     assert resp.status == 200
@@ -153,13 +153,13 @@ async def test_status_reports_counts_and_utf8(harness):
     assert "北京大学" in raw          # ensure_ascii=False
     data = json.loads(raw)
     assert data["queue"]["assigned"] == 1
-    assert data["current_job"]["url"] == "https://x/list"
+    assert data["current_job"]["url"] == "https://x.edu.cn/list"
     assert data["frontend_health"]["alive"] is False
     assert data["frontend_health"]["last_seen_seconds_ago"] is None
     assert isinstance(data["server_uptime_seconds"], (int, float))
     assert data["pending_decision"] is None
     await _post(harness.client, f"/api/jobs/{data['current_job']['id']}/complete",
-                {"html": "", "url": "https://x/list", "title": "", "pagination_states": []})
+                {"html": "", "url": "https://x.edu.cn/list", "title": "", "pagination_states": []})
     await task
 
 
@@ -169,7 +169,7 @@ async def test_heartbeat_updates_status_frontend_health(harness):
         "/api/heartbeat",
         {
             "owner_tab_id": "tab-1",
-            "url": "https://x/list",
+            "url": "https://x.edu.cn/list",
             "current_job_id": "job-1",
             "auto_mode": True,
             "paused": False,
@@ -184,7 +184,7 @@ async def test_heartbeat_updates_status_frontend_health(harness):
     health = body["frontend_health"]
     assert health["alive"] is True
     assert health["owner_tab_id"] == "tab-1"
-    assert health["url"] == "https://x/list"
+    assert health["url"] == "https://x.edu.cn/list"
     assert health["current_job_id"] == "job-1"
     assert health["auto_mode"] is True
     assert health["paused"] is False
@@ -193,7 +193,7 @@ async def test_heartbeat_updates_status_frontend_health(harness):
 
 
 async def test_heartbeat_requires_owner_tab_id(harness):
-    resp = await _post(harness.client, "/api/heartbeat", {"url": "https://x/list"})
+    resp = await _post(harness.client, "/api/heartbeat", {"url": "https://x.edu.cn/list"})
     assert resp.status == 400
 
 
@@ -202,7 +202,7 @@ async def test_decision_get_204_then_resolve(harness):
     seen = []
     harness.dc.on_resolve(lambda d, a: seen.append(a))
     harness.dc.set_decision(PendingDecision(id="d1", kind="detail_failures", org_unit_name="物理学院",
-                                            failure_count=3, sample_urls=["https://x/1"],
+                                            failure_count=3, sample_urls=["https://x.edu.cn/1"],
                                             suggested_action="switch_failed_to_human"))
     got = await harness.client.get("/api/decision")
     assert got.status == 200
@@ -216,13 +216,13 @@ async def test_decision_get_204_then_resolve(harness):
 
 
 async def test_pagination_states_parsed_into_result(harness):
-    task = asyncio.ensure_future(harness.bridge.fetch(url="https://x/list", context=JobContext()))
+    task = asyncio.ensure_future(harness.bridge.fetch(url="https://x.edu.cn/list", context=JobContext()))
     job = await _poll_next(harness.client)
     state = {"kind": "form_submit", "state_id": "form:f:p:2", "label": "f 第 2 页", "page_index": 2,
              "total_pages": 5, "form_name": "f", "fields": {"p": "2"}, "submit": True,
-             "synthetic_url": "https://x/list?__ycl_page=2", "url": "https://x/list"}
+             "synthetic_url": "https://x.edu.cn/list?__ycl_page=2", "url": "https://x.edu.cn/list"}
     await _post(harness.client, f"/api/jobs/{job['id']}/complete",
-                {"html": "", "url": "https://x/list", "title": "", "pagination_states": [state, {"bad": 1}]})
+                {"html": "", "url": "https://x.edu.cn/list", "title": "", "pagination_states": [state, {"bad": 1}]})
     result = await task
     assert len(result.pagination_states) == 1          # malformed one dropped
     assert result.pagination_states[0].page_index == 2
@@ -230,14 +230,14 @@ async def test_pagination_states_parsed_into_result(harness):
 
 
 async def test_explicit_port_pagination_states_are_dropped(harness):
-    task = asyncio.ensure_future(harness.bridge.fetch(url="https://x/list", context=JobContext()))
+    task = asyncio.ensure_future(harness.bridge.fetch(url="https://x.edu.cn/list", context=JobContext()))
     job = await _poll_next(harness.client)
     good = {"kind": "form_submit", "state_id": "form:f:p:2", "label": "f 第 2 页", "page_index": 2,
             "total_pages": 5, "form_name": "f", "fields": {"p": "2"}, "submit": True,
-            "synthetic_url": "https://x/list?__ycl_page=2", "url": "https://x/list"}
+            "synthetic_url": "https://x.edu.cn/list?__ycl_page=2", "url": "https://x.edu.cn/list"}
     bad = {**good, "state_id": "form:f:p:3", "page_index": 3,
-           "synthetic_url": "https://x.edu.cn:443/list?__ycl_page=3", "url": "https://x/list"}
+           "synthetic_url": "https://x.edu.cn:443/list?__ycl_page=3", "url": "https://x.edu.cn/list"}
     await _post(harness.client, f"/api/jobs/{job['id']}/complete",
-                {"html": "", "url": "https://x/list", "title": "", "pagination_states": [bad, good]})
+                {"html": "", "url": "https://x.edu.cn/list", "title": "", "pagination_states": [bad, good]})
     result = await task
     assert [s.page_index for s in result.pagination_states] == [2]

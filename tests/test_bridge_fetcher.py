@@ -25,15 +25,15 @@ async def _await_job(bridge):
 
 async def test_fetch_resolves_on_complete_with_repaired_html():
     b = _bridge()
-    task = asyncio.ensure_future(b.fetch(url="https://x/list", context=_ctx()))
+    task = asyncio.ensure_future(b.fetch(url="https://x.edu.cn/list", context=_ctx()))
     job = await _await_job(b)
-    assert job.url == "https://x/list"
+    assert job.url == "https://x.edu.cn/list"
     mojibake = "计算机学院".encode("utf-8").decode("latin-1")
-    assert b.complete(job.id, html=f"<h1>{mojibake}</h1>", final_url="https://x/list?p=1", title="教师") is True
+    assert b.complete(job.id, html=f"<h1>{mojibake}</h1>", final_url="https://x.edu.cn/list?p=1", title="教师") is True
     result = await task
     assert isinstance(result, FetchResult)
-    assert result.identity_url == "https://x/list"        # defaults to url
-    assert result.final_url == "https://x/list?p=1"
+    assert result.identity_url == "https://x.edu.cn/list"        # defaults to url
+    assert result.final_url == "https://x.edu.cn/list?p=1"
     assert "计算机学院" in result.html                      # mojibake repaired
     assert result.block_reason is None
     assert b.stats().completed == 1
@@ -41,22 +41,22 @@ async def test_fetch_resolves_on_complete_with_repaired_html():
 
 async def test_complete_with_explicit_port_final_url_fails_job():
     b = _bridge()
-    task = asyncio.ensure_future(b.fetch(url="https://x/list", context=_ctx()))
+    task = asyncio.ensure_future(b.fetch(url="https://x.edu.cn/list", context=_ctx()))
     job = await _await_job(b)
     assert b.complete(job.id, html="<h1>bad</h1>", final_url="https://x.edu.cn:443/list", title="t") is True
     result = await task
     assert result.block_reason == "invalid_url:explicit_port"
-    assert result.final_url == "https://x/list"
+    assert result.final_url == "https://x.edu.cn/list"
     assert b.stats().failed == 1
 
 
 async def test_identity_url_preserved_as_cache_key():
     b = _bridge()
     task = asyncio.ensure_future(
-        b.fetch(url="https://x/list?__ycl_page=2", identity_url="https://x/list#syn2", context=_ctx()))
+        b.fetch(url="https://x.edu.cn/list?__ycl_page=2", identity_url="https://x.edu.cn/list#syn2", context=_ctx()))
     job = await _await_job(b)
-    b.complete(job.id, html="x", final_url="https://x/list?p=2", title="t")
-    assert (await task).identity_url == "https://x/list#syn2"
+    b.complete(job.id, html="x", final_url="https://x.edu.cn/list?p=2", title="t")
+    assert (await task).identity_url == "https://x.edu.cn/list#syn2"
 
 
 async def test_single_in_flight_second_next_is_none():
@@ -117,21 +117,21 @@ async def test_unknown_job_id_ignored_everywhere():
 async def test_timeout_returns_block_reason_timeout_and_counts_failed():
     b = _bridge(timeout=0.02)
     b.record_frontend_heartbeat(owner_tab_id="tab1", url="https://assistant.local")
-    result = await b.fetch(url="https://x/list", context=_ctx())
+    result = await b.fetch(url="https://x.edu.cn/list", context=_ctx())
     assert result.block_reason == "timeout"
-    assert result.final_url == "https://x/list"
+    assert result.final_url == "https://x.edu.cn/list"
     assert b.stats().failed == 1
     assert b.current_job() is None
 
 
 async def test_timeout_pauses_while_frontend_heartbeat_is_absent():
     b = _bridge(timeout=0.02)
-    task = asyncio.ensure_future(b.fetch(url="https://x/list", context=_ctx()))
+    task = asyncio.ensure_future(b.fetch(url="https://x.edu.cn/list", context=_ctx()))
     job = await _await_job(b)
     await asyncio.sleep(0.06)
     assert not task.done()
     assert b.current_job() is job
-    b.complete(job.id, html="ok", final_url="https://x/list", title="")
+    b.complete(job.id, html="ok", final_url="https://x.edu.cn/list", title="")
     assert (await task).block_reason is None
     assert b.stats().completed == 1
     assert b.stats().failed == 0
@@ -139,7 +139,7 @@ async def test_timeout_pauses_while_frontend_heartbeat_is_absent():
 
 async def test_timeout_resumes_after_frontend_heartbeat_returns():
     b = _bridge(timeout=0.02)
-    task = asyncio.ensure_future(b.fetch(url="https://x/list", context=_ctx()))
+    task = asyncio.ensure_future(b.fetch(url="https://x.edu.cn/list", context=_ctx()))
     await _await_job(b)
     await asyncio.sleep(0.03)
     assert not task.done()
@@ -151,21 +151,41 @@ async def test_timeout_resumes_after_frontend_heartbeat_returns():
 
 async def test_override_swaps_url_keeps_job_and_future():
     b = _bridge()
-    task = asyncio.ensure_future(b.fetch(url="https://x/wrong", context=_ctx()))
+    task = asyncio.ensure_future(b.fetch(url="https://x.edu.cn/wrong", context=_ctx()))
     job = await _await_job(b)
-    updated = b.override(job.id, "https://x/right")
-    assert updated is not None and updated.id == job.id and updated.url == "https://x/right"
-    assert b.current_job().url == "https://x/right"
-    b.complete(job.id, html="", final_url="https://x/right", title="")
+    updated = b.override(job.id, "https://x.edu.cn/right")
+    assert updated is not None and updated.id == job.id and updated.url == "https://x.edu.cn/right"
+    assert b.current_job().url == "https://x.edu.cn/right"
+    b.complete(job.id, html="", final_url="https://x.edu.cn/right", title="")
     result = await task
-    assert result.requested_url == "https://x/right"
+    assert result.requested_url == "https://x.edu.cn/right"
 
 
 async def test_override_rejects_explicit_port_url():
     b = _bridge()
-    task = asyncio.ensure_future(b.fetch(url="https://x/wrong", context=_ctx()))
+    task = asyncio.ensure_future(b.fetch(url="https://x.edu.cn/wrong", context=_ctx()))
     job = await _await_job(b)
     assert b.override(job.id, "https://x.edu.cn:8080/right") is None
-    assert b.current_job().url == "https://x/wrong"
-    b.complete(job.id, html="", final_url="https://x/wrong", title="")
-    assert (await task).requested_url == "https://x/wrong"
+    assert b.current_job().url == "https://x.edu.cn/wrong"
+    b.complete(job.id, html="", final_url="https://x.edu.cn/wrong", title="")
+    assert (await task).requested_url == "https://x.edu.cn/wrong"
+
+
+async def test_fetch_blocks_disallowed_host():
+    b = _bridge()
+    result = await b.fetch(url="https://evil.com/p", context=_ctx())
+    assert result.block_reason == "invalid_url:host_not_allowed"
+    assert result.final_url == "https://evil.com/p"
+    assert result.requested_url == "https://evil.com/p"
+    assert b.next_job() is None
+    assert b.stats().failed == 0
+
+
+async def test_override_rejects_disallowed_host():
+    b = _bridge()
+    task = asyncio.ensure_future(b.fetch(url="https://x.edu.cn/wrong", context=_ctx()))
+    job = await _await_job(b)
+    assert b.override(job.id, "https://evil.com/x") is None
+    assert b.current_job().url == "https://x.edu.cn/wrong"
+    b.complete(job.id, html="", final_url="https://x.edu.cn/wrong", title="")
+    assert (await task).requested_url == "https://x.edu.cn/wrong"

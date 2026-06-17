@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from sqlalchemy import select
 
 from dext.engine import PRIORITY_BY_TYPE, load_seed_nodes
-from dext.engine.seeds import node_spec
+from dext.engine.seeds import node_spec, resolve_discovered_url
 from dext.bridge.redirect import RedirectGuard
 from dext.seed import OrgUnitSeed, UniversitySeed
 from dext.storage.db import create_all, create_engine_for_path, make_session_factory
@@ -118,6 +118,32 @@ async def test_load_seed_nodes_drops_blocked_redirect_urls(tmp_path):
     async with h.session_factory() as s:
         assert (await s.execute(select(GraphNode))).scalars().all() == []
     await _close(h)
+
+
+async def test_resolve_discovered_url_blocks_disallowed_direct():
+    resolved, metadata = await resolve_discovered_url("https://evil.com/p")
+    assert resolved is None
+    assert metadata == {}
+
+
+async def test_resolve_discovered_url_blocks_disallowed_redirect():
+    async def resolver(url):
+        return "https://evil.com/"
+
+    guard = RedirectGuard(resolver=resolver)
+    resolved, metadata = await resolve_discovered_url("https://x.edu.cn/p", redirect_guard=guard)
+    assert resolved is None
+    assert metadata == {}
+
+
+async def test_resolve_discovered_url_allows_github_io_redirect():
+    async def resolver(url):
+        return "https://foo.github.io/page"
+
+    guard = RedirectGuard(resolver=resolver)
+    resolved, metadata = await resolve_discovered_url("https://x.edu.cn/p", redirect_guard=guard)
+    assert resolved == "https://foo.github.io/page"
+    assert metadata["source_url"] == "https://x.edu.cn/p"
 
 
 async def test_load_seed_nodes_drops_too_many_redirects_urls(tmp_path):
