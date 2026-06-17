@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 
 from sqlalchemy import func, select
@@ -11,9 +12,12 @@ from dext.bridge.queue import JobContext
 from dext.engine.handlers import HandlerDeps, fetch_action_from_metadata, identity_url_for
 from dext.engine.retry import assess_terminal_unavailable_page, classify_fetch_failure
 from dext.engine.workers import DecideTask, ExtractTask, InFlightTracker, decision_worker, extract_worker
-from dext.page import build_snapshot
+from dext.page import PageSnapshot, build_snapshot
 from dext.storage.models import GraphNode, NodeStatus, NodeType, PageCache, Professor, ProfessorAffiliation
 from dext.storage.writer import PageCachePayload
+from dext.types import FetchResult
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -157,9 +161,15 @@ class CrawlEngine:
             org_unit_name=node.org_unit_name or "",
             hints=[],
         )
-        result = await self.bridge.fetch(url=node.url, identity_url=fetch_identity, action=action, context=context)
-        self._summary.fetched += 1
+        cache = await self.storage.writer.get_page_cache(fetch_identity)
+        if cache is None:
+            result = await self.bridge.fetch(url=node.url, identity_url=fetch_identity, action=action, context=context)
+            self._summary.fetched += 1
+            await self._process_fresh_result(node, action, result)
+            return
+        await self._process_cached_result(node, action, cache)
 
+    async def _process_fresh_result(self, node, action, result: FetchResult) -> None:
         if result.block_reason:
             self._summary.fetch_failed += 1
             await self._save_failed_page_cache(result)
@@ -182,7 +192,7 @@ class CrawlEngine:
                 status_code=result.status_code,
                 text_snapshot=snapshot.text_snapshot,
                 links=snapshot.links,
-                link_signals=[s.__dict__ for s in snapshot.link_signals],
+                link_signals=[signal.__dict__ for signal in snapshot.link_signals],
                 block_reason=f"terminal_unavailable:{terminal_unavailable}" if terminal_unavailable else None,
                 html_snapshot=result.html,
                 content_hash=snapshot.content_hash,
@@ -206,6 +216,69 @@ class CrawlEngine:
                 content_hash=snapshot.content_hash,
             )
             return
+
+        await self._dispatch_snapshot(
+            node,
+            snapshot,
+            raw_html=result.html,
+            pagination_states=result.pagination_states,
+        )
+
+    async def _process_cached_result(self, node, action, cache: PageCache) -> None:
+        if cache.html_snapshot:
+            snapshot = build_snapshot(
+                cache.html_snapshot,
+                cache.url,
+                cache.final_url or cache.url,
+                cache.title or "",
+            )
+            terminal_unavailable = assess_terminal_unavailable_page(snapshot, status_code=cache.status_code)
+            if terminal_unavailable:
+                reason = f"terminal_unavailable:{terminal_unavailable}"
+                self._summary.fetch_failed += 1
+                await self.storage.writer.record_extraction_failure(
+                    failure_type=f"fetch:{reason}",
+                    resolver="dropped",
+                    raw_arguments_preview=None,
+                    source_url=cache.url,
+                )
+                await self.storage.writer.mark_node(
+                    node.id,
+                    NodeStatus.skipped,
+                    last_error=reason,
+                    content_hash=snapshot.content_hash,
+                )
+                return
+
+            if NodeType(node.type) == NodeType.detail_url:
+                logger.info("dispatching cached detail node_id=%s url=%s", node.id, cache.url)
+            await self._dispatch_snapshot(
+                node,
+                snapshot,
+                raw_html=cache.html_snapshot,
+                pagination_states=[],
+            )
+            return
+
+        reason = cache.block_reason or "cached_no_html"
+        self._summary.fetch_failed += 1
+        decision = classify_fetch_failure(reason)
+        await self.storage.writer.record_extraction_failure(
+            failure_type=f"fetch:{reason}",
+            resolver=decision.resolver,
+            raw_arguments_preview=None,
+            source_url=cache.url,
+        )
+        await self.storage.writer.mark_node(node.id, decision.status, last_error=decision.last_error)
+
+    async def _dispatch_snapshot(
+        self,
+        node,
+        snapshot: PageSnapshot,
+        *,
+        raw_html: str,
+        pagination_states: list,
+    ) -> None:
         if NodeType(node.type) == NodeType.detail_url:
             await self.extract_queue.put(
                 ExtractTask(
@@ -222,12 +295,11 @@ class CrawlEngine:
                 DecideTask(
                     node=node,
                     snapshot=snapshot,
-                    raw_html=result.html,
-                    reported_pagination_states=result.pagination_states,
+                    raw_html=raw_html,
+                    reported_pagination_states=pagination_states,
                 )
             )
         self._summary.dispatched += 1
-        # Return immediately → the driver loop claims the next pending node and keeps fetching.
 
     def _deps_factory(self, task: DecideTask) -> HandlerDeps:
         return HandlerDeps(
@@ -240,6 +312,7 @@ class CrawlEngine:
             reported_pagination_states=task.reported_pagination_states,
             raw_html=task.raw_html,
             decision_center=self.decision_center,
+            redirect_guard=self.redirect_guard,
         )
 
     async def _save_failed_page_cache(self, result) -> None:

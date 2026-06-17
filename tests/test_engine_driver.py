@@ -18,7 +18,7 @@ from dext.storage.models import (
     ProfessorAffiliation,
     UniversityMeta,
 )
-from dext.storage.writer import DBWriter, OrgUnitSpec
+from dext.storage.writer import DBWriter, OrgUnitSpec, PageCachePayload
 from dext.types import FetchResult
 
 
@@ -187,6 +187,48 @@ async def test_driver_skips_terminal_unavailable_completed_page(tmp_path):
         assert cache.block_reason == "terminal_unavailable:not_found"
     assert summary.status == "completed"
     assert summary.fetch_failed == 1
+    await _close(storage)
+
+
+async def test_driver_replays_from_cache_without_refetching(tmp_path):
+    storage = await _storage(tmp_path)
+    settings = _settings()
+    url = "https://x.edu.cn/szdw.htm"
+    bridge = CountingBridge({})
+    node_id = await storage.writer.upsert_node(
+        node_spec(NodeType.faculty_list_url, url=url, settings=settings, run_id=1)
+    )
+
+    await storage.writer.save_page_cache(
+        PageCachePayload(
+            url=url,
+            final_url=url,
+            status_code=200,
+            html_snapshot="<html><body>师资队伍</body></html>",
+            text_snapshot="师资队伍",
+            links=[],
+            link_signals=[],
+            title="师资",
+            content_hash="h",
+        )
+    )
+
+    import dext.engine.handlers as handlers_mod
+
+    async def _fake_decide(*args, **kwargs):
+        return SimpleNamespace(links=[], parse_error=None, page_exclusion_reason=None)
+
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = _fake_decide
+    try:
+        engine = CrawlEngine(storage, bridge, llm_client=None, settings=settings, run_id=1, university_name="测试大学")
+        summary = await engine.run()
+    finally:
+        handlers_mod.decide_links = orig
+
+    assert bridge.fetch_count == 0
+    assert summary.fetched == 0
+    assert summary.status == "completed"
     await _close(storage)
 
 

@@ -157,6 +157,9 @@ class DBWriter:
     async def save_page_cache(self, payload: "PageCachePayload") -> str:
         return await self._run(lambda s: _save_page_cache(s, payload))
 
+    async def get_page_cache(self, url: str) -> PageCache | None:
+        return await self._run(lambda s: _get_page_cache(s, url))
+
     async def save_professors(self, payloads, *, org_unit_id, org_unit_name):
         from dext.storage.dedup import save_professors as _save_professors
 
@@ -226,12 +229,15 @@ async def _upsert_node(session, spec: NodeSpec) -> int:
         existing.base_priority = max(existing.base_priority, spec.base_priority)
         if existing.org_unit_id is None and spec.org_unit_id is not None:
             existing.org_unit_id = spec.org_unit_id
-        if spec.org_unit_name and existing.org_unit_name != spec.org_unit_name:
+        if existing.org_unit_name is None and spec.org_unit_name is not None:
             existing.org_unit_name = spec.org_unit_name
         if existing.confidence is None and spec.confidence is not None:
             existing.confidence = spec.confidence
         if spec.metadata:
-            existing.metadata_json = {**(existing.metadata_json or {}), **spec.metadata}
+            metadata = dict(existing.metadata_json or {})
+            for key, value in spec.metadata.items():
+                metadata.setdefault(key, value)
+            existing.metadata_json = metadata
         await session.flush()
         return existing.id
     node = GraphNode(
@@ -244,6 +250,10 @@ async def _upsert_node(session, spec: NodeSpec) -> int:
     session.add(node)
     await session.flush()
     return node.id
+
+
+async def _get_page_cache(session, url: str) -> PageCache | None:
+    return (await session.execute(select(PageCache).where(PageCache.url == url))).scalar_one_or_none()
 
 
 async def _add_edge(session, from_id, to_id, edge_type: EdgeType, confidence, metadata) -> int:
