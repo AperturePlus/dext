@@ -10,7 +10,7 @@ from urllib.parse import parse_qsl, urlsplit
 from dext.bridge.decision import PendingDecision
 from dext.exclusions import is_valid_exclusion_reason
 from dext.engine.names import clean_org_unit_name
-from dext.engine.seeds import node_spec, org_node_spec
+from dext.engine.seeds import node_spec, org_node_spec, resolve_discovered_url
 from dext.engine.workers import ExtractTask
 from dext.llm import DeciderContext, DeciderNode, decide_links
 from dext.page import (
@@ -63,6 +63,7 @@ class HandlerDeps:
         reported_pagination_states: list[PaginationState] | None = None,
         raw_html: str = "",
         decision_center=None,
+        redirect_guard=None,
     ) -> None:
         self.storage = storage
         self.llm_client = llm_client
@@ -73,6 +74,7 @@ class HandlerDeps:
         self.reported_pagination_states = reported_pagination_states or []
         self.raw_html = raw_html
         self.decision_center = decision_center
+        self.redirect_guard = redirect_guard
 
 
 def fetch_action_from_metadata(metadata: dict | None) -> FetchAction | None:
@@ -94,6 +96,16 @@ def fetch_action_from_metadata(metadata: dict | None) -> FetchAction | None:
 def identity_url_for(node: ClaimedNode) -> str:
     metadata = node.metadata or {}
     return metadata.get("identity_url") or node.url
+
+
+def _merge_metadata(*parts: dict | None) -> dict:
+    merged: dict = {}
+    for part in parts:
+        if not part:
+            continue
+        for key, value in part.items():
+            merged.setdefault(key, value)
+    return merged
 
 
 def _child_depth(parent: ClaimedNode) -> int:
@@ -275,18 +287,27 @@ async def handle_org_listing(node: ClaimedNode, snapshot: PageSnapshot, deps: Ha
         name = clean_org_unit_name(link.org_unit_name)
         if not name:
             continue
+        resolved_url, redirect_metadata = await resolve_discovered_url(
+            link.url,
+            redirect_guard=deps.redirect_guard,
+        )
+        if resolved_url is None:
+            continue
         org_id = await deps.storage.writer.upsert_org_unit(
-            OrgUnitSpec(name=name, url=link.url, kind="college", discovered_from_url=snapshot.url)
+            OrgUnitSpec(name=name, url=resolved_url, kind="college", discovered_from_url=snapshot.url)
         )
         org_node_id = await deps.storage.writer.upsert_node(
             org_node_spec(
                 org_unit_id=org_id,
                 org_unit_name=name,
-                url=link.url,
+                url=resolved_url,
                 settings=deps.settings,
                 run_id=deps.run_id,
                 depth=_child_depth(node),
-                metadata={"discovered_from": snapshot.url},
+                metadata=_merge_metadata(
+                    {"discovered_from_url": snapshot.url, "identity_url": resolved_url, "source_url": link.url},
+                    redirect_metadata,
+                ),
             )
         )
         await deps.storage.writer.add_edge(node.id, org_node_id, EdgeType.discovered_on_page, confidence=link.confidence)
@@ -308,10 +329,19 @@ async def _create_child(
     confidence: float | None = None,
     metadata: dict | None = None,
     identity_url: str | None = None,
-) -> int:
+) -> int | None:
+    resolved_url, redirect_metadata = await resolve_discovered_url(url, redirect_guard=deps.redirect_guard)
+    if resolved_url is None:
+        return None
+    canonical_identity_url = resolved_url if resolved_url != url else (identity_url or url)
+    metadata = _merge_metadata(
+        metadata,
+        {"identity_url": canonical_identity_url, "discovered_from_url": url},
+        redirect_metadata,
+    )
     spec = node_spec(
         node_type,
-        url=url,
+        url=resolved_url,
         settings=deps.settings,
         run_id=deps.run_id,
         org_unit_id=parent.org_unit_id,
@@ -319,7 +349,7 @@ async def _create_child(
         depth=_child_depth(parent),
         metadata=metadata,
         confidence=confidence,
-        node_key_url=identity_url,
+        node_key_url=canonical_identity_url,
         subtree=parent.org_unit_id is not None,
     )
     child_id = await deps.storage.writer.upsert_node(spec)
@@ -349,7 +379,7 @@ async def handle_org_unit(node: ClaimedNode, snapshot: PageSnapshot, deps: Handl
             if _link_exclusion_reason(link):
                 continue
             if link.label == "faculty_list":
-                await _create_child(
+                child_id = await _create_child(
                     deps,
                     node,
                     NodeType.faculty_list_url,
@@ -358,9 +388,10 @@ async def handle_org_unit(node: ClaimedNode, snapshot: PageSnapshot, deps: Handl
                     confidence=link.confidence,
                     metadata={"label": link.label},
                 )
-                created += 1
+                if child_id is not None:
+                    created += 1
             elif link.label == "followup":
-                await _create_child(
+                child_id = await _create_child(
                     deps,
                     node,
                     NodeType.faculty_followup_url,
@@ -369,9 +400,10 @@ async def handle_org_unit(node: ClaimedNode, snapshot: PageSnapshot, deps: Handl
                     confidence=link.confidence,
                     metadata={"label": link.label},
                 )
-                created += 1
+                if child_id is not None:
+                    created += 1
             elif link.label == "detail":
-                await _create_child(
+                child_id = await _create_child(
                     deps,
                     node,
                     NodeType.detail_url,
@@ -380,7 +412,8 @@ async def handle_org_unit(node: ClaimedNode, snapshot: PageSnapshot, deps: Handl
                     confidence=link.confidence,
                     metadata={"label": link.label},
                 )
-                created += 1
+                if child_id is not None:
+                    created += 1
     if created:
         if node.org_unit_id is not None:
             await deps.storage.writer.update_org_unit_status(node.org_unit_id, "completed")
@@ -405,7 +438,7 @@ async def _create_url_pagination_nodes(
     for cand in find_url_pagination(snapshot, snapshot.url):
         if cand.url in excluded:
             continue
-        await _create_child(
+        child_id = await _create_child(
             deps,
             node,
             NodeType.pagination_url,
@@ -413,7 +446,8 @@ async def _create_url_pagination_nodes(
             edge_type=EdgeType.pagination_of,
             metadata={"label": cand.label, "page_index": cand.page_index, "pagination_kind": "url"},
         )
-        count += 1
+        if child_id is not None:
+            count += 1
     return count
 
 
@@ -445,7 +479,7 @@ async def _create_form_pagination_nodes(node: ClaimedNode, snapshot: PageSnapsho
             "page_index": state.page_index,
             "state_id": state.state_id,
         }
-        await _create_child(
+        child_id = await _create_child(
             deps,
             node,
             NodeType.pagination_url,
@@ -454,7 +488,8 @@ async def _create_form_pagination_nodes(node: ClaimedNode, snapshot: PageSnapsho
             metadata=metadata,
             identity_url=state.synthetic_url,
         )
-        count += 1
+        if child_id is not None:
+            count += 1
     return count
 
 
@@ -490,30 +525,33 @@ async def _materialize_decided(
         if link.label == "reslice":
             continue  # handled in _materialize_reslices
         if link.label == "detail" or link.is_leaf:
-            await _create_child(
+            child_id = await _create_child(
                 deps, node, NodeType.detail_url, url=link.url,
                 edge_type=EdgeType.detail_candidate_of, confidence=link.confidence,
                 metadata={"label": link.label},
             )
-            count += 1
+            if child_id is not None:
+                count += 1
         elif link.label == "pagination":
             if over_budget:
                 continue
-            await _create_child(
+            child_id = await _create_child(
                 deps, node, NodeType.pagination_url, url=link.url,
                 edge_type=EdgeType.pagination_of, confidence=link.confidence,
                 metadata={"label": link.label, "pagination_kind": "decider"},
             )
-            count += 1
+            if child_id is not None:
+                count += 1
         elif link.label == "followup":
             if over_budget:
                 continue
-            await _create_child(
+            child_id = await _create_child(
                 deps, node, NodeType.faculty_followup_url, url=link.url,
                 edge_type=EdgeType.discovered_on_page, confidence=link.confidence,
                 metadata={"label": link.label},
             )
-            count += 1
+            if child_id is not None:
+                count += 1
     count += await _materialize_reslices(
         node, snapshot, deps, reslice_links, yields_people=yields_people, over_budget=over_budget
     )
@@ -547,11 +585,13 @@ async def _materialize_reslices(
     if all_links:
         chosen_link = _choose_all_reslice(all_links)
         chosen = _facet_axis(chosen_link)
-        await _create_child(
+        child_id = await _create_child(
             deps, node, NodeType.faculty_followup_url, url=chosen_link.url,
             edge_type=EdgeType.discovered_on_page, confidence=getattr(chosen_link, "confidence", None),
             metadata=_reslice_metadata(chosen_link, chosen),
         )
+        if child_id is None:
+            return 0
         dropped = [link for link in reslice_links if link is not chosen_link]
         for axis, n in Counter(_facet_axis(link) for link in dropped).items():
             logger.info("redundant_facet:%s dropped=%d url=%s", axis, n, snapshot.url)
@@ -567,12 +607,13 @@ async def _materialize_reslices(
     for link in reslice_links:
         if _facet_axis(link) != chosen:
             continue
-        await _create_child(
+        child_id = await _create_child(
             deps, node, NodeType.faculty_followup_url, url=link.url,
             edge_type=EdgeType.discovered_on_page, confidence=getattr(link, "confidence", None),
             metadata=_reslice_metadata(link, chosen),
         )
-        count += 1
+        if child_id is not None:
+            count += 1
     for axis in {_facet_axis(link) for link in reslice_links} - {chosen}:
         logger.info("reslice_axis_skipped:%s url=%s", axis, snapshot.url)
     return count

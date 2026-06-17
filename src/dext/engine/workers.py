@@ -137,6 +137,12 @@ async def process_extract_task(task: ExtractTask, storage, llm_client, settings)
         attempt=task.attempt_count,
         input_cache_url=task.snapshot.url,
     )
+    logger.info(
+        "extract attempt started node_id=%s attempt=%s url=%s",
+        task.node_id,
+        task.attempt_count,
+        task.snapshot.url,
+    )
     try:
         result = await extract_professors(
             task.snapshot,
@@ -165,6 +171,7 @@ async def process_extract_task(task: ExtractTask, storage, llm_client, settings)
                     source_url=task.snapshot.url,
                 )
                 await storage.writer.mark_node(task.node_id, NodeStatus.failed, last_error="save_error")
+                logger.info("extract attempt failed node_id=%s reason=save_error", task.node_id)
                 return
             await storage.writer.finish_extraction_attempt(
                 attempt_id,
@@ -172,6 +179,11 @@ async def process_extract_task(task: ExtractTask, storage, llm_client, settings)
                 raw_output_preview=result.raw_preview,
             )
             await storage.writer.mark_node(task.node_id, NodeStatus.done, content_hash=task.snapshot.content_hash)
+            logger.info(
+                "extract attempt succeeded node_id=%s payloads=%d",
+                task.node_id,
+                len(result.payloads),
+            )
             return
 
         if result.exclusion_reason and is_valid_exclusion_reason(result.exclusion_reason):
@@ -185,6 +197,11 @@ async def process_extract_task(task: ExtractTask, storage, llm_client, settings)
                 task.node_id,
                 NodeStatus.skipped,
                 last_error=f"excluded:{result.exclusion_reason}",
+            )
+            logger.info(
+                "extract attempt skipped node_id=%s reason=excluded:%s",
+                task.node_id,
+                result.exclusion_reason,
             )
             return
 
@@ -206,6 +223,12 @@ async def process_extract_task(task: ExtractTask, storage, llm_client, settings)
             source_url=task.snapshot.url,
         )
         await storage.writer.mark_node(task.node_id, decision.status, last_error=decision.last_error)
+        logger.info(
+            "extract attempt completed node_id=%s status=%s reason=%s",
+            task.node_id,
+            decision.status,
+            decision.last_error,
+        )
     except Exception as exc:  # noqa: BLE001 -- persist the failure and let the run continue
         logger.exception("extraction failed for node %s", task.node_key)
         await storage.writer.finish_extraction_attempt(
@@ -221,3 +244,4 @@ async def process_extract_task(task: ExtractTask, storage, llm_client, settings)
             source_url=task.snapshot.url,
         )
         await storage.writer.mark_node(task.node_id, NodeStatus.failed, last_error="save_error")
+        logger.info("extract attempt failed node_id=%s reason=exception", task.node_id)

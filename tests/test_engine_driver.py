@@ -232,6 +232,77 @@ async def test_driver_replays_from_cache_without_refetching(tmp_path):
     await _close(storage)
 
 
+async def test_driver_extracts_cached_detail_after_resume_reset(tmp_path, monkeypatch):
+    import dext.engine.workers as workers_mod
+    from dext.llm.extractor import ExtractionResult
+    from dext.types import ProfessorPayload
+
+    storage = await _storage(tmp_path)
+    settings = _settings()
+    org_id = await storage.writer.upsert_org_unit(OrgUnitSpec(name="计算与智能创新学院", url="https://ai.fudan.edu.cn"))
+    url = "http://ai.fudan.edu.cn/xy_37635/list.htm"
+    node_id = await storage.writer.upsert_node(
+        node_spec(
+            NodeType.detail_url,
+            url=url,
+            settings=settings,
+            run_id=1,
+            org_unit_id=org_id,
+            org_unit_name="计算与智能创新学院",
+        )
+    )
+    await storage.writer.save_page_cache(
+        PageCachePayload(
+            url=url,
+            final_url=url,
+            status_code=200,
+            html_snapshot="<html><body><h1>熊贇</h1><p>职称：教授</p><p>邮件：yunx@fudan.edu.cn</p></body></html>",
+            text_snapshot="熊贇 职称：教授 邮件：yunx@fudan.edu.cn",
+            links=[],
+            link_signals=[],
+            title="中文信息",
+            content_hash="cached-hash",
+        )
+    )
+    await storage.writer.mark_node(node_id, NodeStatus.in_progress)
+    await storage.close()
+
+    storage = await _storage(tmp_path)
+    async with storage.session() as s:
+        node = (await s.execute(select(GraphNode).where(GraphNode.id == node_id))).scalar_one()
+        node.status = NodeStatus.retry
+        await s.commit()
+
+    async def _fake_extract(*args, **kwargs):
+        return ExtractionResult(
+            payloads=[ProfessorPayload(name="熊贇", title="教授", email="yunx@fudan.edu.cn")],
+            failure_type=None,
+            raw_preview="{...}",
+        )
+
+    monkeypatch.setattr(workers_mod, "extract_professors", _fake_extract)
+    bridge = CountingBridge({})
+    summary = await CrawlEngine(
+        storage,
+        bridge,
+        llm_client=None,
+        settings=settings,
+        run_id=1,
+        university_name="复旦大学",
+    ).run()
+
+    assert bridge.fetch_count == 0
+    assert summary.status == "completed"
+    async with storage.session() as s:
+        node = (await s.execute(select(GraphNode).where(GraphNode.id == node_id))).scalar_one()
+        prof = (await s.execute(select(Professor))).scalar_one()
+        assert node.status == NodeStatus.done
+        assert prof.name == "熊贇"
+        assert prof.org_unit_name == "计算与智能创新学院"
+        assert prof.homepage == url
+    await _close(storage)
+
+
 async def test_targeted_summary_counts_only_selected_org_units(tmp_path):
     storage = await _storage(tmp_path)
     settings = _settings()

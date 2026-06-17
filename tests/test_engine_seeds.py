@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from dext.engine import PRIORITY_BY_TYPE, load_seed_nodes
 from dext.engine.seeds import node_spec
+from dext.bridge.redirect import RedirectGuard
 from dext.seed import OrgUnitSeed, UniversitySeed
 from dext.storage.db import create_all, create_engine_for_path, make_session_factory
 from dext.storage.models import EdgeType, GraphEdge, GraphNode, NodeStatus, NodeType, OrgUnit
@@ -93,4 +94,27 @@ async def test_load_seed_nodes_skips_explicit_port_urls(tmp_path):
         assert "https://ok.edu.cn/math" in urls
         assert "https://ok.edu.cn/math/teachers.htm" in urls
         assert all(":443" not in url and ":8080" not in url for url in urls)
+    await _close(h)
+
+
+async def test_load_seed_nodes_drops_blocked_redirect_urls(tmp_path):
+    h = await _writer(tmp_path)
+    university = UniversitySeed(
+        name="测试大学",
+        url="https://x.edu.cn",
+        org_unit_listing_urls=["/schools.htm"],
+        org_units=[OrgUnitSeed(name="数学学院", url="/math", faculty_urls=["/math/teachers.htm"])],
+    )
+
+    async def resolver(url):
+        return "https://mp.weixin.qq.com/s/abc"
+
+    guard = RedirectGuard(resolver=resolver)
+    summary = await load_seed_nodes(university, h, _settings(), run_id=1, redirect_guard=guard)
+
+    assert summary.org_listing_nodes == 0
+    assert summary.org_units == 0
+    assert summary.faculty_list_nodes == 0
+    async with h.session_factory() as s:
+        assert (await s.execute(select(GraphNode))).scalars().all() == []
     await _close(h)

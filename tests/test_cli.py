@@ -2,6 +2,7 @@ import os
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
@@ -34,6 +35,16 @@ class _DummyServer:
         self.cleaned = True
 
 
+class _FailingCleanupServer:
+    async def cleanup(self):
+        raise AttributeError("'NoneType' object has no attribute '_stop_serving'")
+
+
+class _DummyRedirectGuard:
+    async def probe_redirect(self, url):
+        return SimpleNamespace(verdict="ok", final_url=url, reason=None)
+
+
 class _DummyEngine:
     statuses: list[str] = []
     calls: list[str] = []
@@ -50,6 +61,7 @@ class _DummyEngine:
         *,
         university_name,
         decision_center=None,
+        redirect_guard=None,
         org_unit_ids=None,
     ):
         self.storage = storage
@@ -119,12 +131,17 @@ def _install_runtime(monkeypatch, settings: Settings):
     monkeypatch.setattr(cli._FACTORIES, "create_app", lambda bridge, decision_center: object())
     monkeypatch.setattr(cli._FACTORIES, "run_server", _run_server)
     monkeypatch.setattr(cli._FACTORIES, "llm_client_factory", lambda settings: object())
+    monkeypatch.setattr(cli._FACTORIES, "redirect_guard_factory", lambda: _DummyRedirectGuard())
     monkeypatch.setattr(cli._FACTORIES, "engine_factory", _DummyEngine)
     return cli
 
 
 async def _run_server(app, host, port):
     return _DummyServer()
+
+
+async def _run_failing_cleanup_server(app, host, port):
+    return _FailingCleanupServer()
 
 
 def _runner() -> CliRunner:
@@ -297,6 +314,22 @@ def test_cancelled_run_is_marked_cancelled(tmp_path, monkeypatch):
     settings = _settings(tmp_path)
     alpha = _university("Alpha University", "https://alpha.edu.cn/")
     cli = _install_runtime(monkeypatch, settings)
+    _DummyEngine.exc = __import__("asyncio").CancelledError()
+
+    result = _runner().invoke(cli.main, ["-u", "Alpha University"])
+
+    assert result.exit_code == 130
+    rows = asyncio.run(_run_rows(settings, alpha))
+    assert len(rows) == 1
+    assert rows[0].status == "cancelled"
+    assert rows[0].summary_json["status"] == "cancelled"
+
+
+def test_cleanup_error_does_not_mask_cancelled_run(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    alpha = _university("Alpha University", "https://alpha.edu.cn/")
+    cli = _install_runtime(monkeypatch, settings)
+    monkeypatch.setattr(cli._FACTORIES, "run_server", _run_failing_cleanup_server)
     _DummyEngine.exc = __import__("asyncio").CancelledError()
 
     result = _runner().invoke(cli.main, ["-u", "Alpha University"])

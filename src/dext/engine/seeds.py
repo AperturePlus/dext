@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from dext.bridge.redirect import BLOCKED, PROBE_FAILED, RedirectGuard
 from dext.page.urls import normalize_url
 from dext.seed import OrgUnitSeed, UniversitySeed
 from dext.storage.dedup import node_key_for
@@ -22,6 +23,25 @@ class SeedLoadSummary:
     org_unit_nodes: int = 0
     faculty_list_nodes: int = 0
     edges: int = 0
+
+
+async def resolve_discovered_url(
+    url: str,
+    *,
+    redirect_guard: RedirectGuard | None = None,
+) -> tuple[str | None, dict[str, object]]:
+    if redirect_guard is None:
+        return url, {"source_url": url}
+    verdict = await redirect_guard.probe_redirect(url)
+    if verdict.verdict in {BLOCKED, PROBE_FAILED}:
+        return None, {}
+    final_url = verdict.final_url or url
+    metadata: dict[str, object] = {"source_url": url}
+    if final_url != url:
+        metadata["redirect_verdict"] = verdict.verdict
+        if verdict.reason:
+            metadata["redirect_reason"] = verdict.reason
+    return final_url, metadata
 
 
 def node_spec(
@@ -100,6 +120,16 @@ def synthetic_org_url(name: str) -> str:
     return f"about:org_unit:{name}"
 
 
+def _merge_metadata(*parts: dict[str, object] | None) -> dict[str, object]:
+    merged: dict[str, object] = {}
+    for part in parts:
+        if not part:
+            continue
+        for key, value in part.items():
+            merged.setdefault(key, value)
+    return merged
+
+
 async def _seed_org_unit(
     storage,
     unit: OrgUnitSeed,
@@ -107,10 +137,19 @@ async def _seed_org_unit(
     settings,
     run_id: int,
     summary: SeedLoadSummary,
+    *,
+    redirect_guard: RedirectGuard | None = None,
 ) -> tuple[int, int | None]:
     org_url = normalize_seed_url(unit.url, university_url) if unit.url else synthetic_org_url(unit.name)
     if not org_url:
         return 0, None
+    if unit.url:
+        resolved_org_url, redirect_metadata = await resolve_discovered_url(org_url, redirect_guard=redirect_guard)
+        if resolved_org_url is None:
+            return 0, None
+        org_url = resolved_org_url
+    else:
+        redirect_metadata = {}
     org_id = await storage.writer.upsert_org_unit(
         OrgUnitSpec(name=unit.name, url=org_url, kind=unit.kind, discovered_from_url=university_url)
     )
@@ -126,7 +165,7 @@ async def _seed_org_unit(
                 settings=settings,
                 run_id=run_id,
                 depth=0,
-                metadata={"seeded": True},
+                metadata=_merge_metadata({"seeded": True}, redirect_metadata),
             )
         )
         summary.org_unit_nodes += 1
@@ -149,16 +188,22 @@ async def _seed_org_unit(
         faculty_url = normalize_seed_url(raw_url, org_url)
         if not faculty_url:
             continue
+        resolved_faculty_url, redirect_metadata = await resolve_discovered_url(
+            faculty_url,
+            redirect_guard=redirect_guard,
+        )
+        if resolved_faculty_url is None:
+            continue
         faculty_id = await storage.writer.upsert_node(
             node_spec(
                 NodeType.faculty_list_url,
-                url=faculty_url,
+                url=resolved_faculty_url,
                 settings=settings,
                 run_id=run_id,
                 org_unit_id=org_id,
                 org_unit_name=unit.name,
                 depth=1 if unit.url else 0,
-                metadata={"seeded": True, "source": "org_units[].faculty_urls"},
+                metadata=_merge_metadata({"seeded": True, "source": "org_units[].faculty_urls"}, redirect_metadata),
                 subtree=True,
             )
         )
@@ -170,25 +215,43 @@ async def _seed_org_unit(
     return org_id, org_node_id
 
 
-async def load_seed_nodes(university: UniversitySeed, storage, settings, run_id: int) -> SeedLoadSummary:
+async def load_seed_nodes(
+    university: UniversitySeed,
+    storage,
+    settings,
+    run_id: int,
+    *,
+    redirect_guard: RedirectGuard | None = None,
+) -> SeedLoadSummary:
     summary = SeedLoadSummary()
     for raw_url in university.org_unit_listing_urls:
         url = normalize_seed_url(raw_url, university.url)
         if not url:
             continue
+        resolved_url, redirect_metadata = await resolve_discovered_url(url, redirect_guard=redirect_guard)
+        if resolved_url is None:
+            continue
         await storage.writer.upsert_node(
             node_spec(
                 NodeType.org_listing_url,
-                url=url,
+                url=resolved_url,
                 settings=settings,
                 run_id=run_id,
                 depth=0,
-                metadata={"seeded": True, "source": "org_unit_listing_urls"},
+                metadata=_merge_metadata({"seeded": True, "source": "org_unit_listing_urls"}, redirect_metadata),
             )
         )
         summary.org_listing_nodes += 1
 
     for unit in university.org_units:
-        await _seed_org_unit(storage, unit, university.url, settings, run_id, summary)
+        await _seed_org_unit(
+            storage,
+            unit,
+            university.url,
+            settings,
+            run_id,
+            summary,
+            redirect_guard=redirect_guard,
+        )
 
     return summary

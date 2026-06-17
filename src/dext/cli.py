@@ -12,7 +12,7 @@ from typing import Any, Callable
 import click
 from sqlalchemy import select
 
-from dext.bridge import DecisionCenter, HumanFetcherBridge, create_app, run_server
+from dext.bridge import DecisionCenter, HumanFetcherBridge, RedirectGuard, create_app, run_server
 from dext.config import Settings, get_settings
 from dext.engine import CrawlEngine, CrawlSummary, load_seed_nodes
 from dext.llm import LLMClient
@@ -33,6 +33,7 @@ class RuntimeFactories:
     run_server: Callable[..., Any] = run_server
     llm_client_factory: Callable[..., Any] = LLMClient
     load_seed_nodes: Callable[..., Any] = load_seed_nodes
+    redirect_guard_factory: Callable[..., Any] = RedirectGuard
     engine_factory: Callable[..., Any] = field(default=CrawlEngine)
 
 
@@ -111,7 +112,10 @@ async def _safe_finish_run(
 
 async def _cleanup_server(server) -> None:
     if server is not None and hasattr(server, "cleanup"):
-        await server.cleanup()
+        try:
+            await server.cleanup()
+        except Exception:  # noqa: BLE001 -- cleanup must not mask the crawl result
+            logger.exception("failed to cleanup bridge server")
 
 
 async def _validate_org_unit_ids(storage, org_unit_ids: set[int]) -> None:
@@ -160,11 +164,18 @@ async def run_university(
 
         bridge = factories.bridge_factory(settings)
         decision_center = factories.decision_center_factory()
+        redirect_guard = factories.redirect_guard_factory()
         app = factories.create_app(bridge, decision_center)
         server = await factories.run_server(app, settings.bridge_host, settings.bridge_port)
         llm_client = factories.llm_client_factory(settings)
 
-        await factories.load_seed_nodes(university, storage, settings, run_id)
+        await factories.load_seed_nodes(
+            university,
+            storage,
+            settings,
+            run_id,
+            redirect_guard=redirect_guard,
+        )
         logger.info(
             "bridge server ready at http://%s:%s/api; ensure the Tampermonkey "
             "browser tab is visible and has owner",
@@ -180,6 +191,7 @@ async def run_university(
             run_id,
             university_name=university.name,
             decision_center=decision_center,
+            redirect_guard=redirect_guard,
             org_unit_ids=target_org_unit_ids,
         )
         return await engine.run()

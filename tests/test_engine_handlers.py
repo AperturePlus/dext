@@ -100,22 +100,132 @@ async def test_faculty_page_creates_url_and_form_pagination_nodes(tmp_path):
     await _close(h)
 
 
-async def test_cross_org_shared_detail_url_creates_two_nodes(tmp_path):
+async def test_cross_org_shared_detail_url_keeps_one_node_and_adds_edges(tmp_path):
     h = await _storage(tmp_path)
     settings = _settings()
     org1 = await h.writer.upsert_org_unit(OrgUnitSpec(name="数学学院", url="https://x.edu.cn/math"))
     org2 = await h.writer.upsert_org_unit(OrgUnitSpec(name="交叉学院", url="https://x.edu.cn/cross"))
-    await h.writer.upsert_node(
-        node_spec(NodeType.detail_url, url="https://x.edu.cn/t/1", settings=settings, org_unit_id=org1, org_unit_name="数学学院")
+    parent1 = await h.writer.upsert_node(
+        node_spec(NodeType.org_unit, url="https://x.edu.cn/math", settings=settings, org_unit_id=org1, org_unit_name="数学学院")
     )
-    await h.writer.upsert_node(
-        node_spec(NodeType.detail_url, url="https://x.edu.cn/t/1", settings=settings, org_unit_id=org2, org_unit_name="交叉学院")
+    parent2 = await h.writer.upsert_node(
+        node_spec(NodeType.org_unit, url="https://x.edu.cn/cross", settings=settings, org_unit_id=org2, org_unit_name="交叉学院")
+    )
+    parent_node1 = ClaimedNode(
+        id=parent1,
+        node_key="p1",
+        type=NodeType.org_unit,
+        url="https://x.edu.cn/math",
+        org_unit_id=org1,
+        org_unit_name="数学学院",
+        depth=0,
+        attempt_count=1,
+        priority_score=1,
+        content_hash=None,
+        metadata=None,
+    )
+    parent_node2 = ClaimedNode(
+        id=parent2,
+        node_key="p2",
+        type=NodeType.org_unit,
+        url="https://x.edu.cn/cross",
+        org_unit_id=org2,
+        org_unit_name="交叉学院",
+        depth=0,
+        attempt_count=1,
+        priority_score=1,
+        content_hash=None,
+        metadata=None,
+    )
+    deps = HandlerDeps(storage=h, llm_client=None, settings=settings, run_id=1, university_name="测试大学",
+                       extract_queue=asyncio.Queue(), raw_html="", redirect_guard=None)
+    await _create_child(
+        deps,
+        parent_node1,
+        NodeType.detail_url,
+        url="https://x.edu.cn/t/1",
+        edge_type=EdgeType.detail_candidate_of,
+        metadata={"label": "detail"},
+    )
+    await _create_child(
+        deps,
+        parent_node2,
+        NodeType.detail_url,
+        url="https://x.edu.cn/t/1",
+        edge_type=EdgeType.detail_candidate_of,
+        metadata={"label": "detail"},
     )
     async with h.session_factory() as s:
         nodes = (await s.execute(select(GraphNode).where(GraphNode.type == NodeType.detail_url))).scalars().all()
-        assert len(nodes) == 2
-        assert {n.org_unit_id for n in nodes} == {org1, org2}
-        assert len({n.node_key for n in nodes}) == 2
+        assert len(nodes) == 1
+        assert nodes[0].org_unit_id == org1
+        assert nodes[0].url == "https://x.edu.cn/t/1"
+        edges = (await s.execute(select(GraphEdge))).scalars().all()
+        assert len(edges) == 2
+    await _close(h)
+
+
+async def test_create_child_uses_redirect_final_url_and_blocks_bad_redirects(tmp_path):
+    h = await _storage(tmp_path)
+    org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="数学学院", url="https://x.edu.cn/math"))
+    parent_id = await h.writer.upsert_node(
+        node_spec(NodeType.org_unit, url="https://x.edu.cn/math", settings=_settings(), run_id=1,
+                  org_unit_id=org_id, org_unit_name="数学学院")
+    )
+
+    async def resolver(url):
+        if url == "https://x.edu.cn/t/1":
+            return "https://teacher.x.edu.cn/t/1"
+        return "https://mp.weixin.qq.com/s/bad"
+
+    from dext.bridge.redirect import RedirectGuard
+
+    deps = HandlerDeps(
+        storage=h,
+        llm_client=None,
+        settings=_settings(),
+        run_id=1,
+        university_name="测试大学",
+        extract_queue=asyncio.Queue(),
+        raw_html="",
+        redirect_guard=RedirectGuard(resolver=resolver),
+    )
+    parent = ClaimedNode(
+        id=parent_id,
+        node_key="p",
+        type=NodeType.org_unit,
+        url="https://x.edu.cn/math",
+        org_unit_id=org_id,
+        org_unit_name="数学学院",
+        depth=0,
+        attempt_count=1,
+        priority_score=1,
+        content_hash=None,
+        metadata=None,
+    )
+    child_id = await _create_child(
+        deps,
+        parent,
+        NodeType.detail_url,
+        url="https://x.edu.cn/t/1",
+        edge_type=EdgeType.detail_candidate_of,
+        metadata={"label": "detail"},
+    )
+    blocked_id = await _create_child(
+        deps,
+        parent,
+        NodeType.detail_url,
+        url="https://x.edu.cn/block",
+        edge_type=EdgeType.detail_candidate_of,
+        metadata={"label": "detail"},
+    )
+
+    async with h.session_factory() as s:
+        child = (await s.execute(select(GraphNode).where(GraphNode.id == child_id))).scalar_one()
+        assert child.url == "https://teacher.x.edu.cn/t/1"
+        assert (child.metadata_json or {})["discovered_from_url"] == "https://x.edu.cn/t/1"
+        assert blocked_id is None
+        assert len((await s.execute(select(GraphNode).where(GraphNode.type == NodeType.detail_url))).scalars().all()) == 1
     await _close(h)
 
 
