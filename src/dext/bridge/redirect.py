@@ -1,8 +1,8 @@
 """Best-effort redirect / wechat-公众号 guard (overview §7).
 
-NOT the fetch path — failures never block. SP6 may optionally call probe_redirect()
-before enqueueing a detail candidate to early-drop obvious wechat traps. The HTTP IO
-is an injectable resolver so the (pure) host classification is fully unit-testable.
+SP6 may optionally call probe_redirect() before enqueueing a detail candidate to
+drop obvious wechat traps or redirect probes that fail. The HTTP IO is an
+injectable resolver so the (pure) host classification is fully unit-testable.
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ class RedirectGuard:
     async def probe_redirect(self, url: str) -> RedirectVerdict:
         try:
             final_url = await self._resolver(url)
-        except Exception as exc:  # WAF / timeout / DNS — best-effort, never propagate
+        except Exception as exc:  # WAF / timeout / DNS / redirect loop
             logger.info("redirect probe failed for %s: %r", url, exc)
             return RedirectVerdict(PROBE_FAILED, reason="probe_failed")
         return classify_redirect(url, final_url, blacklist=self._blacklist)

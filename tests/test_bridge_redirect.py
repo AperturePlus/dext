@@ -31,7 +31,7 @@ async def test_probe_offsite_ok_via_resolver():
     assert (await RedirectGuard(resolver=resolver).probe_redirect("https://cs.uni.edu.cn/f/zhang")).verdict == OFFSITE_OK
 
 
-async def test_probe_failure_does_not_block():
+async def test_probe_failure_returns_probe_failed():
     async def resolver(url):
         raise RuntimeError("WAF")
     assert (await RedirectGuard(resolver=resolver).probe_redirect("https://x/p")).verdict == PROBE_FAILED

@@ -930,7 +930,7 @@ async def test_probe_offsite_ok_via_resolver():
     assert (await RedirectGuard(resolver=resolver).probe_redirect("https://cs.uni.edu.cn/f/zhang")).verdict == OFFSITE_OK
 
 
-async def test_probe_failure_does_not_block():
+async def test_probe_failure_returns_probe_failed():
     async def resolver(url):
         raise RuntimeError("WAF")
     assert (await RedirectGuard(resolver=resolver).probe_redirect("https://x/p")).verdict == PROBE_FAILED
@@ -943,9 +943,9 @@ async def test_probe_failure_does_not_block():
 ```python
 """Best-effort redirect / wechat-公众号 guard (overview §7).
 
-NOT the fetch path — failures never block. SP6 may optionally call probe_redirect()
-before enqueueing a detail candidate to early-drop obvious wechat traps. The HTTP IO
-is an injectable resolver so the (pure) host classification is fully unit-testable.
+SP6 may optionally call probe_redirect() before enqueueing a detail candidate to
+drop obvious wechat traps or redirect probes that fail. The HTTP IO is an
+injectable resolver so the (pure) host classification is fully unit-testable.
 """
 
 from __future__ import annotations

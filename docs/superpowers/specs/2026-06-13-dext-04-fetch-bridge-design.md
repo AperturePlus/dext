@@ -96,7 +96,7 @@ class HumanFetcherBridge:
   - final host 属微信/QQ 公众号等黑名单 → `verdict=blocked(reason="wechat_redirect")`。
   - final host 是合法外部学术主页（如 `*.github.io`）→ `verdict=offsite_ok`（允许，因为脚本"应在多 host 工作"——源文档 §补充：个人主页被重定向到外链是正常的）。
   - 其它 → `verdict=ok`。
-- httpx 预检**可能也被 WAF 挡**：探测失败不阻断，记 `probe_failed`，仍交浏览器抓。
+- httpx 预检**可能也被 WAF 挡**：探测失败记 `probe_failed`，由图层丢弃该 URL。
 - 该守卫由 SP6 在把 detail 候选入图前**可选**调用，用于尽早丢弃公众号陷阱；默认开启、可配置关闭。
 
 > 关键：守卫只用于"早筛明显错的重定向"，不是抓取主通道。真实抓取永远是可见浏览器+脚本。
@@ -128,7 +128,7 @@ async def run_server(app, host, port) -> Runner   # 供 SP7 生命周期管理
 - 单 in-flight：第二个 `/jobs/next` 在有 assigned 时得 `204`。
 - fail/skip/override/timeout 各路径产出正确 block_reason / 状态。
 - mojibake：构造误码文本断言修复；正常 UTF-8 不被破坏。
-- redirect guard：mock httpx 返回微信 host → blocked；github.io → offsite_ok；探测异常 → probe_failed 不阻断。
+- redirect guard：mock httpx 返回微信 host → blocked；github.io → offsite_ok；探测异常 → probe_failed。
 - decision：set → GET 命中 → resolve 触发回调。
 
 ## 12. 不做

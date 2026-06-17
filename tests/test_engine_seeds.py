@@ -118,3 +118,29 @@ async def test_load_seed_nodes_drops_blocked_redirect_urls(tmp_path):
     async with h.session_factory() as s:
         assert (await s.execute(select(GraphNode))).scalars().all() == []
     await _close(h)
+
+
+async def test_load_seed_nodes_drops_too_many_redirects_urls(tmp_path):
+    h = await _writer(tmp_path)
+    university = UniversitySeed(
+        name="测试大学",
+        url="https://x.edu.cn",
+        org_unit_listing_urls=["/schools.htm"],
+        org_units=[OrgUnitSeed(name="数学学院", url="/math", faculty_urls=["/math/teachers.htm"])],
+    )
+
+    class TooManyRedirects(Exception):
+        pass
+
+    async def resolver(url):
+        raise TooManyRedirects("too many redirects")
+
+    guard = RedirectGuard(resolver=resolver)
+    summary = await load_seed_nodes(university, h, _settings(), run_id=1, redirect_guard=guard)
+
+    assert summary.org_listing_nodes == 0
+    assert summary.org_units == 0
+    assert summary.faculty_list_nodes == 0
+    async with h.session_factory() as s:
+        assert (await s.execute(select(GraphNode))).scalars().all() == []
+    await _close(h)
