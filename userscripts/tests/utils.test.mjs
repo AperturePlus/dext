@@ -112,7 +112,32 @@ test('capture cleanup does not strip layout wrappers that merely contain a heade
   }
 });
 
-function fakeElement(tagName, attrs = {}) {
+test('capture cleanup keeps a <header> that swallows the page body (unclosed-tag regression)', async () => {
+  // Regression: LZU 土木工程与力学学院 detail pages emit
+  // <header class="header__block"> and never close it, so the parser nests nav +
+  // #services-section + footer inside it. Stripping it deleted the entire body
+  // and every professor detail page was skipped as terminal_unavailable:empty_page
+  // (professors table got 0 rows for that college). The swallow-guard must leave
+  // such a header in place while still stripping an ordinary small header.
+  const { mod, cleanup } = await importHtmlCleanup();
+  try {
+    // 10 content elements live inside the header, 0 outside -> header swallows the page.
+    const inside = Array.from({ length: 10 }, () => fakeElement('div'));
+    const swallowingHeader = fakeElement('header', { class: 'header__block' }, inside);
+    mod.stripCaptureNoise(fakeRoot([swallowingHeader, ...inside]), { stripHeader: true });
+    assert.equal(swallowingHeader.removed, false);
+
+    // An ordinary small header (few descendants vs. a large page) is still stripped.
+    const smallHeader = fakeElement('header', { class: 'header__block' });
+    const filler = Array.from({ length: 20 }, () => fakeElement('div'));
+    mod.stripCaptureNoise(fakeRoot([smallHeader, ...filler]), { stripHeader: true });
+    assert.equal(smallHeader.removed, true);
+  } finally {
+    await cleanup();
+  }
+});
+
+function fakeElement(tagName, attrs = {}, descendants = []) {
   return {
     tagName,
     removed: false,
@@ -121,6 +146,10 @@ function fakeElement(tagName, attrs = {}) {
     },
     remove() {
       this.removed = true;
+    },
+    querySelectorAll(selector) {
+      if (selector === '*') return descendants;
+      return [];
     },
   };
 }

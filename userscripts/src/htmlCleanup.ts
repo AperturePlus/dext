@@ -19,6 +19,13 @@ const HEADER_BOUNDARY_NAMES = new Set(['header', 'topbar', 'top-bar']);
 const FOOTER_ROLES = new Set(['contentinfo']);
 const HEADER_ROLES = new Set(['banner']);
 
+/**
+ * A <header> that holds at least this fraction of the page's total element
+ * descendants is treated as a mis-nested wrapper and left intact. See
+ * `wouldSwallowPageBody` for the regression this guards against.
+ */
+const HEADER_SWALLOW_RATIO = 0.5;
+
 export function stripCaptureNoise(root: ParentNode, options: CaptureCleanupOptions = {}): void {
   root.querySelectorAll('#ycl-panel,#ycl-toast,[data-yanclaw-overlay]').forEach((node) => node.remove());
   root.querySelectorAll('svg,style,canvas').forEach((node) => node.remove());
@@ -48,11 +55,36 @@ export function shouldStripElementDescriptor(kind: StructuralNoiseKind, descript
 }
 
 function stripStructuralNoise(root: ParentNode, kind: StructuralNoiseKind): void {
+  // Computed once: stripping a header that swallows the page body would delete
+  // most of these descendants, so we compare each candidate against this total.
+  const rootDescendantCount = root.querySelectorAll('*').length;
   root.querySelectorAll('*').forEach((node) => {
     if (shouldStripElement(kind, node)) {
+      if (kind === 'header' && wouldSwallowPageBody(node, rootDescendantCount)) {
+        return;
+      }
       node.remove();
     }
   });
+}
+
+/**
+ * Guard against unclosed <header> tags that swallow the page body.
+ *
+ * Some CMS templates emit `<header class="header__block">` and never close it
+ * until the very end of the document, so the HTML parser nests the entire page
+ * (nav, main content, footer) inside the <header> element. Stripping such a
+ * <header> deletes the whole body and the page is captured as empty — the LZU
+ * 土木工程与力学学院 regression, where every professor detail page was recorded
+ * as terminal_unavailable:empty_page and 0 professors landed in the DB.
+ *
+ * If a header element holds the majority of the page's element descendants,
+ * treat it as a mis-nested wrapper and leave it in place.
+ */
+function wouldSwallowPageBody(header: Element, rootDescendantCount: number): boolean {
+  if (rootDescendantCount === 0) return false;
+  const headerDescendantCount = header.querySelectorAll('*').length;
+  return headerDescendantCount / rootDescendantCount >= HEADER_SWALLOW_RATIO;
 }
 
 function shouldStripElement(kind: StructuralNoiseKind, element: Element): boolean {

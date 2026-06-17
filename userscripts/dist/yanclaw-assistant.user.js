@@ -294,6 +294,7 @@
   const HEADER_BOUNDARY_NAMES = new Set(["header", "topbar", "top-bar"]);
   const FOOTER_ROLES = new Set(["contentinfo"]);
   const HEADER_ROLES = new Set(["banner"]);
+  const HEADER_SWALLOW_RATIO = 0.5;
   function stripCaptureNoise(root, options = {}) {
     root.querySelectorAll("#ycl-panel,#ycl-toast,[data-yanclaw-overlay]").forEach((node) => node.remove());
     root.querySelectorAll("svg,style,canvas").forEach((node) => node.remove());
@@ -311,11 +312,20 @@
     return tagName === "header" || HEADER_ROLES.has(role) || attributeHasStructuralName(descriptor.id, HEADER_NAMES, HEADER_BOUNDARY_NAMES) || attributeHasStructuralName(descriptor.className, HEADER_NAMES, HEADER_BOUNDARY_NAMES);
   }
   function stripStructuralNoise(root, kind) {
+    const rootDescendantCount = root.querySelectorAll("*").length;
     root.querySelectorAll("*").forEach((node) => {
       if (shouldStripElement(kind, node)) {
+        if (kind === "header" && wouldSwallowPageBody(node, rootDescendantCount)) {
+          return;
+        }
         node.remove();
       }
     });
+  }
+  function wouldSwallowPageBody(header, rootDescendantCount) {
+    if (rootDescendantCount === 0) return false;
+    const headerDescendantCount = header.querySelectorAll("*").length;
+    return headerDescendantCount / rootDescendantCount >= HEADER_SWALLOW_RATIO;
   }
   function shouldStripElement(kind, element) {
     return shouldStripElementDescriptor(kind, {
