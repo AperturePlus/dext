@@ -91,6 +91,27 @@ test('capture cleanup avoids weak header and footer false positives', async () =
   }
 });
 
+test('capture cleanup does not strip layout wrappers that merely contain a header/footer class', async () => {
+  // Regression: NEU CSE detail pages wrap the ENTIRE body (header + article +
+  // footer) in <div class="wrapper header">. Stripping it left an empty body,
+  // which marked every professor page as terminal_unavailable:empty_page.
+  const { mod, cleanup } = await importHtmlCleanup();
+  try {
+    assert.equal(mod.shouldStripElementDescriptor('header', { className: 'wrapper header' }), false);
+    assert.equal(mod.shouldStripElementDescriptor('header', { className: 'wrapper topbar' }), false);
+    assert.equal(mod.shouldStripElementDescriptor('footer', { className: 'wrapper footer' }), false);
+    assert.equal(mod.shouldStripElementDescriptor('footer', { className: 'content copyright' }), false);
+
+    // A primary header/footer class still strips (single-class or first-segment).
+    assert.equal(mod.shouldStripElementDescriptor('header', { className: 'header' }), true);
+    assert.equal(mod.shouldStripElementDescriptor('header', { className: 'site-header nav-extra' }), true);
+    assert.equal(mod.shouldStripElementDescriptor('footer', { className: 'footer' }), true);
+    assert.equal(mod.shouldStripElementDescriptor('footer', { className: 'copyright page-end' }), true);
+  } finally {
+    await cleanup();
+  }
+});
+
 function fakeElement(tagName, attrs = {}) {
   return {
     tagName,

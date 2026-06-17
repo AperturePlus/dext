@@ -327,7 +327,9 @@
   }
   function attributeHasStructuralName(value, names, boundaryNames) {
     if (!value) return false;
-    return value.split(/\s+/).some((segment) => segmentMatchesName(segment, names, boundaryNames));
+    const segments = value.trim().split(/\s+/);
+    if (segments.length === 0) return false;
+    return segmentMatchesName(segments[0], names, boundaryNames);
   }
   function segmentMatchesName(segment, names, boundaryNames) {
     const canonical = canonicalizeIdentifier(segment);

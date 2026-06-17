@@ -64,13 +64,22 @@ function shouldStripElement(kind: StructuralNoiseKind, element: Element): boolea
   });
 }
 
+/**
+ * Only the FIRST (primary) whitespace-separated segment identifies an element's
+ * structural role. A layout wrapper such as `class="wrapper header"` must NOT be
+ * stripped just because a later class segment names a header/footer — doing so
+ * nukes the entire page body (the NEU CSE `wrapper header` regression, where
+ * detail pages were captured as empty and permanently skipped).
+ */
 function attributeHasStructuralName(
   value: string | null | undefined,
   names: Set<string>,
   boundaryNames: Set<string>,
 ): boolean {
   if (!value) return false;
-  return value.split(/\s+/).some((segment) => segmentMatchesName(segment, names, boundaryNames));
+  const segments = value.trim().split(/\s+/);
+  if (segments.length === 0) return false;
+  return segmentMatchesName(segments[0], names, boundaryNames);
 }
 
 function segmentMatchesName(segment: string, names: Set<string>, boundaryNames: Set<string>): boolean {
