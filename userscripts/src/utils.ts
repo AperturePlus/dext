@@ -98,7 +98,7 @@ export function isErrorPage(): boolean {
   const title = document.title || '';
   const bodyText = document.body?.innerText || '';
   // Short page with error keywords = error page
-  if (bodyText.length < 2000 && ERROR_PATTERNS.test(title + ' ' + bodyText)) return true;
+  if (bodyText.length < 1500 && ERROR_PATTERNS.test(title + ' ' + bodyText)) return true;
   return false;
 }
 
