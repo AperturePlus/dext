@@ -10,14 +10,14 @@ def test_node_key_org_unit_by_name_when_no_id():
     assert node_key_for(NodeType.org_unit, normalized_name="数学学院") == "org_unit:name:数学学院"
 
 
-def test_node_key_url_node_includes_org_unit_id():
+def test_node_key_url_node_is_canonical_url_only():
     key = node_key_for(NodeType.detail_url, normalized_url="https://x/p1", org_unit_id=7)
-    assert key == "detail_url:org:7:url:https://x/p1"
+    assert key == "url:https://x/p1"
 
 
-def test_node_key_url_node_without_org_unit_uses_none():
+def test_node_key_url_node_without_org_unit_is_same_shape():
     key = node_key_for(NodeType.org_listing_url, normalized_url="https://x/list")
-    assert key == "org_listing_url:org:none:url:https://x/list"
+    assert key == "url:https://x/list"
 
 
 def test_form_pagination_pages_get_distinct_keys():

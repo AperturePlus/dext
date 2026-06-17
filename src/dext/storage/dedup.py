@@ -37,7 +37,7 @@ def node_key_for(
     """Stable, globally-unique work-unit key (source doc §13.3).
 
     - org_unit:  ``org_unit:id:<id>`` (preferred) else ``org_unit:name:<normalized_name>``
-    - URL nodes: ``<type>:org:<org_unit_id|none>:url:<normalized_url>``
+    - URL nodes: ``url:<normalized_url>`` (canonical URL only; first discovery wins)
 
     `normalized_url` is produced by SP3 (fragment-stripped, param-sorted; the
     synthetic/identity URL for form pagination, which makes each page distinct).
@@ -50,8 +50,7 @@ def node_key_for(
         raise ValueError("org_unit node_key needs org_unit_id or normalized_name")
     if not normalized_url:
         raise ValueError(f"{node_type} node_key needs normalized_url")
-    owner = org_unit_id if org_unit_id is not None else "none"
-    return f"{node_type.value}:org:{owner}:url:{normalized_url}"
+    return f"url:{normalized_url}"
 
 
 def name_key(name: str) -> str:
