@@ -313,3 +313,159 @@ async def test_count_subtree_facet_nodes(tmp_path):
         await w.stop()
         await task
         await eng.dispose()
+
+
+async def test_reset_org_unit_subtree_deletes_discovered_and_resets_entrypoints(tmp_path):
+    # --reset -oid X: detail/followup/pagination nodes + edges + page_cache +
+    # extraction attempts are deleted; org_unit + faculty_list_url entry-point
+    # nodes are reset to pending; the org_unit row status is reset to pending.
+    eng, sf, w, task = await _writer(tmp_path)
+    try:
+        org = await w.upsert_org_unit(OrgUnitSpec(name="计算机学院", url="https://cse.neu.edu.cn/", status="completed"))
+        # entry-point nodes (kept & reset)
+        org_node = await w.upsert_node(
+            NodeSpec(node_key="org:1", type=NodeType.org_unit, url="https://cse.neu.edu.cn/",
+                     org_unit_id=org, org_unit_name="计算机学院")
+        )
+        faculty_list = await w.upsert_node(
+            NodeSpec(node_key="fl:1", type=NodeType.faculty_list_url, url="https://cse.neu.edu.cn/szdw.htm",
+                     org_unit_id=org, org_unit_name="计算机学院")
+        )
+        await w.mark_node(org_node, NodeStatus.done)
+        await w.mark_node(faculty_list, NodeStatus.done)
+        await w.add_edge(org_node, faculty_list, EdgeType.belongs_to_org_unit)
+        # discovered subtree nodes (deleted)
+        detail = await w.upsert_node(
+            NodeSpec(node_key="d:1", type=NodeType.detail_url, url="https://cse.neu.edu.cn/p1.htm",
+                     org_unit_id=org, org_unit_name="计算机学院")
+        )
+        followup = await w.upsert_node(
+            NodeSpec(node_key="f:1", type=NodeType.faculty_followup_url, url="https://cse.neu.edu.cn/f1.htm",
+                     org_unit_id=org, org_unit_name="计算机学院")
+        )
+        await w.mark_node(detail, NodeStatus.skipped, last_error="terminal_unavailable:empty_page")
+        await w.mark_node(followup, NodeStatus.done)
+        await w.add_edge(faculty_list, detail, EdgeType.detail_candidate_of)
+        await w.add_edge(faculty_list, followup, EdgeType.discovered_on_page)
+        # page_cache + extraction attempts for the discovered subtree
+        await w.save_page_cache(PageCachePayload(url="https://cse.neu.edu.cn/p1.htm", html_snapshot="<x>",
+                                                  block_reason="terminal_unavailable:empty_page"))
+        await w.save_page_cache(PageCachePayload(url="https://cse.neu.edu.cn/szdw.htm", html_snapshot="<list>"))
+        await w.record_extraction_attempt(graph_node_id=detail, attempt=1, input_cache_url="https://cse.neu.edu.cn/p1.htm")
+
+        counts = await w.reset_org_unit_subtree(org)
+
+        assert counts["nodes_deleted"] == 2          # detail + followup
+        assert counts["entrypoints_reset"] == 2       # org_unit + faculty_list_url
+        assert counts["edges_deleted"] == 2           # the two edges touching detail/followup
+        assert counts["caches_deleted"] == 2          # p1 (deleted) + szdw (entry-point reset); f1/org_url had no cache
+        async with sf() as s:
+            remaining = {n.node_key: n for n in (await s.execute(select(GraphNode).where(GraphNode.org_unit_id == org))).scalars().all()}
+            assert set(remaining) == {"org:1", "fl:1"}                       # subtree deleted
+            assert remaining["org:1"].status == NodeStatus.pending
+            assert remaining["fl:1"].status == NodeStatus.pending
+            assert remaining["org:1"].attempt_count == 0
+            assert remaining["org:1"].completed_at is None
+            assert remaining["org:1"].last_error is None
+            assert len((await s.execute(select(GraphEdge))).scalars().all()) == 1   # entrypoint<->entrypoint edge kept; subtree edges gone
+            assert len((await s.execute(select(ExtractionAttempt))).scalars().all()) == 0
+            assert len((await s.execute(select(PageCache))).scalars().all()) == 0    # all caches cleared
+            ou = (await s.execute(select(OrgUnit).where(OrgUnit.id == org))).scalar_one()
+            assert ou.status == "pending"
+    finally:
+        await _close(eng, w, task)
+
+
+async def test_reset_org_unit_subtree_preserves_other_org_units(tmp_path):
+    eng, sf, w, task = await _writer(tmp_path)
+    try:
+        a = await w.upsert_org_unit(OrgUnitSpec(name="A院", url="https://x/a"))
+        b = await w.upsert_org_unit(OrgUnitSpec(name="B院", url="https://x/b"))
+        await w.upsert_node(NodeSpec(node_key="a:d", type=NodeType.detail_url, url="https://x/a/d", org_unit_id=a))
+        await w.upsert_node(NodeSpec(node_key="b:d", type=NodeType.detail_url, url="https://x/b/d", org_unit_id=b))
+        await w.upsert_node(NodeSpec(node_key="b:fl", type=NodeType.faculty_list_url, url="https://x/b/fl", org_unit_id=b))
+        await w.add_edge(
+            await w.upsert_node(NodeSpec(node_key="b:org", type=NodeType.org_unit, url="https://x/b", org_unit_id=b)),
+            await w.upsert_node(NodeSpec(node_key="b:fl2", type=NodeType.faculty_list_url, url="https://x/b/fl2", org_unit_id=b)),
+            EdgeType.belongs_to_org_unit,
+        )
+
+        counts = await w.reset_org_unit_subtree(a)
+
+        assert counts["nodes_deleted"] == 1
+        async with sf() as s:
+            keys = {n.node_key for n in (await s.execute(select(GraphNode))).scalars().all()}
+            # only a:d deleted; B's nodes untouched (including its edge)
+            assert keys == {"b:d", "b:fl", "b:org", "b:fl2"}
+            assert len((await s.execute(select(GraphEdge))).scalars().all()) == 1
+    finally:
+        await _close(eng, w, task)
+
+
+async def test_reset_bad_detail_snapshots_resets_empty_and_empty_page_nodes(tmp_path):
+    # --reset (no -oid): detail nodes whose page_cache text_snapshot is empty/
+    # whitespace or flagged terminal_unavailable:empty_page are reset to pending
+    # and their stale page_cache deleted; good detail nodes are left alone.
+    eng, sf, w, task = await _writer(tmp_path)
+    try:
+        # bad: empty text snapshot (the capture regression)
+        bad_empty = await w.upsert_node(NodeSpec(node_key="d:empty", type=NodeType.detail_url, url="https://x/empty"))
+        await w.mark_node(bad_empty, NodeStatus.skipped, last_error="terminal_unavailable:empty_page",
+                          content_hash="h")
+        await w.save_page_cache(PageCachePayload(url="https://x/empty", html_snapshot="<html></html>",
+                                                  block_reason="terminal_unavailable:empty_page"))
+        # bad: whitespace-only text snapshot
+        bad_ws = await w.upsert_node(NodeSpec(node_key="d:ws", type=NodeType.detail_url, url="https://x/ws"))
+        await w.mark_node(bad_ws, NodeStatus.skipped)
+        await w.save_page_cache(PageCachePayload(url="https://x/ws", text_snapshot="   \n\t ",
+                                                  html_snapshot="<html></html>"))
+        # bad: explicit empty_page block_reason even if text non-empty (defensive)
+        bad_flag = await w.upsert_node(NodeSpec(node_key="d:flag", type=NodeType.detail_url, url="https://x/flag"))
+        await w.mark_node(bad_flag, NodeStatus.skipped)
+        await w.save_page_cache(PageCachePayload(url="https://x/flag", text_snapshot="something",
+                                                  block_reason="terminal_unavailable:empty_page"))
+        # good: detail node with real text — must NOT be touched
+        good = await w.upsert_node(NodeSpec(node_key="d:good", type=NodeType.detail_url, url="https://x/good"))
+        await w.mark_node(good, NodeStatus.done, content_hash="good-hash")
+        await w.save_page_cache(PageCachePayload(url="https://x/good", text_snapshot="教授张三的详情",
+                                                  html_snapshot="<p>张三</p>"))
+        # good: non-detail leaf-like node (faculty_list) with empty cache — not in scope
+        fl = await w.upsert_node(NodeSpec(node_key="fl:1", type=NodeType.faculty_list_url, url="https://x/fl"))
+        await w.mark_node(fl, NodeStatus.skipped)
+        await w.save_page_cache(PageCachePayload(url="https://x/fl", html_snapshot="<x>"))
+
+        counts = await w.reset_bad_detail_snapshots()
+
+        assert counts["nodes_reset"] == 3
+        async with sf() as s:
+            nodes = {n.node_key: n for n in (await s.execute(select(GraphNode).where(GraphNode.type == NodeType.detail_url))).scalars().all()}
+            for key in ("d:empty", "d:ws", "d:flag"):
+                assert nodes[key].status == NodeStatus.pending
+                assert nodes[key].attempt_count == 0
+                assert nodes[key].last_error is None
+                assert nodes[key].content_hash is None
+                assert nodes[key].completed_at is None
+            # good detail node untouched
+            assert nodes["d:good"].status == NodeStatus.done
+            assert nodes["d:good"].content_hash == "good-hash"
+            # stale caches for bad nodes deleted; good caches preserved
+            cache_urls = {c.url for c in (await s.execute(select(PageCache))).scalars().all()}
+            assert "https://x/empty" not in cache_urls
+            assert "https://x/ws" not in cache_urls
+            assert "https://x/flag" not in cache_urls
+            assert "https://x/good" in cache_urls
+            assert "https://x/fl" in cache_urls
+    finally:
+        await _close(eng, w, task)
+
+
+async def test_reset_bad_detail_snapshots_noop_when_none_bad(tmp_path):
+    eng, sf, w, task = await _writer(tmp_path)
+    try:
+        good = await w.upsert_node(NodeSpec(node_key="d:good", type=NodeType.detail_url, url="https://x/good"))
+        await w.mark_node(good, NodeStatus.done)
+        await w.save_page_cache(PageCachePayload(url="https://x/good", text_snapshot="有内容"))
+        counts = await w.reset_bad_detail_snapshots()
+        assert counts == {"nodes_reset": 0, "caches_deleted": 0}
+    finally:
+        await _close(eng, w, task)

@@ -339,3 +339,127 @@ def test_cleanup_error_does_not_mask_cancelled_run(tmp_path, monkeypatch):
     assert len(rows) == 1
     assert rows[0].status == "cancelled"
     assert rows[0].summary_json["status"] == "cancelled"
+
+
+def test_reset_without_resume_is_rejected(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    cli = _install_runtime(monkeypatch, settings)
+
+    result = _runner().invoke(cli.main, ["-u", "Alpha University", "--reset"])
+
+    assert result.exit_code != 0
+    assert "--reset requires --resume" in result.output
+    assert _DummyEngine.calls == []
+
+
+def test_reset_with_oid_rebuilds_subtree_before_engine(tmp_path, monkeypatch):
+    # --reset -oid X: reset_org_unit_subtree runs (deletes detail nodes, resets
+    # entry-points to pending) before the engine starts, then the engine re-crawls.
+    from sqlalchemy import select as sa_select
+    from dext.storage.lifecycle import open_resume
+    from dext.storage.models import GraphNode, NodeStatus, NodeType
+    from dext.storage.writer import NodeSpec
+
+    settings = _settings(tmp_path)
+    alpha = _university("Alpha University", "https://alpha.edu.cn/")
+    org_ids = asyncio.run(_seed_org_units(settings, alpha))
+    detail_key = f"detail:{org_ids[0]}:https://alpha.edu.cn/p1"
+
+    async def _plant_detail():
+        handle = await open_resume(alpha, "alpha", settings)
+        try:
+            await handle.writer.upsert_node(
+                NodeSpec(
+                    node_key=detail_key,
+                    type=NodeType.detail_url,
+                    url="https://alpha.edu.cn/p1",
+                    org_unit_id=org_ids[0],
+                    org_unit_name="数学学院",
+                )
+            )
+            async with handle.session() as s:
+                node = (await s.execute(sa_select(GraphNode).where(GraphNode.node_key == detail_key))).scalar_one()
+                node.status = NodeStatus.skipped
+                node.attempt_count = 1
+                node.last_error = "terminal_unavailable:empty_page"
+                node.completed_at = "2026-06-17T00:00:00+00:00"
+                await s.commit()
+        finally:
+            await handle.close()
+
+    asyncio.run(_plant_detail())
+
+    cli = _install_runtime(monkeypatch, settings)
+    result = _runner().invoke(cli.main, ["-u", "Alpha University", "--reset", "-oid", str(org_ids[0])])
+
+    assert result.exit_code == 0, result.output
+    assert _DummyEngine.org_unit_id_calls == [{org_ids[0]}]
+
+    # the detail node was deleted by reset_org_unit_subtree before the engine ran
+    async def _check():
+        handle = await open_resume(alpha, "alpha", settings)
+        try:
+            async with handle.session() as s:
+                return (
+                    await s.execute(
+                        sa_select(GraphNode).where(
+                            GraphNode.org_unit_id == org_ids[0],
+                            GraphNode.type == NodeType.detail_url,
+                        )
+                    )
+                ).scalars().all()
+        finally:
+            await handle.close()
+
+    assert asyncio.run(_check()) == []
+
+
+def test_reset_without_oid_resets_bad_snapshots(tmp_path, monkeypatch):
+    # --reset (no -oid): reset_bad_detail_snapshots runs after seeding, resetting
+    # skipped empty-page detail nodes back to pending so the engine re-crawls them.
+    from sqlalchemy import select as sa_select
+    from dext.storage.lifecycle import open_fresh, open_resume
+    from dext.storage.models import GraphNode, NodeStatus, NodeType
+    from dext.storage.writer import NodeSpec, PageCachePayload
+
+    settings = _settings(tmp_path)
+    alpha = _university("Alpha University", "https://alpha.edu.cn/")
+
+    async def _plant():
+        handle = await open_fresh(alpha, "alpha", settings)
+        try:
+            await handle.writer.upsert_node(
+                NodeSpec(node_key="bad:1", type=NodeType.detail_url, url="https://alpha.edu.cn/bad")
+            )
+            await handle.writer.save_page_cache(
+                PageCachePayload(url="https://alpha.edu.cn/bad", html_snapshot="<x>",
+                                 block_reason="terminal_unavailable:empty_page")
+            )
+            async with handle.session() as s:
+                node = (await s.execute(sa_select(GraphNode).where(GraphNode.node_key == "bad:1"))).scalar_one()
+                node.status = NodeStatus.skipped
+                node.attempt_count = 1
+                node.last_error = "terminal_unavailable:empty_page"
+                await s.commit()
+        finally:
+            await handle.close()
+
+    asyncio.run(_plant())
+
+    cli = _install_runtime(monkeypatch, settings)
+    result = _runner().invoke(cli.main, ["-u", "Alpha University", "--resume", "--reset"])
+
+    assert result.exit_code == 0, result.output
+
+    async def _check():
+        handle = await open_resume(alpha, "alpha", settings)
+        try:
+            async with handle.session() as s:
+                return (await s.execute(sa_select(GraphNode).where(GraphNode.node_key == "bad:1"))).scalar_one()
+        finally:
+            await handle.close()
+
+    node = asyncio.run(_check())
+    assert node.status == NodeStatus.pending
+    assert node.attempt_count == 0
+    assert node.last_error is None
