@@ -27,7 +27,6 @@
 | `DEXT_LLM_REASONING_EFFORT` | `high` | 首轮推理强度 |
 | `DEXT_LLM_REASONING_EFFORT_RETRY` | `max` | 重试时推理强度 |
 | `DEXT_LLM_MAX_PAGE_TOKENS` | `24000` | 单页文本截断 token 上限 |
-| `DEXT_LLM_WORKERS` | `6` | LLM 并发总数 |
 | `DEXT_DECISION_WORKERS` | `3` | 决策任务并发 |
 | `DEXT_EXTRACT_WORKERS` | `3` | 抽取任务并发 |
 | `DEXT_INVALID_JSON_MAX_RETRY` | `2` | 非法 JSON 重试次数 |
