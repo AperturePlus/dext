@@ -3,9 +3,7 @@
 // @namespace    https://github.com/AperturePlus/dext
 // @version      1.0.0
 // @description  Human-assisted crawler frontend
-// @match        *://*.edu.cn/*
-// @match        *://*.ac.cn/*
-// @match        //*.github.io
+// @match        *://*/*
 // @exclude      *://dx.scu.edu.cn/*
 // @exclude      *://mail.scu.edu.cn/*
 // @connect      127.0.0.1
@@ -38,8 +36,27 @@
     "dx.scu.edu.cn",
     "mail.scu.edu.cn"
   ]);
+  const WECHAT_HOSTS = new Set(["mp.weixin.qq.com", "weixin.qq.com"]);
   function isAssistantBlockedHost(hostname = window.location.hostname) {
     return BLOCKED_HOSTS.has((hostname || "").toLowerCase());
+  }
+  function isWechatHost(hostname = window.location.hostname) {
+    return WECHAT_HOSTS.has((hostname || "").toLowerCase());
+  }
+  function isWechatUrl(url) {
+    try {
+      return isWechatHost(new URL(url).hostname);
+    } catch {
+      return false;
+    }
+  }
+  const ALLOWED_FETCH_HOST_SUFFIXES = ["edu.cn", "github.io"];
+  function isAllowedFetchHost(hostname = window.location.hostname) {
+    const host = (hostname || "").toLowerCase();
+    if (!host) return false;
+    return ALLOWED_FETCH_HOST_SUFFIXES.some(
+      (suffix) => host === suffix || host.endsWith(`.${suffix}`)
+    );
   }
   const API_BASE = "http://127.0.0.1:21520/api";
   const TIMEOUT = 1e4;
@@ -114,8 +131,8 @@
   async function failJob(id, message) {
     await request("POST", `/jobs/${id}/fail`, { message });
   }
-  async function skipJob(id) {
-    await request("POST", `/jobs/${id}/skip`);
+  async function skipJob(id, reason) {
+    await request("POST", `/jobs/${id}/skip`, reason ? { reason } : void 0);
   }
   async function overrideJobUrl(id, newUrl) {
     return request("POST", `/jobs/${id}/override`, { new_url: newUrl });
@@ -681,6 +698,7 @@
   const MAX_ERROR_RETRIES = 3;
   const DEFAULT_DECISION_ACTION = "switch_failed_to_human";
   const NAVIGATION_ATTEMPT_KEY = "ycl_navigation_attempt_v1";
+  const NAVIGATION_ATTEMPT_TTL = 3e4;
   const DOCUMENT_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   let pollTimer = null;
   let autoCheckTimer = null;
@@ -776,26 +794,74 @@
     matchedSince = null;
     errorRetries = 0;
   }
+  function gmGetSync(key, def) {
+    try {
+      if (typeof _GM_getValue === "function") {
+        const v = _GM_getValue(key, def);
+        return typeof v === "string" ? v : def;
+      }
+      if (typeof (_GM == null ? void 0 : _GM.getValue) === "function") {
+        return def;
+      }
+    } catch {
+    }
+    try {
+      return localStorage.getItem(key) ?? def;
+    } catch {
+      return def;
+    }
+  }
+  function gmSetSync(key, value) {
+    try {
+      if (typeof _GM_setValue === "function") {
+        _GM_setValue(key, value);
+        return;
+      }
+    } catch {
+    }
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+    }
+  }
+  function gmDeleteSync(key) {
+    try {
+      if (typeof _GM_deleteValue === "function") {
+        _GM_deleteValue(key);
+        return;
+      }
+    } catch {
+    }
+    try {
+      localStorage.removeItem(key);
+    } catch {
+    }
+  }
   function readNavigationAttempt() {
     try {
-      const raw = sessionStorage.getItem(NAVIGATION_ATTEMPT_KEY);
+      const raw = gmGetSync(NAVIGATION_ATTEMPT_KEY, "");
       if (!raw) return null;
       const parsed = JSON.parse(raw);
       if (!parsed.jobId || !parsed.fromUrl || !parsed.targetUrl) return null;
-      return {
+      const attempt = {
         jobId: parsed.jobId,
         fromUrl: parsed.fromUrl,
         targetUrl: parsed.targetUrl,
         createdAt: Number(parsed.createdAt || 0),
         documentId: String(parsed.documentId || "")
       };
+      if (Date.now() - attempt.createdAt > NAVIGATION_ATTEMPT_TTL) {
+        gmDeleteSync(NAVIGATION_ATTEMPT_KEY);
+        return null;
+      }
+      return attempt;
     } catch {
       return null;
     }
   }
   function recordNavigationAttempt(job) {
     try {
-      sessionStorage.setItem(
+      gmSetSync(
         NAVIGATION_ATTEMPT_KEY,
         JSON.stringify({
           jobId: job.id,
@@ -812,10 +878,22 @@
     try {
       const attempt = readNavigationAttempt();
       if (!jobId || !attempt || attempt.jobId === jobId) {
-        sessionStorage.removeItem(NAVIGATION_ATTEMPT_KEY);
+        gmDeleteSync(NAVIGATION_ATTEMPT_KEY);
       }
     } catch {
     }
+  }
+  async function skipStrayRedirectJob(reason) {
+    const attempt = readNavigationAttempt();
+    if (!attempt) return false;
+    try {
+      await skipJob(attempt.jobId, reason);
+    } catch {
+      return false;
+    }
+    clearNavigationAttempt(attempt.jobId);
+    clearJob();
+    return true;
   }
   function navigateToJob(job) {
     recordNavigationAttempt(job);
@@ -849,10 +927,34 @@
     submitting = false;
     notify();
   }
+  async function skipAsWechatRedirect(job) {
+    if (submitting) return;
+    submitting = true;
+    try {
+      await skipJob(job.id, "wechat_redirect");
+      clearNavigationAttempt(job.id);
+      clearJob();
+      showToast("检测到微信公众号重定向，已跳过当前任务");
+      triggerFastPollBurst();
+    } catch (e) {
+      showToast(`微信重定向上报失败: ${e instanceof Error ? e.message : e}`);
+    }
+    submitting = false;
+    notify();
+  }
   function autoCheck() {
     if (state.instanceRole !== "owner") return;
     const job = state.currentJob;
-    if (!job || !state.autoMode || state.paused || submitting) {
+    if (!job || submitting) {
+      matchedSince = null;
+      return;
+    }
+    if (isWechatHost() && !isWechatUrl(job.url)) {
+      matchedSince = null;
+      void skipAsWechatRedirect(job);
+      return;
+    }
+    if (!state.autoMode || state.paused) {
       matchedSince = null;
       return;
     }
@@ -1450,9 +1552,7 @@
     stopPolling();
     stopAutoWatcher();
   }
-  async function bootstrap() {
-    if (isAssistantBlockedHost() || !isTopFrame()) return;
-    await waitForBody();
+  async function fullBootstrap() {
     await cleanupLegacyStorage();
     await hydratePrefs();
     mountToast();
@@ -1466,6 +1566,31 @@
       stopHeartbeat();
       stopInstanceLock();
     });
+  }
+  async function lightweightRedirectBootstrap() {
+    const attempt = readNavigationAttempt();
+    if (!attempt) return;
+    let targetHost = "";
+    try {
+      targetHost = new URL(attempt.targetUrl).hostname;
+    } catch {
+      return;
+    }
+    if (!isAllowedFetchHost(targetHost)) return;
+    const reason = isWechatHost() ? "wechat_redirect" : "offsite_redirect";
+    const ok = await skipStrayRedirectJob(reason);
+    if (ok) {
+      showToast(reason === "wechat_redirect" ? "检测到微信公众号重定向，已跳过当前任务" : "检测到站外重定向，已跳过当前任务");
+    }
+  }
+  async function bootstrap() {
+    if (isAssistantBlockedHost() || !isTopFrame()) return;
+    await waitForBody();
+    if (isAllowedFetchHost()) {
+      await fullBootstrap();
+      return;
+    }
+    await lightweightRedirectBootstrap();
   }
   void bootstrap();
 
