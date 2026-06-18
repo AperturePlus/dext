@@ -30,6 +30,10 @@ function importUtils() {
   return importTsModule('../src/utils.ts', 'utils.ts');
 }
 
+function importHostPolicy() {
+  return importTsModule('../src/hostPolicy.ts', 'hostPolicy.ts');
+}
+
 function importHtmlCleanup() {
   return importTsModule('../src/htmlCleanup.ts', 'htmlCleanup.ts');
 }
@@ -170,6 +174,77 @@ test('same-site helpers reject explicit-port redirects', async () => {
     assert.equal(mod.sameHost('https://x.edu.cn:443/a', 'https://x.edu.cn/b'), false);
     assert.equal(mod.sameSite('https://math.lzu.edu.cn/a', 'https://ce.lzu.edu.cn/b'), true);
     assert.equal(mod.sameSite('https://ce.lzu.edu.cn:8080/a', 'https://math.lzu.edu.cn/b'), false);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('isWechatHost detects weixin domains (case-insensitive)', async () => {
+  const { mod, cleanup } = await importHostPolicy();
+  try {
+    assert.equal(mod.isWechatHost('mp.weixin.qq.com'), true);
+    assert.equal(mod.isWechatHost('weixin.qq.com'), true);
+    assert.equal(mod.isWechatHost('MP.WEIXIN.QQ.COM'), true);
+    assert.equal(mod.isWechatHost('www.edu.cn'), false);
+    assert.equal(mod.isWechatHost(''), false);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('isWechatUrl inspects hostname and rejects malformed input', async () => {
+  const { mod, cleanup } = await importHostPolicy();
+  try {
+    assert.equal(mod.isWechatUrl('https://mp.weixin.qq.com/s?__biz=abc'), true);
+    assert.equal(mod.isWechatUrl('http://weixin.qq.com/x'), true);
+    assert.equal(mod.isWechatUrl('https://www.edu.cn/news/1'), false);
+    assert.equal(mod.isWechatUrl('not a url'), false);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('wechat hosts are not part of BLOCKED_HOSTS', async () => {
+  const { mod, cleanup } = await importHostPolicy();
+  try {
+    assert.equal(mod.isAssistantBlockedHost('mp.weixin.qq.com'), false);
+    assert.equal(mod.isAssistantBlockedHost('weixin.qq.com'), false);
+    assert.equal(mod.isAssistantBlockedHost('dx.scu.edu.cn'), true);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('isAllowedFetchHost mirrors backend allowlist (no ac.cn, dot-boundary)', async () => {
+  const { mod, cleanup } = await importHostPolicy();
+  try {
+    assert.equal(mod.isAllowedFetchHost('x.edu.cn'), true);
+    assert.equal(mod.isAllowedFetchHost('www.x.edu.cn'), true);
+    assert.equal(mod.isAllowedFetchHost('foo.github.io'), true);
+    assert.equal(mod.isAllowedFetchHost('github.io'), true);
+    // ac.cn deliberately excluded (mirrors backend).
+    assert.equal(mod.isAllowedFetchHost('www.ac.cn'), false);
+    assert.equal(mod.isAllowedFetchHost('ac.cn'), false);
+    // dot-boundary: suffix-only match must not pass.
+    assert.equal(mod.isAllowedFetchHost('notedu.cn'), false);
+    assert.equal(mod.isAllowedFetchHost('evilgithub.io'), false);
+    // offsite / wechat hosts not allowed.
+    assert.equal(mod.isAllowedFetchHost('example.com'), false);
+    assert.equal(mod.isAllowedFetchHost('mp.weixin.qq.com'), false);
+    assert.equal(mod.isAllowedFetchHost(''), false);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('isDisallowedRedirectHost flags wechat and non-allowlisted hosts', async () => {
+  const { mod, cleanup } = await importHostPolicy();
+  try {
+    assert.equal(mod.isDisallowedRedirectHost('mp.weixin.qq.com'), true);
+    assert.equal(mod.isDisallowedRedirectHost('example.com'), true);
+    assert.equal(mod.isDisallowedRedirectHost('www.ac.cn'), true);
+    assert.equal(mod.isDisallowedRedirectHost('x.edu.cn'), false);
+    assert.equal(mod.isDisallowedRedirectHost('foo.github.io'), false);
   } finally {
     await cleanup();
   }

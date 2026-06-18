@@ -1,10 +1,13 @@
 import * as api from './api';
 import { actionMatchesCurrentPage, collectFormPaginationStates, performFetchAction } from './formPagination';
 import { stripCaptureNoise } from './htmlCleanup';
+import { isWechatHost, isWechatUrl } from './hostPolicy';
 import { clearJob, notify, setJob, state } from './state';
 import type { FetchJob, PendingDecision, StatusResponse } from './types';
 import { showToast } from './ui/toast';
 import { isErrorPage, sameSite, terminalUnavailableReason, urlMatches } from './utils';
+
+import { GM, GM_deleteValue, GM_getValue, GM_setValue } from '$';
 
 const POLL_INTERVAL = 1000;
 const FAST_POLL_INTERVAL = 250;
@@ -19,6 +22,7 @@ const ERROR_RETRY_DELAY = 5000;
 const MAX_ERROR_RETRIES = 3;
 const DEFAULT_DECISION_ACTION = 'switch_failed_to_human';
 const NAVIGATION_ATTEMPT_KEY = 'ycl_navigation_attempt_v1';
+const NAVIGATION_ATTEMPT_TTL = 30_000;
 const DOCUMENT_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -150,27 +154,84 @@ function resetAutoMatchState(): void {
   errorRetries = 0;
 }
 
-function readNavigationAttempt(): NavigationAttempt | null {
+function gmGetSync(key: string, def: string): string {
   try {
-    const raw = sessionStorage.getItem(NAVIGATION_ATTEMPT_KEY);
+    if (typeof GM_getValue === 'function') {
+      const v = GM_getValue<string>(key, def);
+      return typeof v === 'string' ? v : def;
+    }
+    if (typeof GM?.getValue === 'function') {
+      // GM.getValue is async; only usable as best-effort fallback here.
+      return def;
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    return localStorage.getItem(key) ?? def;
+  } catch {
+    return def;
+  }
+}
+
+function gmSetSync(key: string, value: string): void {
+  try {
+    if (typeof GM_setValue === 'function') {
+      GM_setValue(key, value);
+      return;
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // ignore
+  }
+}
+
+function gmDeleteSync(key: string): void {
+  try {
+    if (typeof GM_deleteValue === 'function') {
+      GM_deleteValue(key);
+      return;
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // ignore
+  }
+}
+
+export function readNavigationAttempt(): NavigationAttempt | null {
+  try {
+    const raw = gmGetSync(NAVIGATION_ATTEMPT_KEY, '');
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<NavigationAttempt>;
     if (!parsed.jobId || !parsed.fromUrl || !parsed.targetUrl) return null;
-    return {
+    const attempt: NavigationAttempt = {
       jobId: parsed.jobId,
       fromUrl: parsed.fromUrl,
       targetUrl: parsed.targetUrl,
       createdAt: Number(parsed.createdAt || 0),
       documentId: String(parsed.documentId || ''),
     };
+    if (Date.now() - attempt.createdAt > NAVIGATION_ATTEMPT_TTL) {
+      gmDeleteSync(NAVIGATION_ATTEMPT_KEY);
+      return null;
+    }
+    return attempt;
   } catch {
     return null;
   }
 }
 
-function recordNavigationAttempt(job: FetchJob): void {
+export function recordNavigationAttempt(job: FetchJob): void {
   try {
-    sessionStorage.setItem(
+    gmSetSync(
       NAVIGATION_ATTEMPT_KEY,
       JSON.stringify({
         jobId: job.id,
@@ -185,15 +246,28 @@ function recordNavigationAttempt(job: FetchJob): void {
   }
 }
 
-function clearNavigationAttempt(jobId?: string): void {
+export function clearNavigationAttempt(jobId?: string): void {
   try {
     const attempt = readNavigationAttempt();
     if (!jobId || !attempt || attempt.jobId === jobId) {
-      sessionStorage.removeItem(NAVIGATION_ATTEMPT_KEY);
+      gmDeleteSync(NAVIGATION_ATTEMPT_KEY);
     }
   } catch {
     // ignore
   }
+}
+
+export async function skipStrayRedirectJob(reason: string): Promise<boolean> {
+  const attempt = readNavigationAttempt();
+  if (!attempt) return false;
+  try {
+    await api.skipJob(attempt.jobId, reason);
+  } catch {
+    return false;
+  }
+  clearNavigationAttempt(attempt.jobId);
+  clearJob();
+  return true;
 }
 
 function navigateToJob(job: FetchJob): void {
@@ -232,10 +306,37 @@ async function failTerminalUnavailable(job: FetchJob, reason: string): Promise<v
   notify();
 }
 
+async function skipAsWechatRedirect(job: FetchJob): Promise<void> {
+  if (submitting) return;
+  submitting = true;
+  try {
+    await api.skipJob(job.id, 'wechat_redirect');
+    clearNavigationAttempt(job.id);
+    clearJob();
+    showToast('检测到微信公众号重定向，已跳过当前任务');
+    triggerFastPollBurst();
+  } catch (e) {
+    showToast(`微信重定向上报失败: ${e instanceof Error ? e.message : e}`);
+  }
+  submitting = false;
+  notify();
+}
+
 function autoCheck(): void {
   if (state.instanceRole !== 'owner') return;
   const job = state.currentJob;
-  if (!job || !state.autoMode || state.paused || submitting) {
+  if (!job || submitting) {
+    matchedSince = null;
+    return;
+  }
+
+  if (isWechatHost() && !isWechatUrl(job.url)) {
+    matchedSince = null;
+    void skipAsWechatRedirect(job);
+    return;
+  }
+
+  if (!state.autoMode || state.paused) {
     matchedSince = null;
     return;
   }

@@ -10,7 +10,7 @@ export default defineConfig({
         namespace: 'https://github.com/AperturePlus/dext',
         version: '1.0.0',
         description: 'Human-assisted crawler frontend',
-        match: ['*://*.edu.cn/*', '*://*.ac.cn/*','//*.github.io'],
+        match: ['*://*/*'],
         exclude: ['*://dx.scu.edu.cn/*', '*://mail.scu.edu.cn/*'],
         noframes: true,
         'run-at': 'document-idle',

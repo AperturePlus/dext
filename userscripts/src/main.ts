@@ -1,7 +1,8 @@
-import { recoverState, startAutoWatcher, startPolling, stopAutoWatcher, stopPolling } from './actions';
+import { recoverState, skipStrayRedirectJob, startAutoWatcher, startPolling, stopAutoWatcher, stopPolling } from './actions';
+import { readNavigationAttempt } from './actions';
+import { isAssistantBlockedHost, isAllowedFetchHost, isWechatHost } from './hostPolicy';
 import { startHeartbeat, stopHeartbeat } from './heartbeat';
 import { startInstanceLock, stopInstanceLock } from './instanceLock';
-import { isAssistantBlockedHost } from './hostPolicy';
 import { cleanupLegacyStorage, hydratePrefs, setInstanceRole, state, subscribe } from './state';
 import { mountPanel, renderPanel } from './ui/panel';
 import { mountToast, showToast } from './ui/toast';
@@ -40,9 +41,7 @@ async function onRoleChange(role: 'owner' | 'standby'): Promise<void> {
   stopAutoWatcher();
 }
 
-async function bootstrap(): Promise<void> {
-  if (isAssistantBlockedHost() || !isTopFrame()) return;
-  await waitForBody();
+async function fullBootstrap(): Promise<void> {
   await cleanupLegacyStorage();
   await hydratePrefs();
   mountToast();
@@ -56,6 +55,39 @@ async function bootstrap(): Promise<void> {
     stopHeartbeat();
     stopInstanceLock();
   });
+}
+
+/**
+ * Lightweight branch for disallowed redirect hosts (wechat / non-edu landing
+ * pages reached after an offsite redirect from an allowed host). Does NOT mount
+ * UI, claim the instance lock, or poll for new jobs — it only checks whether
+ * this tab is a stray navigation for an in-flight job and skips that job.
+ */
+async function lightweightRedirectBootstrap(): Promise<void> {
+  const attempt = readNavigationAttempt();
+  if (!attempt) return;
+  let targetHost = '';
+  try {
+    targetHost = new URL(attempt.targetUrl).hostname;
+  } catch {
+    return;
+  }
+  if (!isAllowedFetchHost(targetHost)) return;
+  const reason = isWechatHost() ? 'wechat_redirect' : 'offsite_redirect';
+  const ok = await skipStrayRedirectJob(reason);
+  if (ok) {
+    showToast(reason === 'wechat_redirect' ? '检测到微信公众号重定向，已跳过当前任务' : '检测到站外重定向，已跳过当前任务');
+  }
+}
+
+async function bootstrap(): Promise<void> {
+  if (isAssistantBlockedHost() || !isTopFrame()) return;
+  await waitForBody();
+  if (isAllowedFetchHost()) {
+    await fullBootstrap();
+    return;
+  }
+  await lightweightRedirectBootstrap();
 }
 
 void bootstrap();
