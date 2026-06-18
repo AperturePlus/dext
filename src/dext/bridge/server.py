@@ -165,7 +165,9 @@ async def handle_fail(request: web.Request) -> web.Response:
 
 
 async def handle_skip(request: web.Request) -> web.Response:
-    ok = _bridge(request).skip(request.match_info["id"])
+    body = await _read_json(request)
+    reason = str(body.get("reason", "")).strip()
+    ok = _bridge(request).skip(request.match_info["id"], reason=reason or None)
     return json_response({"status": "ok" if ok else "ignored"})
 
 

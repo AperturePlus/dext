@@ -96,6 +96,23 @@ async def test_skip_is_terminal_human_skip():
     assert b.stats().skipped == 1
 
 
+async def test_skip_with_reason_sets_block_reason():
+    b = _bridge()
+    task = asyncio.ensure_future(b.fetch(url="u", context=_ctx()))
+    job = await _await_job(b)
+    b.skip(job.id, reason="wechat_redirect")
+    assert (await task).block_reason == "wechat_redirect"
+    assert b.stats().skipped == 1
+
+
+async def test_skip_blank_reason_defaults_human_skip():
+    b = _bridge()
+    task = asyncio.ensure_future(b.fetch(url="u", context=_ctx()))
+    job = await _await_job(b)
+    b.skip(job.id, reason="   ")
+    assert (await task).block_reason == "human_skip"
+
+
 async def test_late_complete_after_resolution_ignored():
     b = _bridge()
     task = asyncio.ensure_future(b.fetch(url="u", context=_ctx()))

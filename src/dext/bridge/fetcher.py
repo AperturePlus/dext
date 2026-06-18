@@ -86,11 +86,12 @@ class HumanFetcherBridge:
         self._queue.finish(job, JobStatus.failed)
         return True
 
-    def skip(self, job_id: str) -> bool:
+    def skip(self, job_id: str, *, reason: str | None = None) -> bool:
         job = self._resolvable(job_id)
         if job is None:
             return False
-        job.future.set_result(self._failed_result(job, block_reason="human_skip"))
+        block_reason = (reason or "").strip() or "human_skip"
+        job.future.set_result(self._failed_result(job, block_reason=block_reason))
         self._queue.finish(job, JobStatus.skipped)
         return True
 

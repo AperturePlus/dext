@@ -106,6 +106,24 @@ async def test_skip_path_is_human_skip(harness):
     assert (await task).block_reason == "human_skip"
 
 
+async def test_skip_path_with_reason_is_wechat_redirect(harness):
+    task = asyncio.ensure_future(harness.bridge.fetch(url="u", context=JobContext()))
+    job = await _poll_next(harness.client)
+    resp = await _post(harness.client, f"/api/jobs/{job['id']}/skip", {"reason": "wechat_redirect"})
+    assert resp.status == 200
+    assert (await resp.json())["status"] == "ok"
+    result = await task
+    assert result.block_reason == "wechat_redirect"
+
+
+async def test_skip_with_empty_reason_falls_back_to_human_skip(harness):
+    task = asyncio.ensure_future(harness.bridge.fetch(url="u", context=JobContext()))
+    job = await _poll_next(harness.client)
+    resp = await _post(harness.client, f"/api/jobs/{job['id']}/skip", {"reason": "  "})
+    assert resp.status == 200
+    assert (await task).block_reason == "human_skip"
+
+
 async def test_override_swaps_url(harness):
     task = asyncio.ensure_future(harness.bridge.fetch(url="https://x.edu.cn/wrong", context=JobContext()))
     job = await _poll_next(harness.client)

@@ -97,8 +97,8 @@ export async function failJob(id: string, message: string): Promise<void> {
   await request('POST', `/jobs/${id}/fail`, { message });
 }
 
-export async function skipJob(id: string): Promise<void> {
-  await request('POST', `/jobs/${id}/skip`);
+export async function skipJob(id: string, reason?: string): Promise<void> {
+  await request('POST', `/jobs/${id}/skip`, reason ? { reason } : undefined);
 }
 
 export async function overrideJobUrl(id: string, newUrl: string): Promise<FetchJob | null> {

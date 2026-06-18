@@ -7,6 +7,11 @@ from dext.storage.models import NodeStatus
 
 def test_fetch_failure_mapping():
     assert classify_fetch_failure("human_skip").status == NodeStatus.skipped
+    assert classify_fetch_failure("wechat_redirect").status == NodeStatus.skipped
+    assert classify_fetch_failure("wechat_redirect").resolver == "dropped"
+    assert classify_fetch_failure("offsite_redirect").status == NodeStatus.skipped
+    assert classify_fetch_failure("offsite_redirect").resolver == "dropped"
+    assert classify_fetch_failure("offsite_redirect").retryable is False
     assert classify_fetch_failure("invalid_url").status == NodeStatus.failed
     assert classify_fetch_failure("invalid_url:explicit_port").status == NodeStatus.failed
     timeout = classify_fetch_failure("timeout")

@@ -20,7 +20,7 @@ class RetryDecision:
 def classify_fetch_failure(block_reason: str | None) -> RetryDecision:
     reason = (block_reason or "fetch_failed").strip() or "fetch_failed"
     lowered = reason.lower()
-    if lowered == "human_skip":
+    if lowered in {"human_skip", "wechat_redirect", "offsite_redirect"}:
         return RetryDecision(NodeStatus.skipped, last_error=reason, resolver="dropped")
     if _is_terminal_unavailable_reason(lowered):
         return RetryDecision(NodeStatus.skipped, last_error=reason, resolver="dropped")
