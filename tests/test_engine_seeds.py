@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from sqlalchemy import select
 
 from dext.engine import PRIORITY_BY_TYPE, load_seed_nodes
-from dext.engine.seeds import node_spec, resolve_discovered_url
+from dext.engine.seeds import node_spec, resolve_discovered_url, resolve_discovered_urls
 from dext.bridge.redirect import RedirectGuard
 from dext.seed import OrgUnitSeed, UniversitySeed
 from dext.storage.db import create_all, create_engine_for_path, make_session_factory
@@ -146,7 +146,54 @@ async def test_resolve_discovered_url_allows_github_io_redirect():
     assert metadata["source_url"] == "https://x.edu.cn/p"
 
 
-async def test_load_seed_nodes_drops_too_many_redirects_urls(tmp_path):
+async def test_resolve_discovered_url_probe_failed_is_not_dropped():
+    async def resolver(url):
+        raise RuntimeError("WAF")
+
+    guard = RedirectGuard(resolver=resolver)
+    resolved, metadata = await resolve_discovered_url("https://x.edu.cn/p", redirect_guard=guard)
+    assert resolved == "https://x.edu.cn/p"
+    assert metadata["source_url"] == "https://x.edu.cn/p"
+    assert metadata["redirect_probe_failed"] is True
+
+
+async def test_resolve_discovered_url_skips_probe_for_non_http_urls():
+    async def resolver(url):
+        raise AssertionError("non-http URL must not be probed")
+
+    guard = RedirectGuard(resolver=resolver)
+    resolved, metadata = await resolve_discovered_url("about:org_unit:数学学院", redirect_guard=guard)
+    assert resolved == "about:org_unit:数学学院"
+    assert metadata["source_url"] == "about:org_unit:数学学院"
+
+
+async def test_resolve_discovered_urls_runs_probes_concurrently():
+    import asyncio as _asyncio
+
+    in_flight = 0
+    peak = 0
+    lock = _asyncio.Lock()
+
+    async def resolver(url):
+        nonlocal in_flight, peak
+        async with lock:
+            in_flight += 1
+            peak = max(peak, in_flight)
+        await _asyncio.sleep(0.02)
+        async with lock:
+            in_flight -= 1
+        return url
+
+    guard = RedirectGuard(resolver=resolver)
+    urls = [f"https://x.edu.cn/p{i}" for i in range(32)]
+    results = await resolve_discovered_urls(urls, redirect_guard=guard)
+    assert len(results) == 32
+    assert all(resolved_url == url for (resolved_url, _meta), url in zip(results, urls))
+    # Serial execution would peak at 1; semaphore(16) allows real concurrency.
+    assert peak > 1
+
+
+async def test_load_seed_nodes_keeps_probe_failed_urls(tmp_path):
     h = await _writer(tmp_path)
     university = UniversitySeed(
         name="测试大学",
@@ -164,9 +211,12 @@ async def test_load_seed_nodes_drops_too_many_redirects_urls(tmp_path):
     guard = RedirectGuard(resolver=resolver)
     summary = await load_seed_nodes(university, h, _settings(), run_id=1, redirect_guard=guard)
 
-    assert summary.org_listing_nodes == 0
-    assert summary.org_units == 0
-    assert summary.faculty_list_nodes == 0
+    # PROBE_FAILED no longer drops URLs — the seed nodes are still created.
+    assert summary.org_listing_nodes == 1
+    assert summary.org_units == 1
+    assert summary.faculty_list_nodes == 1
     async with h.session_factory() as s:
-        assert (await s.execute(select(GraphNode))).scalars().all() == []
+        nodes = (await s.execute(select(GraphNode))).scalars().all()
+        listing = next(n for n in nodes if n.type == NodeType.org_listing_url)
+        assert listing.metadata_json.get("redirect_probe_failed") is True
     await _close(h)

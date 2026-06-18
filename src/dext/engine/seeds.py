@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -15,6 +16,8 @@ from dext.url_policy import is_allowed_fetch_host
 from dext.engine.priorities import BASE_PRIORITY_BY_TYPE, priority_for as base_priority_for, subtree_priority_for
 
 PRIORITY_BY_TYPE: dict[NodeType, float] = BASE_PRIORITY_BY_TYPE
+
+_PROBE_CONCURRENCY = 16
 
 
 @dataclass
@@ -31,22 +34,56 @@ async def resolve_discovered_url(
     *,
     redirect_guard: RedirectGuard | None = None,
 ) -> tuple[str | None, dict[str, object]]:
-    if redirect_guard is None:
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
         final_url = url
         metadata: dict[str, object] = {"source_url": url}
+    elif redirect_guard is None:
+        final_url = url
+        metadata = {"source_url": url}
     else:
         verdict = await redirect_guard.probe_redirect(url)
-        if verdict.verdict in {BLOCKED, PROBE_FAILED}:
+        if verdict.verdict == BLOCKED:
             return None, {}
-        final_url = verdict.final_url or url
-        metadata = {"source_url": url}
-        if final_url != url:
-            metadata["redirect_verdict"] = verdict.verdict
-            if verdict.reason:
-                metadata["redirect_reason"] = verdict.reason
+        if verdict.verdict == PROBE_FAILED:
+            final_url = url
+            metadata = {"source_url": url, "redirect_probe_failed": True}
+        else:
+            final_url = verdict.final_url or url
+            metadata = {"source_url": url}
+            if final_url != url:
+                metadata["redirect_verdict"] = verdict.verdict
+                if verdict.reason:
+                    metadata["redirect_reason"] = verdict.reason
     if not is_allowed_fetch_host(final_url):
         return None, {}
     return final_url, metadata
+
+
+async def resolve_discovered_urls(
+    urls: list[str],
+    *,
+    redirect_guard: RedirectGuard | None = None,
+) -> list[tuple[str | None, dict[str, object]]]:
+    """Batch parallel resolve for many discovered URLs.
+
+    Probes run concurrently under a semaphore (caps per-host WAF pressure);
+    upserts stay serial at the call site. A ``None`` guard short-circuits to
+    the identity resolution for every URL (still respects the fetch host
+    allowlist).
+    """
+    if not urls:
+        return []
+    if redirect_guard is None:
+        return [await resolve_discovered_url(u, redirect_guard=None) for u in urls]
+
+    sem = asyncio.Semaphore(_PROBE_CONCURRENCY)
+
+    async def _one(u: str) -> tuple[str | None, dict[str, object]]:
+        async with sem:
+            return await resolve_discovered_url(u, redirect_guard=redirect_guard)
+
+    return await asyncio.gather(*(_one(u) for u in urls))
 
 
 def node_spec(
@@ -189,14 +226,16 @@ async def _seed_org_unit(
         )
         summary.org_unit_nodes += 1
 
+    faculty_entries: list[tuple[str, str]] = []
     for raw_url in unit.faculty_urls:
         faculty_url = normalize_seed_url(raw_url, org_url)
-        if not faculty_url:
-            continue
-        resolved_faculty_url, redirect_metadata = await resolve_discovered_url(
-            faculty_url,
-            redirect_guard=redirect_guard,
-        )
+        if faculty_url:
+            faculty_entries.append((raw_url, faculty_url))
+    faculty_resolved = await resolve_discovered_urls(
+        [fu for _, fu in faculty_entries],
+        redirect_guard=redirect_guard,
+    )
+    for (_raw_url, faculty_url), (resolved_faculty_url, redirect_metadata) in zip(faculty_entries, faculty_resolved):
         if resolved_faculty_url is None:
             continue
         faculty_id = await storage.writer.upsert_node(
@@ -229,11 +268,13 @@ async def load_seed_nodes(
     redirect_guard: RedirectGuard | None = None,
 ) -> SeedLoadSummary:
     summary = SeedLoadSummary()
+    listing_urls: list[str] = []
     for raw_url in university.org_unit_listing_urls:
         url = normalize_seed_url(raw_url, university.url)
-        if not url:
-            continue
-        resolved_url, redirect_metadata = await resolve_discovered_url(url, redirect_guard=redirect_guard)
+        if url:
+            listing_urls.append(url)
+    listing_resolved = await resolve_discovered_urls(listing_urls, redirect_guard=redirect_guard)
+    for resolved_url, redirect_metadata in listing_resolved:
         if resolved_url is None:
             continue
         await storage.writer.upsert_node(

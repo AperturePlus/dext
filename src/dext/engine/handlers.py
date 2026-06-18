@@ -10,7 +10,7 @@ from urllib.parse import parse_qsl, urlsplit
 from dext.bridge.decision import PendingDecision
 from dext.exclusions import is_valid_exclusion_reason
 from dext.engine.names import clean_org_unit_name
-from dext.engine.seeds import node_spec, org_node_spec, resolve_discovered_url
+from dext.engine.seeds import node_spec, org_node_spec, resolve_discovered_url, resolve_discovered_urls
 from dext.engine.workers import ExtractTask
 from dext.llm import DeciderContext, DeciderNode, decide_links
 from dext.page import (
@@ -279,6 +279,7 @@ async def _decide(snapshot: PageSnapshot, candidates, node: ClaimedNode, deps: H
 async def handle_org_listing(node: ClaimedNode, snapshot: PageSnapshot, deps: HandlerDeps) -> None:
     decision = await _decide(snapshot, snapshot.link_signals, node, deps)
     created = 0
+    college_links = []
     for link in decision.links:
         if _link_exclusion_reason(link):
             continue
@@ -287,10 +288,12 @@ async def handle_org_listing(node: ClaimedNode, snapshot: PageSnapshot, deps: Ha
         name = clean_org_unit_name(link.org_unit_name)
         if not name:
             continue
-        resolved_url, redirect_metadata = await resolve_discovered_url(
-            link.url,
-            redirect_guard=deps.redirect_guard,
-        )
+        college_links.append((link, name))
+    resolved = await resolve_discovered_urls(
+        [link.url for link, _ in college_links],
+        redirect_guard=deps.redirect_guard,
+    )
+    for (link, name), (resolved_url, redirect_metadata) in zip(college_links, resolved):
         if resolved_url is None:
             continue
         org_id = await deps.storage.writer.upsert_org_unit(
@@ -329,10 +332,16 @@ async def _create_child(
     confidence: float | None = None,
     metadata: dict | None = None,
     identity_url: str | None = None,
+    precomputed_resolved: tuple[str | None, dict] | None = None,
 ) -> int | None:
-    resolved_url, redirect_metadata = await resolve_discovered_url(url, redirect_guard=deps.redirect_guard)
-    if resolved_url is None:
-        return None
+    if precomputed_resolved is not None:
+        resolved_url, redirect_metadata = precomputed_resolved
+        if resolved_url is None:
+            return None
+    else:
+        resolved_url, redirect_metadata = await resolve_discovered_url(url, redirect_guard=deps.redirect_guard)
+        if resolved_url is None:
+            return None
     canonical_identity_url = resolved_url if resolved_url != url else (identity_url or url)
     metadata = _merge_metadata(
         metadata,
@@ -521,14 +530,23 @@ async def _materialize_decided(
     yields_people = has_detail or has_followup or pagination_created > 0
     reslice_links = [link for link in regular_links if link.label == "reslice"]
     reslice_links.extend(query_reslices)
-    for link in regular_links:
-        if link.label == "reslice":
-            continue  # handled in _materialize_reslices
+
+    materialize_links = [link for link in regular_links if link.label != "reslice"]
+    precomputed = await resolve_discovered_urls(
+        [link.url for link in materialize_links],
+        redirect_guard=deps.redirect_guard,
+    )
+    resolved_by_url: dict[str, tuple[str | None, dict]] = {}
+    for link, result in zip(materialize_links, precomputed):
+        resolved_by_url[link.url] = result
+
+    for link in materialize_links:
         if link.label == "detail" or link.is_leaf:
             child_id = await _create_child(
                 deps, node, NodeType.detail_url, url=link.url,
                 edge_type=EdgeType.detail_candidate_of, confidence=link.confidence,
                 metadata={"label": link.label},
+                precomputed_resolved=resolved_by_url.get(link.url),
             )
             if child_id is not None:
                 count += 1
@@ -539,6 +557,7 @@ async def _materialize_decided(
                 deps, node, NodeType.pagination_url, url=link.url,
                 edge_type=EdgeType.pagination_of, confidence=link.confidence,
                 metadata={"label": link.label, "pagination_kind": "decider"},
+                precomputed_resolved=resolved_by_url.get(link.url),
             )
             if child_id is not None:
                 count += 1
@@ -549,6 +568,7 @@ async def _materialize_decided(
                 deps, node, NodeType.faculty_followup_url, url=link.url,
                 edge_type=EdgeType.discovered_on_page, confidence=link.confidence,
                 metadata={"label": link.label},
+                precomputed_resolved=resolved_by_url.get(link.url),
             )
             if child_id is not None:
                 count += 1

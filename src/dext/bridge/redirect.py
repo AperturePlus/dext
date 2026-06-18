@@ -67,7 +67,7 @@ def _exception_summary(exc: Exception) -> str:
     return f"error={error} message={message}"
 
 
-async def _aiohttp_resolver(url: str, *, timeout: float = 8.0) -> str:
+async def _aiohttp_resolver(url: str, *, timeout: float = 3.0) -> str:
     import aiohttp
 
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
@@ -82,6 +82,13 @@ class RedirectGuard:
         self._resolver = resolver or _aiohttp_resolver
 
     async def probe_redirect(self, url: str) -> RedirectVerdict:
+        """Best-effort redirect probe; failure does NOT block crawling.
+
+        Returns ``PROBE_FAILED`` on resolver errors (WAF / timeout / DNS / loop).
+        Callers decide what to do with a failed probe — historically a failed
+        probe must NOT cause the URL to be dropped, only a ``BLOCKED`` verdict
+        (wechat trap) should.
+        """
         try:
             final_url = await self._resolver(url)
         except Exception as exc:  # WAF / timeout / DNS / redirect loop
