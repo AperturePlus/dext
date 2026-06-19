@@ -22,6 +22,35 @@ def test_fetch_failure_mapping():
     assert terminal.retryable is False
 
 
+def test_fetch_failure_rate_limited_status_code_branch():
+    decision = classify_fetch_failure("timeout", status_code=429)
+    assert decision.status == NodeStatus.retry
+    assert decision.retryable is True
+    assert decision.resolver == "rate_limited"
+    assert decision.last_error == "http_429"
+
+
+def test_fetch_failure_gateway_status_code_branch():
+    for code in (502, 503, 504):
+        decision = classify_fetch_failure("fetch_failed", status_code=code)
+        assert decision.status == NodeStatus.retry
+        assert decision.retryable is True
+        assert decision.resolver == "retry"
+        assert decision.last_error == f"http_{code}"
+
+
+def test_fetch_failure_status_code_takes_precedence_over_block_reason():
+    decision = classify_fetch_failure("human_skip", status_code=503)
+    assert decision.resolver == "retry"
+    assert decision.status == NodeStatus.retry
+
+
+def test_fetch_failure_without_status_code_keeps_legacy_path():
+    decision = classify_fetch_failure("human_skip")
+    assert decision.status == NodeStatus.skipped
+    assert decision.resolver == "dropped"
+
+
 def test_invalid_json_retry_then_exhaustion():
     result = SimpleNamespace(failure_type="invalid_json")
     retry = classify_extraction_failure(result, extract_attempt_index=0, invalid_json_max_retry=2)

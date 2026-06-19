@@ -33,6 +33,7 @@ class CountingBridge:
         self.in_flight = 0
         self.max_in_flight = 0
         self.fetch_count = 0
+        self.fetched_urls: set[str] = set()
 
     async def fetch(self, *, url, identity_url, action, context):
         self.in_flight += 1
@@ -42,6 +43,7 @@ class CountingBridge:
             if self.fetch_delay:
                 await asyncio.sleep(self.fetch_delay)
             self.fetch_count += 1
+            self.fetched_urls.add(identity_url)
             html = self.pages.get(identity_url, "<html><body></body></html>")
             return FetchResult(
                 identity_url=identity_url, requested_url=url, final_url=identity_url,
@@ -706,4 +708,267 @@ async def test_async_decider_end_to_end_live(tmp_path, live_settings):
         affils = (await s.execute(select(ProfessorAffiliation))).scalars().all()
         assert len(profs) >= 1
         assert len(affils) >= 1
+    await _close(storage)
+
+
+async def test_driver_502_detail_url_not_handed_to_frontend(tmp_path):
+    """入图前 status probe 覆盖到 driver 主流量路径:抓取过程中新发现的 502 detail 链接
+    经探针标 retry+next_retry_at,本 run claim_next 跳过 → CountingBridge.fetch 绝不被
+    以该 502 URL 调用(浏览器不会被坏网关阻塞整个进程).
+
+    这是用户要求的直接断言:所有 URL 在交给前端 fetch 前必须经过探针探测.
+    """
+    from dext.bridge.probe import StatusProbe
+
+    storage = await _storage(tmp_path)
+    settings = _settings()
+    parent = "https://x.edu.cn/szdw.htm"
+    bad_detail = "https://x.edu.cn/t/zhang.htm"  # 探针返回 502 的坏网关 detail 页
+    bridge = CountingBridge({parent: "<html><body>师资</body></html>"})
+
+    async def _fake_decide(*args, **kwargs):
+        return SimpleNamespace(links=[
+            SimpleNamespace(url=bad_detail, label="detail", confidence=0.9,
+                            is_leaf=True, exclusion_reason=None),
+        ], parse_error=None, page_exclusion_reason=None)
+
+    async def _status_resolver(url):
+        return url, 502 if url == bad_detail else 200
+
+    await storage.writer.upsert_node(
+        node_spec(NodeType.faculty_list_url, url=parent, settings=settings, run_id=1)
+    )
+
+    import dext.engine.handlers as handlers_mod
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = _fake_decide
+    try:
+        engine = CrawlEngine(
+            storage, bridge, llm_client=None, settings=settings, run_id=1,
+            university_name="测试大学", status_probe=StatusProbe(resolver=_status_resolver),
+        )
+        summary = await engine.run()
+    finally:
+        handlers_mod.decide_links = orig
+
+    # 坏网关 detail 节点入图后延迟:retry + next_retry_at,本 run 不被 claim.
+    async with storage.session() as s:
+        detail = (await s.execute(
+            select(GraphNode).where(GraphNode.type == NodeType.detail_url)
+        )).scalar_one()
+        assert detail.url == bad_detail
+        assert detail.status == NodeStatus.retry
+        assert detail.next_retry_at is not None
+        assert detail.last_error == "http_502"
+    # 前端只 fetch 了父 faculty 页,从未碰 502 detail URL —— 进程不阻塞.
+    assert bridge.fetch_count == 1
+    assert bad_detail not in bridge.fetched_urls
+    # 该 detail 节点本 run 被探针延迟(retry + next_retry_at 在未来),属未完成节点,
+    # 故 run status 计为 "failed" —— 但这是可诊断的延迟而非抓取失败,下次 --resume 重探.
+    # 用户要求的核心("502 URL 不交给前端")已由上面 fetch_count/fetched_urls 断言保证.
+    assert summary.status == "failed"
+    await _close(storage)
+
+
+# --- claim 后 fetch 前探针兜底：覆盖所有交给前端的 URL，含 resume 旧节点 ---
+
+
+async def _run_with_prefetch_probe(tmp_path, *, status_probe, url, html=None,
+                                   node_type=NodeType.detail_url, prefill_cache=None,
+                                   metadata=None):
+    """预置一个 pending 节点(模拟库里旧节点),构造 engine 注入 status_probe,跑 run。
+
+    返回 (storage, bridge, summary) 供断言节点终态与 bridge.fetch 调用情况。
+    """
+    import dext.engine.workers as workers_mod
+    from dext.llm.extractor import ExtractionResult
+
+    storage = await _storage(tmp_path)
+    settings = _settings()
+    pages = {url: html} if html is not None else {}
+    bridge = CountingBridge(pages)
+
+    node_id = await storage.writer.upsert_node(
+        node_spec(node_type, url=url, settings=settings, run_id=1, metadata=metadata)
+    )
+
+    async def _noop_extract(*args, **kwargs):
+        return ExtractionResult(payloads=[], failure_type=None, raw_preview="{...}")
+
+    orig_extract = workers_mod.extract_professors
+    workers_mod.extract_professors = _noop_extract
+    try:
+        if prefill_cache is not None:
+            await storage.writer.save_page_cache(prefill_cache)
+        engine = CrawlEngine(
+            storage, bridge, llm_client=None, settings=settings, run_id=1,
+            university_name="测试大学", status_probe=status_probe,
+        )
+        summary = await engine.run()
+    finally:
+        workers_mod.extract_professors = orig_extract
+    return storage, bridge, summary, node_id
+
+
+async def test_prefetch_probe_redirect_loop_old_node_not_handed_to_frontend(tmp_path):
+    """用户场景直证:库里旧坏节点(redirect_probe_failed 但无 defer)被 claim 后,
+    claim 前探针探到 redirect-loop/不可达 → defer,前端从不访问该 URL."""
+    from dext.bridge.probe import StatusProbe
+
+    bad_url = "https://ibs.nankai.edu.cn/renbing"  # 重定向到 bs.nankai 的 redirect loop
+
+    async def resolver(url):
+        raise RuntimeError("too many redirects")  # 模拟 redirect-loop / 不可达
+
+    storage, bridge, summary, node_id = await _run_with_prefetch_probe(
+        tmp_path, status_probe=StatusProbe(resolver=resolver), url=bad_url,
+        metadata={"label": "detail", "redirect_probe_failed": True},  # 旧节点 metadata
+    )
+    async with storage.session() as s:
+        node = (await s.execute(select(GraphNode).where(GraphNode.id == node_id))).scalar_one()
+        assert node.status == NodeStatus.retry
+        assert node.next_retry_at is not None
+        assert node.last_error == "probe_failed"
+    assert bridge.fetch_count == 0
+    assert bad_url not in bridge.fetched_urls
+    await _close(storage)
+
+
+async def test_prefetch_probe_502_old_node_deferred_not_fetched(tmp_path):
+    from dext.bridge.probe import StatusProbe
+
+    bad_url = "https://ibs.nankai.edu.cn/renbing"
+
+    async def resolver(url):
+        return url, 502
+
+    storage, bridge, summary, node_id = await _run_with_prefetch_probe(
+        tmp_path, status_probe=StatusProbe(resolver=resolver), url=bad_url,
+    )
+    async with storage.session() as s:
+        node = (await s.execute(select(GraphNode).where(GraphNode.id == node_id))).scalar_one()
+        assert node.status == NodeStatus.retry
+        assert node.next_retry_at is not None
+        assert node.last_error == "http_502"
+    assert bridge.fetch_count == 0
+    assert bad_url not in bridge.fetched_urls
+    await _close(storage)
+
+
+async def test_prefetch_probe_404_old_node_skipped_not_fetched(tmp_path):
+    from dext.bridge.probe import StatusProbe
+
+    dead_url = "https://x.edu.cn/gone.htm"
+
+    async def resolver(url):
+        return url, 404
+
+    storage, bridge, summary, node_id = await _run_with_prefetch_probe(
+        tmp_path, status_probe=StatusProbe(resolver=resolver), url=dead_url,
+    )
+    async with storage.session() as s:
+        node = (await s.execute(select(GraphNode).where(GraphNode.id == node_id))).scalar_one()
+        assert node.status == NodeStatus.skipped
+        assert node.last_error == "http_404"
+    assert bridge.fetch_count == 0
+    assert dead_url not in bridge.fetched_urls
+    await _close(storage)
+
+
+async def test_prefetch_probe_200_old_node_fetched_normally(tmp_path):
+    """活链接不被探针误伤:200 → 正常交前端 fetch."""
+    from dext.bridge.probe import StatusProbe
+
+    live_url = "https://x.edu.cn/alive.htm"
+
+    async def resolver(url):
+        return url, 200
+
+    storage, bridge, summary, node_id = await _run_with_prefetch_probe(
+        tmp_path, status_probe=StatusProbe(resolver=resolver), url=live_url,
+        html="<html><body>师资</body></html>",
+    )
+    assert bridge.fetch_count == 1
+    assert live_url in bridge.fetched_urls
+    await _close(storage)
+
+
+async def test_prefetch_probe_skipped_when_cache_hit(tmp_path):
+    """cache 命中的节点不走前端,claim 前探针不应被调用(不误 defer 已缓存好节点)."""
+    from dext.bridge.probe import StatusProbe
+
+    cached_url = "https://x.edu.cn/cached.htm"
+    probe_calls = 0
+
+    async def resolver(url):
+        nonlocal probe_calls
+        probe_calls += 1
+        raise RuntimeError("must not be probed when cache hits")
+
+    storage, bridge, summary, node_id = await _run_with_prefetch_probe(
+        tmp_path, status_probe=StatusProbe(resolver=resolver), url=cached_url,
+        prefill_cache=PageCachePayload(
+            url=cached_url, final_url=cached_url, status_code=200,
+            html_snapshot="<html><body>师资</body></html>", text_snapshot="师资",
+            links=[], link_signals=[], title="师资", content_hash="h",
+        ),
+    )
+    assert probe_calls == 0           # 探针未被调用
+    assert bridge.fetch_count == 0    # cache 命中,本就不 fetch
+    await _close(storage)
+
+
+async def test_prefetch_probe_429_triggers_throttle_then_fetches(tmp_path):
+    """429 不阻塞浏览器(快速返回):throttle 后仍交前端 fetch."""
+    from dext.bridge.probe import StatusProbe
+
+    url = "https://x.edu.cn/ratelimited.htm"
+
+    async def resolver(url_):
+        return url_, 429
+
+    storage, bridge, summary, node_id = await _run_with_prefetch_probe(
+        tmp_path, status_probe=StatusProbe(resolver=resolver), url=url,
+        html="<html><body>师资</body></html>",
+    )
+    assert bridge.fetch_count == 1
+    assert url in bridge.fetched_urls
+    await _close(storage)
+
+
+async def test_prefetch_probe_no_status_probe_falls_through_to_fetch(tmp_path):
+    """未注入 status_probe 时(单测/旧调用)claim 前不探,直接 fetch,向后兼容."""
+    url = "https://x.edu.cn/noprobe.htm"
+    storage, bridge, summary, node_id = await _run_with_prefetch_probe(
+        tmp_path, status_probe=None, url=url,
+        html="<html><body>师资</body></html>",
+    )
+    assert bridge.fetch_count == 1
+    assert url in bridge.fetched_urls
+    await _close(storage)
+
+
+async def test_prefetch_probe_status_timeout_is_fetched_not_deferred(tmp_path):
+    """用户场景直证:后端旁路探针对慢宿主超时(真人浏览器能打开)→ 不阻断,照常交
+    前端 fetch。节点不被 defer(无 next_retry_at),本 run 即抓取。
+    """
+    from dext.bridge.probe import StatusProbe
+
+    slow_url = "https://x.edu.cn/slowhost.htm"
+
+    async def resolver(url):
+        raise TimeoutError("backend probe timed out; browser loads this fine")
+
+    storage, bridge, summary, node_id = await _run_with_prefetch_probe(
+        tmp_path, status_probe=StatusProbe(resolver=resolver), url=slow_url,
+        html="<html><body>师资</body></html>",
+    )
+    assert bridge.fetch_count == 1
+    assert slow_url in bridge.fetched_urls
+    async with storage.session() as s:
+        node = (await s.execute(select(GraphNode).where(GraphNode.id == node_id))).scalar_one()
+        assert node.next_retry_at is None   # NOT deferred by the probe
+        # The probe must not stamp a probe-related error; the only last_error that
+        # may appear is the (no-op) empty-extraction outcome, never probe_failed/http_5xx.
+        assert node.last_error not in ("probe_failed", "http_502", "http_503", "http_504")
     await _close(storage)

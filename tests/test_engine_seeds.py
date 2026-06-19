@@ -6,6 +6,7 @@ from sqlalchemy import select
 from dext.engine import PRIORITY_BY_TYPE, load_seed_nodes
 from dext.engine.seeds import node_spec, resolve_discovered_url, resolve_discovered_urls
 from dext.bridge.redirect import RedirectGuard
+from dext.bridge.probe import StatusProbe
 from dext.seed import OrgUnitSeed, UniversitySeed
 from dext.storage.db import create_all, create_engine_for_path, make_session_factory
 from dext.storage.models import EdgeType, GraphEdge, GraphNode, NodeStatus, NodeType, OrgUnit
@@ -219,4 +220,295 @@ async def test_load_seed_nodes_keeps_probe_failed_urls(tmp_path):
         nodes = (await s.execute(select(GraphNode))).scalars().all()
         listing = next(n for n in nodes if n.type == NodeType.org_listing_url)
         assert listing.metadata_json.get("redirect_probe_failed") is True
+    await _close(h)
+
+
+def _status_probe(resolver):
+    return StatusProbe(resolver=resolver)
+
+
+async def test_resolve_discovered_url_status_probe_dead_returns_skip_marker():
+    async def resolver(url):
+        return url, 404
+
+    probe = _status_probe(resolver)
+    resolved, metadata = await resolve_discovered_url("https://x.edu.cn/p", status_probe=probe)
+    assert resolved is None
+    assert metadata.get("probe_skip_reason") == "http_404"
+
+
+async def test_resolve_discovered_url_status_probe_rate_limited_keeps_url():
+    async def resolver(url):
+        return url, 429
+
+    probe = _status_probe(resolver)
+    resolved, metadata = await resolve_discovered_url("https://x.edu.cn/p", status_probe=probe)
+    assert resolved == "https://x.edu.cn/p"
+    assert metadata["probe_status"] == "http_429"
+
+
+async def test_resolve_discovered_url_status_probe_transient_defers():
+    async def resolver(url):
+        return url, 503
+
+    probe = _status_probe(resolver)
+    resolved, metadata = await resolve_discovered_url("https://x.edu.cn/p", status_probe=probe)
+    assert resolved == "https://x.edu.cn/p"
+    assert metadata["probe_defer_reason"] == "http_503"
+
+
+async def test_resolve_discovered_url_status_probe_failed_defers():
+    async def resolver(url):
+        raise RuntimeError("WAF")
+
+    probe = _status_probe(resolver)
+    resolved, metadata = await resolve_discovered_url("https://x.edu.cn/p", status_probe=probe)
+    assert resolved == "https://x.edu.cn/p"
+    assert metadata["probe_defer_reason"] == "probe_failed"
+
+
+async def test_resolve_discovered_url_status_probe_timeout_keeps_pending():
+    # A probe timeout is "no signal", not a block: the human browser often loads a
+    # slow-to-probe host fine. The URL must stay pending (no defer, no dead-flag,
+    # no drop) so it reaches the fetcher this run — not be shelved for 24h.
+    async def resolver(url):
+        raise TimeoutError("total timeout")
+
+    probe = _status_probe(resolver)
+    resolved, metadata = await resolve_discovered_url("https://x.edu.cn/p", status_probe=probe)
+    assert resolved == "https://x.edu.cn/p"          # not dropped
+    assert metadata["probe_timeout"] is True         # diagnostic marker
+    assert "probe_defer_reason" not in metadata      # NOT deferred
+    assert "probe_skip_reason" not in metadata       # NOT dead
+
+
+async def test_resolve_discovered_url_redirect_probe_timeout_keeps_url():
+    # Redirect-probe timeout: same "no signal" semantics — URL not dropped, not
+    # deferred, just a more accurate reason marker than redirect_probe_failed.
+    async def resolver(url):
+        raise TimeoutError("total timeout")
+
+    guard = RedirectGuard(resolver=resolver)
+    resolved, metadata = await resolve_discovered_url("https://x.edu.cn/p", redirect_guard=guard)
+    assert resolved == "https://x.edu.cn/p"               # not dropped
+    assert metadata["redirect_probe_timeout"] is True     # diagnostic marker
+    assert "redirect_probe_failed" not in metadata        # distinct from loop/DNS/WAF
+
+
+async def test_load_seed_nodes_marks_dead_listing_as_skipped(tmp_path):
+    h = await _writer(tmp_path)
+    university = UniversitySeed(
+        name="测试大学",
+        url="https://x.edu.cn",
+        org_unit_listing_urls=["https://x.edu.cn/schools.htm"],
+        org_units=[],
+    )
+
+    async def resolver(url):
+        return url, 404
+
+    probe = _status_probe(resolver)
+    summary = await load_seed_nodes(university, h, _settings(), run_id=1, status_probe=probe)
+
+    assert summary.org_listing_nodes == 1
+    async with h.session_factory() as s:
+        nodes = (await s.execute(select(GraphNode))).scalars().all()
+        assert len(nodes) == 1
+        listing = nodes[0]
+        assert listing.type == NodeType.org_listing_url.value
+        assert listing.status == NodeStatus.skipped
+        assert listing.metadata_json.get("reason") == "http_404"
+        assert listing.metadata_json.get("probe_skipped") is True
+    await _close(h)
+
+
+async def test_load_seed_nodes_marks_dead_org_unit_as_skipped_but_keeps_faculty(tmp_path):
+    h = await _writer(tmp_path)
+    university = UniversitySeed(
+        name="测试大学",
+        url="https://x.edu.cn",
+        org_unit_listing_urls=[],
+        org_units=[
+            OrgUnitSeed(
+                name="数学学院",
+                url="https://x.edu.cn/math",
+                faculty_urls=["https://x.edu.cn/math/teachers.htm"],
+            ),
+        ],
+    )
+
+    async def resolver(url):
+        if url.endswith("/math"):
+            return url, 410
+        return url, 200
+
+    probe = _status_probe(resolver)
+    summary = await load_seed_nodes(university, h, _settings(), run_id=1, status_probe=probe)
+
+    assert summary.org_units == 1
+    assert summary.org_unit_nodes == 1
+    assert summary.faculty_list_nodes == 1
+    async with h.session_factory() as s:
+        nodes = (await s.execute(select(GraphNode))).scalars().all()
+        org_node = next(n for n in nodes if n.type == NodeType.org_unit.value)
+        assert org_node.status == NodeStatus.skipped
+        assert org_node.metadata_json.get("reason") == "http_410"
+        faculty = next(n for n in nodes if n.type == NodeType.faculty_list_url.value)
+        assert faculty.status == NodeStatus.pending
+    await _close(h)
+
+
+async def test_load_seed_nodes_marks_dead_faculty_as_skipped(tmp_path):
+    h = await _writer(tmp_path)
+    university = UniversitySeed(
+        name="测试大学",
+        url="https://x.edu.cn",
+        org_unit_listing_urls=[],
+        org_units=[
+            OrgUnitSeed(
+                name="数学学院",
+                url="https://x.edu.cn/math",
+                faculty_urls=["https://x.edu.cn/math/teachers.htm"],
+            ),
+        ],
+    )
+
+    async def resolver(url):
+        if url.endswith("teachers.htm"):
+            return url, 404
+        return url, 200
+
+    probe = _status_probe(resolver)
+    summary = await load_seed_nodes(university, h, _settings(), run_id=1, status_probe=probe)
+
+    assert summary.faculty_list_nodes == 1
+    async with h.session_factory() as s:
+        nodes = (await s.execute(select(GraphNode))).scalars().all()
+        faculty = next(n for n in nodes if n.type == NodeType.faculty_list_url.value)
+        assert faculty.status == NodeStatus.skipped
+        assert faculty.metadata_json.get("reason") == "http_404"
+    await _close(h)
+
+
+async def test_load_seed_nodes_rate_limited_keeps_pending(tmp_path):
+    h = await _writer(tmp_path)
+    university = UniversitySeed(
+        name="测试大学",
+        url="https://x.edu.cn",
+        org_unit_listing_urls=["https://x.edu.cn/schools.htm"],
+        org_units=[],
+    )
+
+    async def resolver(url):
+        return url, 429
+
+    probe = _status_probe(resolver)
+    summary = await load_seed_nodes(university, h, _settings(), run_id=1, status_probe=probe)
+
+    assert summary.org_listing_nodes == 1
+    async with h.session_factory() as s:
+        nodes = (await s.execute(select(GraphNode))).scalars().all()
+        assert nodes[0].status == NodeStatus.pending
+        assert nodes[0].metadata_json.get("probe_status") == "http_429"
+    await _close(h)
+
+
+async def test_load_seed_nodes_transient_status_defers_listing(tmp_path):
+    """5xx 入图前 → 节点标 retry + next_retry_at 延迟,本 run 不被 claim(不阻塞浏览器)."""
+    h = await _writer(tmp_path)
+    university = UniversitySeed(
+        name="测试大学",
+        url="https://x.edu.cn",
+        org_unit_listing_urls=["https://x.edu.cn/schools.htm"],
+        org_units=[],
+    )
+
+    async def resolver(url):
+        return url, 502
+
+    probe = _status_probe(resolver)
+    summary = await load_seed_nodes(university, h, _settings(), run_id=1, status_probe=probe)
+
+    assert summary.org_listing_nodes == 1
+    async with h.session_factory() as s:
+        node = (await s.execute(select(GraphNode))).scalar_one()
+        assert node.status == NodeStatus.retry
+        assert node.next_retry_at is not None
+        assert node.last_error == "http_502"
+        assert node.metadata_json.get("probe_defer_reason") == "http_502"
+        # claim_next must skip it (next_retry_at in the future → not claimed)
+        claimed = await h.writer.claim_next(run_id=1, exclude_node_keys=set())
+        assert claimed is None
+    await _close(h)
+
+
+async def test_load_seed_nodes_probe_failed_defers_faculty(tmp_path):
+    """probe 侧不可达(redirect-loop/超时) → 同样延迟,避免浏览器卡死."""
+    h = await _writer(tmp_path)
+    university = UniversitySeed(
+        name="测试大学",
+        url="https://x.edu.cn",
+        org_unit_listing_urls=[],
+        org_units=[
+            OrgUnitSeed(
+                name="数学学院",
+                url="https://x.edu.cn/math",
+                faculty_urls=["https://x.edu.cn/math/teachers.htm"],
+            ),
+        ],
+    )
+
+    async def resolver(url):
+        raise RuntimeError("connection refused")
+
+    probe = _status_probe(resolver)
+    summary = await load_seed_nodes(university, h, _settings(), run_id=1, status_probe=probe)
+
+    # both org (probe_failed) and faculty (probe_failed) deferred
+    assert summary.org_unit_nodes == 1
+    assert summary.faculty_list_nodes == 1
+    async with h.session_factory() as s:
+        nodes = (await s.execute(select(GraphNode))).scalars().all()
+        assert all(n.status == NodeStatus.retry for n in nodes)
+        assert all(n.next_retry_at is not None for n in nodes)
+        assert all(n.last_error == "probe_failed" for n in nodes)
+        # neither claimable this run
+        assert await h.writer.claim_next(run_id=1, exclude_node_keys=set()) is None
+    await _close(h)
+
+
+async def test_load_seed_nodes_transient_defer_does_not_redefer_on_recovery(tmp_path):
+    """下次 load_seed_nodes(模拟 --resume)re-probe 命中 200:不再延迟。
+    既有 retry 节点的 next_retry_at 不被刷新(无 fresh defer),等原延迟到期后
+    claim_next 自然重抓。
+    """
+    h = await _writer(tmp_path)
+    university = UniversitySeed(
+        name="测试大学",
+        url="https://x.edu.cn",
+        org_unit_listing_urls=["https://x.edu.cn/schools.htm"],
+        org_units=[],
+    )
+
+    states = [502]
+
+    async def resolver(url):
+        return url, states[0]
+
+    probe = _status_probe(resolver)
+    await load_seed_nodes(university, h, _settings(), run_id=1, status_probe=probe)
+    async with h.session_factory() as s:
+        node = (await s.execute(select(GraphNode))).scalar_one()
+        assert node.status == NodeStatus.retry
+        first_defer = node.next_retry_at
+        assert first_defer is not None
+
+    # gateway recovers — re-probe returns 200
+    states[0] = 200
+    await load_seed_nodes(university, h, _settings(), run_id=1, status_probe=probe)
+    async with h.session_factory() as s:
+        node = (await s.execute(select(GraphNode))).scalar_one()
+        # no fresh defer: next_retry_at unchanged, status still retry (preserved)
+        assert node.next_retry_at == first_defer
+        assert node.status == NodeStatus.retry
     await _close(h)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from dext.bridge.probe import GATEWAY, RATE_LIMITED
 from dext.page.links import PageSnapshot
 from dext.storage.models import NodeStatus
 
@@ -17,7 +18,35 @@ class RetryDecision:
     retryable: bool = False
 
 
-def classify_fetch_failure(block_reason: str | None) -> RetryDecision:
+def classify_fetch_failure(
+    block_reason: str | None,
+    *,
+    status_code: int | None = None,
+) -> RetryDecision:
+    """Map a fetch failure to a node status + retry decision.
+
+    ``status_code`` (when the fetcher surfaced a real HTTP status) takes
+    precedence over ``block_reason`` text for rate-limit / gateway classification:
+    429 → retry with ``rate_limited`` resolver (driver triggers global backoff),
+    502/503/504 → retryable gateway transient. 404/410 already route to skipped
+    via ``assess_terminal_unavailable_page``; reaching here they fall through to
+    the generic retry path (callers shouldn't rely on block_reason text parsing).
+    """
+    if status_code is not None:
+        if status_code in RATE_LIMITED:
+            return RetryDecision(
+                NodeStatus.retry,
+                last_error=f"http_{status_code}",
+                resolver="rate_limited",
+                retryable=True,
+            )
+        if status_code in GATEWAY:
+            return RetryDecision(
+                NodeStatus.retry,
+                last_error=f"http_{status_code}",
+                resolver="retry",
+                retryable=True,
+            )
     reason = (block_reason or "fetch_failed").strip() or "fetch_failed"
     lowered = reason.lower()
     if lowered in {"human_skip", "wechat_redirect", "offsite_redirect"}:

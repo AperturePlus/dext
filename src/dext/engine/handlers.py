@@ -10,7 +10,14 @@ from urllib.parse import parse_qsl, urlsplit
 from dext.bridge.decision import PendingDecision
 from dext.exclusions import is_valid_exclusion_reason
 from dext.engine.names import clean_org_unit_name
-from dext.engine.seeds import node_spec, org_node_spec, resolve_discovered_url, resolve_discovered_urls
+from dext.engine.seeds import (
+    _apply_probe_defer,
+    _probe_skip_reason,
+    node_spec,
+    org_node_spec,
+    resolve_discovered_url,
+    resolve_discovered_urls,
+)
 from dext.engine.workers import ExtractTask
 from dext.llm import DeciderContext, DeciderNode, decide_links
 from dext.page import (
@@ -64,6 +71,7 @@ class HandlerDeps:
         raw_html: str = "",
         decision_center=None,
         redirect_guard=None,
+        status_probe=None,
     ) -> None:
         self.storage = storage
         self.llm_client = llm_client
@@ -75,6 +83,7 @@ class HandlerDeps:
         self.raw_html = raw_html
         self.decision_center = decision_center
         self.redirect_guard = redirect_guard
+        self.status_probe = status_probe
 
 
 def fetch_action_from_metadata(metadata: dict | None) -> FetchAction | None:
@@ -292,27 +301,39 @@ async def handle_org_listing(node: ClaimedNode, snapshot: PageSnapshot, deps: Ha
     resolved = await resolve_discovered_urls(
         [link.url for link, _ in college_links],
         redirect_guard=deps.redirect_guard,
+        status_probe=deps.status_probe,
     )
     for (link, name), (resolved_url, redirect_metadata) in zip(college_links, resolved):
-        if resolved_url is None:
+        college_probe_skip = _probe_skip_reason(redirect_metadata)
+        if resolved_url is None and college_probe_skip is None:
             continue
+        college_url = resolved_url or link.url
         org_id = await deps.storage.writer.upsert_org_unit(
-            OrgUnitSpec(name=name, url=resolved_url, kind="college", discovered_from_url=snapshot.url)
+            OrgUnitSpec(name=name, url=college_url, kind="college", discovered_from_url=snapshot.url)
         )
+        node_status = NodeStatus.pending
+        node_metadata = _merge_metadata(
+            {"discovered_from_url": snapshot.url, "identity_url": college_url, "source_url": link.url},
+            redirect_metadata,
+        )
+        if college_probe_skip:
+            node_status = NodeStatus.skipped
+            node_metadata = _merge_metadata(
+                node_metadata, {"reason": college_probe_skip, "probe_skipped": True}
+            )
         org_node_id = await deps.storage.writer.upsert_node(
             org_node_spec(
                 org_unit_id=org_id,
                 org_unit_name=name,
-                url=resolved_url,
+                url=college_url,
                 settings=deps.settings,
                 run_id=deps.run_id,
                 depth=_child_depth(node),
-                metadata=_merge_metadata(
-                    {"discovered_from_url": snapshot.url, "identity_url": resolved_url, "source_url": link.url},
-                    redirect_metadata,
-                ),
+                metadata=node_metadata,
+                status=node_status,
             )
         )
+        await _apply_probe_defer(deps.storage, org_node_id, node_metadata)
         await deps.storage.writer.add_edge(node.id, org_node_id, EdgeType.discovered_on_page, confidence=link.confidence)
         created += 1
     await deps.storage.writer.mark_node(node.id, NodeStatus.done, content_hash=snapshot.content_hash)
@@ -336,33 +357,46 @@ async def _create_child(
 ) -> int | None:
     if precomputed_resolved is not None:
         resolved_url, redirect_metadata = precomputed_resolved
-        if resolved_url is None:
-            return None
     else:
-        resolved_url, redirect_metadata = await resolve_discovered_url(url, redirect_guard=deps.redirect_guard)
-        if resolved_url is None:
-            return None
-    canonical_identity_url = resolved_url if resolved_url != url else (identity_url or url)
-    metadata = _merge_metadata(
+        resolved_url, redirect_metadata = await resolve_discovered_url(
+            url, redirect_guard=deps.redirect_guard, status_probe=deps.status_probe
+        )
+    probe_skip = _probe_skip_reason(redirect_metadata)
+    if resolved_url is None and probe_skip is None:
+        # BLOCKED redirect or allowlist-rejected host → drop (no node created).
+        return None
+    child_url = resolved_url or url
+    canonical_identity_url = child_url if child_url != url else (identity_url or url)
+    node_status = NodeStatus.pending
+    node_metadata = _merge_metadata(
         metadata,
         {"identity_url": canonical_identity_url, "discovered_from_url": url},
         redirect_metadata,
     )
+    if probe_skip:
+        # 入图前 status probe 判定为死链(404/410):建 skipped 节点保留图完整性 +
+        # 可诊断;skipped 不被 claim_next 取,绝不交给前端 fetch。
+        node_status = NodeStatus.skipped
+        node_metadata = _merge_metadata(node_metadata, {"reason": probe_skip, "probe_skipped": True})
     spec = node_spec(
         node_type,
-        url=resolved_url,
+        url=child_url,
         settings=deps.settings,
         run_id=deps.run_id,
         org_unit_id=parent.org_unit_id,
         org_unit_name=parent.org_unit_name,
         depth=_child_depth(parent),
-        metadata=metadata,
+        metadata=node_metadata,
         confidence=confidence,
         node_key_url=canonical_identity_url,
         subtree=parent.org_unit_id is not None,
+        status=node_status,
     )
     child_id = await deps.storage.writer.upsert_node(spec)
-    await deps.storage.writer.add_edge(parent.id, child_id, edge_type, confidence=confidence, metadata=metadata)
+    # 入图前探到 5xx/probe_failed → 延迟到 next_retry_at,本 run claim_next 跳过,
+    # 单线程浏览器抓取器绝不碰会阻塞的坏网关/redirect-loop URL。
+    await _apply_probe_defer(deps.storage, child_id, node_metadata)
+    await deps.storage.writer.add_edge(parent.id, child_id, edge_type, confidence=confidence, metadata=node_metadata)
     return child_id
 
 
@@ -535,6 +569,7 @@ async def _materialize_decided(
     precomputed = await resolve_discovered_urls(
         [link.url for link in materialize_links],
         redirect_guard=deps.redirect_guard,
+        status_probe=deps.status_probe,
     )
     resolved_by_url: dict[str, tuple[str | None, dict]] = {}
     for link, result in zip(materialize_links, precomputed):

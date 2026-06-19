@@ -3,6 +3,8 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 
+from dext.bridge.probe import StatusProbe
+from dext.bridge.redirect import RedirectGuard
 from dext.engine.handlers import (
     HandlerDeps,
     handle_faculty_page,
@@ -19,6 +21,18 @@ from dext.storage.db import create_all, create_engine_for_path, make_session_fac
 from dext.storage.models import EdgeType, GraphEdge, GraphNode, NodeStatus, NodeType, OrgUnit
 from dext.storage.writer import ClaimedNode, DBWriter, OrgUnitSpec
 from dext.types import PaginationState
+
+
+def _status_probe(status_by_url: dict[str, int] | None = None, *, raise_urls=()):
+    """Fake StatusProbe resolver: returns (url, status) for given URLs, raises
+    for raise_urls (simulates probe-side unreachable / redirect-loop)."""
+
+    async def resolver(url):
+        if url in raise_urls:
+            raise RuntimeError("probe unreachable")
+        return url, status_by_url.get(url, 200)
+
+    return StatusProbe(resolver=resolver)
 
 
 async def _storage(tmp_path):
@@ -1013,4 +1027,192 @@ async def test_faculty_page_facet_budget_stops_expansion_and_sets_decision(tmp_p
         assert sum(1 for n in nodes if n.type == NodeType.faculty_followup_url) == 2
     assert center.current() is not None
     assert center.current().kind == "facet_budget"
+    await _close(h)
+
+
+# --- 入图前 status probe 覆盖新发现的子节点 URL（防止 502/太多重定向阻塞前端）---
+
+
+async def _create_child_with_probe(tmp_path, *, status_probe, url="https://x.edu.cn/t/1"):
+    h = await _storage(tmp_path)
+    org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="数学学院", url="https://x.edu.cn/math"))
+    parent_id = await h.writer.upsert_node(
+        node_spec(NodeType.faculty_list_url, url="https://x.edu.cn/math/list.htm", settings=_settings(),
+                  run_id=1, org_unit_id=org_id, org_unit_name="数学学院")
+    )
+    # parent is the already-crawled faculty page — mark done so claim_next below
+    # only reflects whether the *child* is claimable (the probe-under-test outcome).
+    await h.writer.mark_node(parent_id, NodeStatus.done)
+    deps = HandlerDeps(
+        storage=h,
+        llm_client=None,
+        settings=_settings(),
+        run_id=1,
+        university_name="测试大学",
+        extract_queue=asyncio.Queue(),
+        raw_html="",
+        redirect_guard=RedirectGuard(),  # default resolver unused: status probe runs first on same host
+        status_probe=status_probe,
+    )
+    parent = ClaimedNode(
+        id=parent_id, node_key="p", type=NodeType.faculty_list_url, url="https://x.edu.cn/math/list.htm",
+        org_unit_id=org_id, org_unit_name="数学学院", depth=1, attempt_count=1,
+        priority_score=80, content_hash=None, metadata=None,
+    )
+    child_id = await _create_child(
+        deps, parent, NodeType.detail_url, url=url,
+        edge_type=EdgeType.detail_candidate_of, metadata={"label": "detail"},
+    )
+    return h, child_id
+
+
+async def test_create_child_502_defers_node_not_claimable(tmp_path):
+    """5xx 子节点入图后标 retry+next_retry_at,本 run claim_next 跳过 → 不交给前端 fetch."""
+    h, child_id = await _create_child_with_probe(
+        tmp_path, status_probe=_status_probe({"https://x.edu.cn/t/1": 502})
+    )
+    assert child_id is not None
+    async with h.session_factory() as s:
+        node = (await s.execute(select(GraphNode).where(GraphNode.id == child_id))).scalar_one()
+        assert node.status == NodeStatus.retry
+        assert node.next_retry_at is not None
+        assert node.last_error == "http_502"
+    assert await h.writer.claim_next(run_id=1, exclude_node_keys=set()) is None
+    await _close(h)
+
+
+async def test_create_child_probe_failed_defers_node(tmp_path):
+    """探针侧不可达(redirect-loop/超时)→ 同样延迟,避免浏览器卡死在坏宿主."""
+    h, child_id = await _create_child_with_probe(
+        tmp_path, status_probe=_status_probe(raise_urls=("https://x.edu.cn/t/1",))
+    )
+    assert child_id is not None
+    async with h.session_factory() as s:
+        node = (await s.execute(select(GraphNode).where(GraphNode.id == child_id))).scalar_one()
+        assert node.status == NodeStatus.retry
+        assert node.next_retry_at is not None
+        assert node.last_error == "probe_failed"
+    assert await h.writer.claim_next(run_id=1, exclude_node_keys=set()) is None
+    await _close(h)
+
+
+async def test_create_child_dead_404_marks_skipped(tmp_path):
+    """404/410 死链子节点建 skipped 节点(保留图完整性 + 可诊断),claim_next 不取."""
+    h, child_id = await _create_child_with_probe(
+        tmp_path, status_probe=_status_probe({"https://x.edu.cn/t/1": 404})
+    )
+    assert child_id is not None
+    async with h.session_factory() as s:
+        node = (await s.execute(select(GraphNode).where(GraphNode.id == child_id))).scalar_one()
+        assert node.status == NodeStatus.skipped
+        assert (node.metadata_json or {}).get("reason") == "http_404"
+        assert (node.metadata_json or {}).get("probe_skipped") is True
+    # skipped 节点不被 claim_next 取(只取 pending/retry)
+    assert await h.writer.claim_next(run_id=1, exclude_node_keys=set()) is None
+    await _close(h)
+
+
+async def test_create_child_ok_keeps_pending_claimable(tmp_path):
+    """200 活链接子节点正常 pending,无 defer/skip 标记,claim_next 可取 —— 不误伤."""
+    h, child_id = await _create_child_with_probe(
+        tmp_path, status_probe=_status_probe({"https://x.edu.cn/t/1": 200})
+    )
+    assert child_id is not None
+    async with h.session_factory() as s:
+        node = (await s.execute(select(GraphNode).where(GraphNode.id == child_id))).scalar_one()
+        assert node.status == NodeStatus.pending
+        assert node.next_retry_at is None
+        assert "probe_defer_reason" not in (node.metadata_json or {})
+        assert "probe_skip_reason" not in (node.metadata_json or {})
+    claimed = await h.writer.claim_next(run_id=1, exclude_node_keys=set())
+    assert claimed is not None and claimed.url == "https://x.edu.cn/t/1"
+    await _close(h)
+
+
+async def test_org_listing_502_college_child_is_deferred(tmp_path):
+    """handle_org_listing 路径:502 college 链接的子节点 defer,本 run 不被 claim."""
+    h = await _storage(tmp_path)
+    listing_id = await h.writer.upsert_node(
+        node_spec(NodeType.org_listing_url, url="https://x.edu.cn/schools.htm", settings=_settings(), run_id=1)
+    )
+    html = '<html><body><a href="/math.htm">数学学院</a></body></html>'
+    snap = build_snapshot(html, "https://x.edu.cn/schools.htm", "https://x.edu.cn/schools.htm", "")
+
+    async def _fake_decide(*args, **kwargs):
+        return SimpleNamespace(links=[
+            SimpleNamespace(url="https://x.edu.cn/math.htm", label="college", confidence=0.9,
+                            is_leaf=False, org_unit_name="数学学院", exclusion_reason=None),
+        ], parse_error=None)
+
+    import dext.engine.handlers as handlers_mod
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = _fake_decide
+    try:
+        node = ClaimedNode(id=listing_id, node_key="listing", type=NodeType.org_listing_url,
+                           url=snap.url, org_unit_id=None, org_unit_name=None, depth=0,
+                           attempt_count=1, priority_score=100, content_hash=None, metadata=None)
+        deps = HandlerDeps(
+            storage=h, llm_client=None, settings=_settings(), run_id=1, university_name="测试大学",
+            extract_queue=asyncio.Queue(), raw_html=html,
+            redirect_guard=RedirectGuard(),
+            status_probe=_status_probe({"https://x.edu.cn/math.htm": 502}),
+        )
+        await handle_org_listing(node, snap, deps)
+    finally:
+        handlers_mod.decide_links = orig
+
+    async with h.session_factory() as s:
+        org_node = (await s.execute(select(GraphNode).where(GraphNode.type == NodeType.org_unit))).scalar_one()
+        assert org_node.status == NodeStatus.retry
+        assert org_node.next_retry_at is not None
+        assert org_node.last_error == "http_502"
+    assert await h.writer.claim_next(run_id=1, exclude_node_keys=set()) is None
+    await _close(h)
+
+
+async def test_faculty_page_502_detail_child_is_deferred(tmp_path):
+    """handle_faculty_page → _materialize_decided 路径:502 detail 链接的子节点 defer,
+    本 run 不被 claim → 不交给前端 fetch(用户要求的核心断言)."""
+    h = await _storage(tmp_path)
+    org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="数学学院", url="https://x.edu.cn/math"))
+    node_id = await h.writer.upsert_node(
+        node_spec(NodeType.faculty_list_url, url="https://x.edu.cn/math/list.htm",
+                  settings=_settings(), run_id=1, org_unit_id=org_id, org_unit_name="数学学院")
+    )
+    html = '<html><body><a href="/math/t/zhang.htm">张三</a></body></html>'
+    snap = build_snapshot(html, "https://x.edu.cn/math/list.htm", "https://x.edu.cn/math/list.htm", "")
+
+    async def _fake_decide(*args, **kwargs):
+        return SimpleNamespace(links=[
+            SimpleNamespace(url="https://x.edu.cn/math/t/zhang.htm", label="detail",
+                            confidence=0.9, is_leaf=True, exclusion_reason=None),
+        ], parse_error=None, page_exclusion_reason=None)
+
+    import dext.engine.handlers as handlers_mod
+    orig = handlers_mod.decide_links
+    handlers_mod.decide_links = _fake_decide
+    try:
+        node = ClaimedNode(id=node_id, node_key="f", type=NodeType.faculty_list_url, url=snap.url,
+                           org_unit_id=org_id, org_unit_name="数学学院", depth=1, attempt_count=1,
+                           priority_score=80, content_hash=None, metadata=None)
+        deps = HandlerDeps(
+            storage=h, llm_client=None, settings=_settings(), run_id=1, university_name="测试大学",
+            extract_queue=asyncio.Queue(), raw_html=html,
+            redirect_guard=RedirectGuard(),
+            status_probe=_status_probe({"https://x.edu.cn/math/t/zhang.htm": 502}),
+        )
+        await handle_faculty_page(node, snap, deps)
+    finally:
+        handlers_mod.decide_links = orig
+
+    async with h.session_factory() as s:
+        detail = (await s.execute(select(GraphNode).where(GraphNode.type == NodeType.detail_url))).scalar_one()
+        assert detail.status == NodeStatus.retry
+        assert detail.next_retry_at is not None
+        assert detail.last_error == "http_502"
+        parent = (await s.execute(select(GraphNode).where(GraphNode.id == node_id))).scalar_one()
+        assert parent.status == NodeStatus.done
+    # detail 节点本 run 不被 claim → 浏览器不会被 502 URL 阻塞
+    claimed = await h.writer.claim_next(run_id=1, exclude_node_keys=set())
+    assert claimed is None or claimed.url != "https://x.edu.cn/math/t/zhang.htm"
     await _close(h)
