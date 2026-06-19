@@ -1,5 +1,5 @@
 from dext.bridge.redirect import (
-    BLOCKED, OFFSITE_OK, OK, PROBE_FAILED, RedirectGuard, classify_redirect,
+    BLOCKED, OFFSITE_OK, OK, PROBE_FAILED, PROBE_TIMEOUT, RedirectGuard, classify_redirect,
 )
 
 
@@ -35,6 +35,31 @@ async def test_probe_failure_returns_probe_failed():
     async def resolver(url):
         raise RuntimeError("WAF")
     assert (await RedirectGuard(resolver=resolver).probe_redirect("https://x/p")).verdict == PROBE_FAILED
+
+
+async def test_probe_timeout_returns_probe_timeout_not_probe_failed():
+    # Redirect-probe timeout = the off-channel probe couldn't resolve redirects in time.
+    # The browser may still load the URL, so a timeout is a non-blocking "no signal"
+    # verdict, distinct from probe_failed (loop/DNS/WAF). Neither drops the URL; the
+    # timeout verdict just carries a more accurate reason code for diagnostics.
+    async def resolver(url):
+        raise TimeoutError("total timeout")
+
+    verdict = await RedirectGuard(resolver=resolver).probe_redirect("https://x/p")
+    assert verdict.verdict == PROBE_TIMEOUT
+    assert verdict.verdict != PROBE_FAILED
+    assert verdict.reason == "probe_timeout"
+
+
+async def test_probe_timeout_logs_compact_exception_summary(caplog):
+    async def resolver(url):
+        raise TimeoutError("total timeout")
+
+    with caplog.at_level("INFO", logger="dext.bridge.redirect"):
+        verdict = await RedirectGuard(resolver=resolver).probe_redirect("https://x/p")
+
+    assert verdict.verdict == PROBE_TIMEOUT
+    assert "redirect probe timeout url=https://x/p error=TimeoutError" in caplog.text
 
 
 async def test_probe_failure_logs_compact_exception_summary(caplog):

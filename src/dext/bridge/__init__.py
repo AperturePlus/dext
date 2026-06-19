@@ -8,6 +8,7 @@ from dext.bridge.decision import DecisionCenter, PendingDecision
 from dext.bridge.fetcher import HumanFetcherBridge
 from dext.bridge.mojibake import repair_mojibake_text
 from dext.bridge.queue import FetchJob, FetchQueue, JobContext, JobStatus, QueueStats
+from dext.bridge.probe import StatusProbe, StatusVerdict, classify_status
 from dext.bridge.redirect import RedirectGuard, RedirectVerdict, classify_redirect
 from dext.bridge.server import create_app, run_server
 from dext.types import FetchResult
@@ -25,6 +26,9 @@ __all__ = [
     "RedirectGuard",
     "RedirectVerdict",
     "classify_redirect",
+    "StatusProbe",
+    "StatusVerdict",
+    "classify_status",
     "create_app",
     "run_server",
     "FetchResult",
