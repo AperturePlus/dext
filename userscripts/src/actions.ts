@@ -565,9 +565,8 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function captureCurrentHtml(job: FetchJob): Promise<string> {
-  const skipImages = job.context.intent === 'detail_extract';
-  await waitForCaptureReady(skipImages);
-  return serializePageWithoutOverlay({ stripHeader: skipImages });
+  await waitForCaptureReady(false);
+  return serializePageWithoutOverlay({ stripHeader: false });
 }
 
 async function waitForCaptureReady(skipImages: boolean = false): Promise<void> {

@@ -1165,9 +1165,8 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
   async function captureCurrentHtml(job) {
-    const skipImages = job.context.intent === "detail_extract";
-    await waitForCaptureReady(skipImages);
-    return serializePageWithoutOverlay({ stripHeader: skipImages });
+    await waitForCaptureReady(false);
+    return serializePageWithoutOverlay({ stripHeader: false });
   }
   async function waitForCaptureReady(skipImages = false) {
     var _a;
