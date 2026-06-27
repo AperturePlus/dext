@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "dext background probe",
+  "version": "0.1.0",
+  "description": "Recovers the dext userscript owner tab when it lands on a browser-native error page. Watches nav status codes and re-redirects stalled tabs.",
+  "background": {
+    "service_worker": "dist/background.js",
+    "type": "module"
+  },
+  "permissions": ["webRequest", "alarms", "tabs", "storage"],
+  "host_permissions": [
+    "http://127.0.0.1:21520/*",
+    "<all_urls>"
+  ],
+  "minimum_chrome_version": "110"
+}
