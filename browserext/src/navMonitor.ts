@@ -83,9 +83,11 @@ export function createNavMonitor(deps: NavMonitorDeps): NavMonitor {
       await reportAndMark(job.id, 'fail', `nav_error:${e.error}`);
       return;
     }
-    // below threshold: self-redirect (userscript can't — it doesn't inject on about:neterror)
+    // below threshold: self-redirect via the real owner tab (ignore background tabs).
     if (await storage.shouldRedirect(job.id)) {
-      await chrome.updateTabUrl(e.tabId, job.url);
+      const ownerTabId = await chrome.findOwnerTab();
+      if (ownerTabId === null) return;
+      await chrome.updateTabUrl(ownerTabId, job.url);
       await storage.recordRedirect(job.id);
     }
   }

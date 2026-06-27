@@ -10,7 +10,7 @@ export type NavInput =
 
 export const DEAD_STATUSES = new Set([404, 410]);
 export const RATE_LIMITED_STATUS = 429;
-export const GATEWAY_STATUSES = new Set([500, 502, 503, 504]);
+export const GATEWAY_STATUSES = new Set([502, 503, 504]);
 
 export function classifyNavigation(input: NavInput): NavOutcome {
   if (input.kind === 'error') return 'nav_error';

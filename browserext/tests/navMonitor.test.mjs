@@ -95,6 +95,22 @@ test('nav_error self-redirects on counts 1 and 2; posts fail nav_error on 3rd', 
   }
 });
 
+test('nav_error on a non-owner tab redirects the OWNER tab, not the firing tab', async () => {
+  const { mod, cleanup } = await importTsModule('../src/navMonitor.ts', 'navMonitor.ts');
+  try {
+    const api = fakeApi({ current_job: { id: 'job-1', url: 'https://x.edu.cn/p' }, frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
+    const chr = fakeChrome();
+    const nm = mod.createNavMonitor({ chrome: chr, api, storage: fakeStorage() });
+    nm.start();
+    await chr.fireError({ tabId: 999, url: 'https://x.edu.cn/p', error: 'ERR_CONNECTION_REFUSED', frameId: 0 });
+    assert.equal(chr.updates.length, 1);
+    assert.equal(chr.updates[0].tabId, 1);
+    assert.equal(chr.updates[0].url, 'https://x.edu.cn/p');
+  } finally {
+    await cleanup();
+  }
+});
+
 test('no current_job → no calls (backend already released slot)', async () => {
   const { mod, cleanup } = await importTsModule('../src/navMonitor.ts', 'navMonitor.ts');
   try {

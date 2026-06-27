@@ -26,6 +26,8 @@ export interface ChromeRuntime {
 
 const ALLOWED_HOST_SUFFIXES = ['edu.cn', 'github.io'];
 
+const registeredAlarms = new Set<string>();
+
 function isAllowedHost(hostname: string): boolean {
   const h = hostname.toLowerCase();
   return ALLOWED_HOST_SUFFIXES.some((s) => h === s || h.endsWith(`.${s}`));
@@ -69,6 +71,8 @@ export function createRealChromeRuntime(): ChromeRuntime {
       return active[0]?.id ?? null;
     },
     registerWatchdogAlarm(name, periodMinutes, cb) {
+      if (registeredAlarms.has(name)) return;
+      registeredAlarms.add(name);
       chrome.alarms.create(name, { periodInMinutes: periodMinutes });
       chrome.alarms.onAlarm.addListener((alarm) => {
         if (alarm.name === name) cb();

@@ -19,8 +19,8 @@ test('classifyNavigation maps status codes', async () => {
     assert.equal(mod.classifyNavigation({ kind: 'completed', statusCode: 502 }), 'gateway');
     assert.equal(mod.classifyNavigation({ kind: 'completed', statusCode: 503 }), 'gateway');
     assert.equal(mod.classifyNavigation({ kind: 'completed', statusCode: 504 }), 'gateway');
-    // 500 → gateway too (server error, treat as retryable transient)
-    assert.equal(mod.classifyNavigation({ kind: 'completed', statusCode: 500 }), 'gateway');
+    // 500 → ok (not a gateway transient per backend spec)
+    assert.equal(mod.classifyNavigation({ kind: 'completed', statusCode: 500 }), 'ok');
     // other 4xx (403/401) → ok (let the userscript capture; backend's unavailable-page
     // assessment + LLM handle semantic exclusion, not this probe)
     assert.equal(mod.classifyNavigation({ kind: 'completed', statusCode: 403 }), 'ok');

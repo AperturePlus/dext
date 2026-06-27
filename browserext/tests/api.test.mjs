@@ -3,7 +3,7 @@ import test from 'node:test';
 import { importTsModule } from './harness.mjs';
 
 function fakeFetch(routes) {
-  // routes: { 'GET /status': {status, body}, 'POST /jobs/:id/fail': ..., ... }
+  // routes: { 'GET /api/status': {status, body}, 'POST /jobs/:id/fail': ..., ... }
   return async (url, init) => {
     const u = new URL(url);
     const method = (init?.method || 'GET').toUpperCase();
