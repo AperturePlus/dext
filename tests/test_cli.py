@@ -45,18 +45,12 @@ class _DummyRedirectGuard:
         return SimpleNamespace(verdict="ok", final_url=url, reason=None)
 
 
-class _DummyStatusProbe:
-    async def probe(self, url):
-        return SimpleNamespace(category="ok", status_code=200, reason="http_200")
-
-
 class _DummyEngine:
     statuses: list[str] = []
     calls: list[str] = []
     org_unit_id_calls: list[set[int]] = []
     exc = None
     last_redirect_guard = "UNSET"
-    last_status_probe = "UNSET"
 
     def __init__(
         self,
@@ -69,7 +63,6 @@ class _DummyEngine:
         university_name,
         decision_center=None,
         redirect_guard=None,
-        status_probe=None,
         rate_throttle=None,
         org_unit_ids=None,
     ):
@@ -79,7 +72,6 @@ class _DummyEngine:
         self.__class__.calls.append(university_name)
         self.__class__.org_unit_id_calls.append(set(org_unit_ids or set()))
         self.__class__.last_redirect_guard = redirect_guard
-        self.__class__.last_status_probe = status_probe
 
     async def run(self):
         if self.__class__.exc is not None:
@@ -136,7 +128,6 @@ def _install_runtime(monkeypatch, settings: Settings):
     _DummyEngine.org_unit_id_calls = []
     _DummyEngine.exc = None
     _DummyEngine.last_redirect_guard = "UNSET"
-    _DummyEngine.last_status_probe = "UNSET"
 
     monkeypatch.setattr(cli._FACTORIES, "bridge_factory", lambda settings: object())
     monkeypatch.setattr(cli._FACTORIES, "decision_center_factory", lambda: object())
@@ -144,7 +135,6 @@ def _install_runtime(monkeypatch, settings: Settings):
     monkeypatch.setattr(cli._FACTORIES, "run_server", _run_server)
     monkeypatch.setattr(cli._FACTORIES, "llm_client_factory", lambda settings: object())
     monkeypatch.setattr(cli._FACTORIES, "redirect_guard_factory", lambda: _DummyRedirectGuard())
-    monkeypatch.setattr(cli._FACTORIES, "status_probe_factory", lambda: _DummyStatusProbe())
     monkeypatch.setattr(cli._FACTORIES, "engine_factory", _DummyEngine)
     return cli
 
@@ -478,36 +468,21 @@ def test_reset_without_oid_resets_bad_snapshots(tmp_path, monkeypatch):
     assert node.last_error is None
 
 
-def test_default_probe_toggles_construct_both_probes(tmp_path, monkeypatch):
-    # Default (both toggles True): the CLI constructs the redirect guard and the
-    # status probe and injects them into the engine.
+def test_default_probe_toggle_constructs_redirect_guard(tmp_path, monkeypatch):
+    # Default (probe_redirect_enabled True): the CLI constructs the redirect guard
+    # and injects it into the engine. (The status probe was removed.)
     settings = _settings(tmp_path)
     cli = _install_runtime(monkeypatch, settings)
 
     result = _runner().invoke(cli.main, ["-u", "Alpha University"])
 
     assert result.exit_code == 0, result.output
-    assert isinstance(_DummyEngine.last_redirect_guard, _DummyRedirectGuard)
-    assert isinstance(_DummyEngine.last_status_probe, _DummyStatusProbe)
-
-
-def test_probe_status_disabled_passes_none(tmp_path, monkeypatch):
-    # DEXT_PROBE_STATUS_ENABLED=false → the CLI does NOT construct the status probe
-    # (passes None to the engine). The redirect probe is still constructed.
-    settings = _settings(tmp_path)
-    settings.probe_status_enabled = False
-    cli = _install_runtime(monkeypatch, settings)
-
-    result = _runner().invoke(cli.main, ["-u", "Alpha University"])
-
-    assert result.exit_code == 0, result.output
-    assert _DummyEngine.last_status_probe is None
     assert isinstance(_DummyEngine.last_redirect_guard, _DummyRedirectGuard)
 
 
 def test_probe_redirect_disabled_passes_none(tmp_path, monkeypatch):
     # DEXT_PROBE_REDIRECT_ENABLED=false → the CLI does NOT construct the redirect
-    # guard (passes None). The status probe is still constructed.
+    # guard (passes None to the engine).
     settings = _settings(tmp_path)
     settings.probe_redirect_enabled = False
     cli = _install_runtime(monkeypatch, settings)
@@ -516,4 +491,3 @@ def test_probe_redirect_disabled_passes_none(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert _DummyEngine.last_redirect_guard is None
-    assert isinstance(_DummyEngine.last_status_probe, _DummyStatusProbe)

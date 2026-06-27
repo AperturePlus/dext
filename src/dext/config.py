@@ -50,14 +50,14 @@ class Settings(BaseSettings):
     facet_node_budget: int = 150  # per-org_unit facet/list/pagination node cap (deterministic anti-explosion backstop)
     attempt_penalty: float = 5.0
 
-    # Probes (off-channel aiohttp side-probes; overview §7). Disabling a probe = the
-    # CLI does NOT construct it (passes None to the engine/seeds), so that probe
-    # neither blocks nor drops anything — a coarse escape hatch when an entire site
-    # is unreachable from the backend's raw GET yet loads fine in the human browser.
-    # Defaults preserve existing behavior (both probes on); a probe *timeout* is
-    # already non-blocking regardless of these toggles (see PROBE_TIMEOUT in bridge).
+    # Redirect probe (off-channel aiohttp side-probe; overview §7). Disabling it means the
+    # CLI does NOT construct the RedirectGuard (passes None to the engine/seeds), so it neither
+    # blocks nor drops anything — a coarse escape hatch when an entire site's redirects are
+    # unreachable from the backend's raw GET yet resolve fine in the human browser. The guard's
+    # failures are diagnostic-only metadata (never defer) regardless. (The backend status probe
+    # was removed: a human browser does the fetching, so backend reachability is not a defer
+    # signal; dead/5xx URLs are handled post-fetch via retry.classify_fetch_failure.)
     probe_redirect_enabled: bool = True
-    probe_status_enabled: bool = True
 
     # Logging
     log_level: str = "INFO"
