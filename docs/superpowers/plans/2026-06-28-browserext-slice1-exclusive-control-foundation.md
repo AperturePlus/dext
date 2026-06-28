@@ -1464,13 +1464,18 @@ export interface ContentDeps {
 }
 
 export async function bootstrapContent(deps: ContentDeps): Promise<void> {
-  if (!EXCLUSIVE_CONTROL_ENABLED) return;          // official build: pure no-op
-  // 1. Marker FIRST, before any other action (spec §4.6).
-  deps.documentElement.setAttribute(MARKER_ATTR, MARKER_VALUE);
-  // 2. Early-return on disallowed host — no panel, no RPC, no backend (spec §5.2).
-  if (!isAllowedFetchHost(deps.hostname)) return;
-  // 3. Allowed host: slice 1 stops here. Slices 4–5 add the lifecycle.
-  deps.onAllowedHost?.();
+  // GATED: official slice 1–5 builds define EXCLUSIVE_CONTROL_ENABLED=false, so this
+  // whole block is dead — no marker, no RPC, no backend. Wrap the body in the
+  // positive form `if (GATE) {...}` (NOT `if (!GATE) return`) so esbuild emits
+  // `if (false) {...}` and the body is skipped at runtime even un-minified.
+  if (EXCLUSIVE_CONTROL_ENABLED) {
+    // 1. Marker FIRST, before any other action (spec §4.6).
+    deps.documentElement.setAttribute(MARKER_ATTR, MARKER_VALUE);
+    // 2. Early-return on disallowed host — no panel, no RPC, no backend (spec §5.2).
+    if (!isAllowedFetchHost(deps.hostname)) return;
+    // 3. Allowed host: slice 1 stops here. Slices 4–5 add the lifecycle.
+    deps.onAllowedHost?.();
+  }
 }
 
 // Browser entry: wire to the real document. Guarded so the module is importable

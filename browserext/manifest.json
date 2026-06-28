@@ -1,20 +1,20 @@
 {
   "manifest_version": 3,
-  "name": "dext background probe",
+  "name": "dext crawl controller",
   "version": "0.1.0",
-  "description": "Recovers the dext userscript owner tab when it lands on a browser-native error page. Watches nav status codes and re-redirects stalled tabs.",
+  "description": "Exclusive-control crawl orchestrator (Phase 2). Gated off by default in slice 1; runs alongside the dext userscript.",
   "background": {
     "service_worker": "dist/background.js",
     "type": "module"
   },
   "content_scripts": [
     {
-      "matches": ["*://*.edu.cn/*", "*://*.github.io/*"],
-      "js": ["spike/aliveProbe.js"],
-      "run_at": "document_idle"
+      "matches": ["<all_urls>"],
+      "js": ["dist/content.js"],
+      "run_at": "document_start"
     }
   ],
-  "permissions": ["webRequest", "alarms", "tabs", "storage"],
+  "permissions": ["webRequest", "webNavigation", "alarms", "tabs", "storage"],
   "host_permissions": [
     "http://127.0.0.1:21520/*",
     "<all_urls>"
