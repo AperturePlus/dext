@@ -81,6 +81,15 @@ async function lightweightRedirectBootstrap(): Promise<void> {
 }
 
 async function bootstrap(): Promise<void> {
+  // Phase-2 exclusive-control marker: if the dext extension owns this tab,
+  // stand down immediately (spec §5.1). The marker is page-priority, not a
+  // failover signal — its presence means the extension's content script is
+  // already running here.
+  if (
+    document.documentElement?.getAttribute('data-dext-extension-controller') === 'v1'
+  ) {
+    return;
+  }
   if (isAssistantBlockedHost() || !isTopFrame()) return;
   await waitForBody();
   if (isAllowedFetchHost()) {

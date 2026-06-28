@@ -1583,6 +1583,10 @@
     }
   }
   async function bootstrap() {
+    var _a;
+    if (((_a = document.documentElement) == null ? void 0 : _a.getAttribute("data-dext-extension-controller")) === "v1") {
+      return;
+    }
     if (isAssistantBlockedHost() || !isTopFrame()) return;
     await waitForBody();
     if (isAllowedFetchHost()) {
