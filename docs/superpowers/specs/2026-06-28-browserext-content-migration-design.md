@@ -1,5 +1,11 @@
 # Browser-extension content-layer migration — Phase 2 设计
 
+> **状态：SUPERSEDED.** 本 spec 的 per-slice 共存 + localStorage 仲裁模型已被
+> [2026-06-28-browserext-exclusive-control-design.md](./2026-06-28-browserext-exclusive-control-design.md)
+> 取代。新设计改为扩展独占控制：单一 CrawlController、用户绑定标签、userscript 降级为应急产物。
+> 本文件保留作历史参考，**不再是承重 spec**。slice-0 spike（`spike/ext-alive-localstorage`）
+> 验证的结论（跨 world localStorage 可读）仍为真，但不再是承重前提。
+>
 > 依赖：Phase 1 扩展（`browserext/` background probe 已就位）、SP4（HTTP 契约 FIXED）、
 > SP6（driver/retry 已就位）。
 > 本 spec 是 **Phase 2 的伞型 spec**：定架构、定 per-slice 归属机制、定 fallback、
