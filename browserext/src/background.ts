@@ -16,6 +16,10 @@ import { createNavMonitor } from './navMonitor.js';
 import type { NavMonitor } from './navMonitor.js';
 import { createCrawlController, createControllerStorage } from './controller/controller.js';
 import type { CrawlController, StorageArea } from './controller/controller.js';
+import {
+  RECONCILIATION_ALARM_NAME,
+  RECONCILIATION_PERIOD_MINUTES,
+} from './controller/controller.js';
 
 const API_BASE = 'http://127.0.0.1:21520/api';
 
@@ -30,17 +34,22 @@ export function wireBackground(deps: WireDeps): {
   controller: CrawlController;
 } {
   const navMonitor = createNavMonitor(deps);
-  // Controller rehydrates from chrome.storage.local across SW restarts. In slice 1/2
-  // its tick/bind are gated no-ops (EXCLUSIVE_CONTROL_ENABLED=false in the official
-  // build); constructed here so wiring + persistence are exercised. api + chrome let
-  // the gated-ON tick do /status reconcile + heartbeat (slice 2). The slice-2
-  // reconciliation alarm (replacing the deleted watchdog) drives controller.tick().
+  // Controller rehydrates from chrome.storage.local across SW restarts. Gated
+  // OFF in official slice 1–5 builds — tick/bind are no-ops. Slice 2 wires the
+  // reconciliation alarm (below) to tick; the alarm firing a no-op tick is
+  // harmless. api + chrome let the gated-ON tick do /status reconcile + heartbeat.
   const controller = createCrawlController({
     storage: createControllerStorage(chrome.storage.local as unknown as StorageArea),
     api: deps.api,
     chrome: deps.chrome,
   });
   navMonitor.start();
+  // Reconciliation alarm (spec §2.6): 1-minute waker driving the same tick path.
+  // Replaces the deleted Phase-1 watchdog; never re-redirects the tab on stale
+  // heartbeat.
+  deps.chrome.registerAlarm(RECONCILIATION_ALARM_NAME, RECONCILIATION_PERIOD_MINUTES, () => {
+    void controller.tick();
+  });
   return { navMonitor, controller };
 }
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { importTsModule } from './harness.mjs';
 
-test('wireBackground constructs navMonitor + controller (no watchdog), starts navMonitor', async () => {
+test('wireBackground constructs navMonitor + controller (no watchdog), starts navMonitor, wires reconciliation alarm → controller.tick', async () => {
   const { mod, cleanup } = await importTsModule('../src/background.ts', 'background.ts');
   // wireBackground reads the global chrome.storage.local directly to build the
   // Controller's persistence area; provide a minimal in-memory fake for the test.
@@ -20,11 +20,12 @@ test('wireBackground constructs navMonitor + controller (no watchdog), starts na
   };
   try {
     let started = { nav: false };
+    let alarmReg = null;
     const fakeChrome = {
       onNavCompleted() {}, onNavError() {},
       async updateTabUrl() {}, async findOwnerTab() { return null; },
       async getTab() { return null; },
-      registerAlarm() {},
+      registerAlarm(name, period, cb) { alarmReg = { name, period, cb }; },
     };
     const fakeApi = { async getStatus() { return null; }, async failJob() {}, async skipJob() {}, async sendHeartbeat() {} };
     const fakeStorage = {
@@ -43,6 +44,13 @@ test('wireBackground constructs navMonitor + controller (no watchdog), starts na
     assert.ok(controller, 'controller constructed');
     assert.equal(typeof controller.tick, 'function');
     assert.equal(typeof controller.bind, 'function');
+    // reconciliation alarm registered with the controller's constants, driving tick
+    assert.ok(alarmReg, 'reconciliation alarm registered');
+    assert.equal(alarmReg.name, 'dext-reconcile');
+    assert.equal(alarmReg.period, 1);
+    // firing the alarm drives controller.tick (gate is ON in the harness); tick
+    // with no bound tab + backend-down api is a safe no-op that must not throw.
+    await assert.doesNotReject(async () => { await alarmReg.cb(); });
   } finally {
     if (prevLocal === undefined) delete globalThis.chrome.storage.local;
     else globalThis.chrome.storage.local = prevLocal;
