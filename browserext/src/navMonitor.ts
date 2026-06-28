@@ -5,10 +5,10 @@
  * Scope guard (spec §4.4): only act on navigations whose URL matches current_job.url —
  * the owner browsing an unrelated broken page must not skip/fail the in-flight job. */
 
-import type { ApiClient } from './api';
-import { classifyNavigation } from './status';
-import type { ChromeRuntime, NavCompletedEvent, NavErrorEvent } from './chrome';
-import type { Storage } from './storage';
+import type { ApiClient } from './api.js';
+import { classifyNavigation } from './status.js';
+import type { ChromeRuntime, NavCompletedEvent, NavErrorEvent } from './chrome.js';
+import type { Storage } from './storage.js';
 
 export const MAX_ABNORMAL_NAVS = 3;
 

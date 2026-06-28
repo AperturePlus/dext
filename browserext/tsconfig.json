@@ -1,16 +1,17 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
+    "target": "esnext",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["ES2022", "WebWorker"],
+    "lib": ["ESNext", "WebWorker"],
     "types": ["chrome"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "outDir": "dist",
     "sourceMap": false,
     "declaration": false,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames":true
   },
   "include": ["src/**/*.ts"]
 }

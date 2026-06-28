@@ -4,9 +4,9 @@
  * Does NOT call fail/skip — that's navMonitor's job. Closed loop (spec §3): redirect →
  * nav counts → navMonitor fails after MAX_ABNORMAL_NAVS. */
 
-import type { ApiClient } from './api';
-import type { ChromeRuntime } from './chrome';
-import type { Storage } from './storage';
+import type { ApiClient } from './api.js';
+import type { ChromeRuntime } from './chrome.js';
+import type { Storage } from './storage.js';
 
 export const STALE_THRESHOLD_SECONDS = 15;
 export const WATCHDOG_ALARM_NAME = 'dext-watchdog';

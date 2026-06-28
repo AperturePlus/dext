@@ -23,10 +23,15 @@ export async function importTsModule(sourcePath, outputName) {
     );
     const outName = name.replace(/\.ts$/, '.mjs');
     const outFile = join(outDir, outName);
-    // Add .mjs to extension-less relative imports so Node ESM resolves them.
+    // Rewrite extension-less *and* ".js"-suffixed relative imports to ".mjs" so
+    // Node ESM resolves them. The ".js" form is what src/*.ts uses (correct for the
+    // browser ESM loader, which needs explicit extensions); strip it before adding ".mjs".
     const code = result.outputText.replace(
       /from\s+(['"])(\.[^'"]+)\1/g,
-      (m, q, spec) => (spec.endsWith('.mjs') ? m : `from ${q}${spec}.mjs${q}`),
+      (m, q, spec) => {
+        const base = spec.replace(/\.(mjs|js)$/, '');
+        return `from ${q}${base}.mjs${q}`;
+      },
     );
     await writeFile(outFile, code, 'utf8');
   }

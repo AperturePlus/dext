@@ -2,16 +2,19 @@
  * Constructs the real chrome.* runtime, the fetch HTTP client, the chrome.storage
  * storage, then wires navMonitor + watchdog and starts both. */
 
-import { createRealChromeRuntime } from './chrome';
-import type { ChromeRuntime } from './chrome';
-import { createFetchApi } from './api';
-import type { ApiClient } from './api';
-import { createChromeStorage } from './storage';
-import type { Storage } from './storage';
-import { createNavMonitor } from './navMonitor';
-import type { NavMonitor } from './navMonitor';
-import { createWatchdog } from './watchdog';
-import type { Watchdog } from './watchdog';
+// Relative imports carry an explicit ".js" so the tsc output (moduleResolution:
+// "bundler" preserves specifiers verbatim) resolves in the browser's ESM loader,
+// which — unlike Node — does not auto-append extensions. See browserext/README.md.
+import { createRealChromeRuntime } from './chrome.js';
+import type { ChromeRuntime } from './chrome.js';
+import { createFetchApi } from './api.js';
+import type { ApiClient } from './api.js';
+import { createChromeStorage } from './storage.js';
+import type { Storage } from './storage.js';
+import { createNavMonitor } from './navMonitor.js';
+import type { NavMonitor } from './navMonitor.js';
+import { createWatchdog } from './watchdog.js';
+import type { Watchdog } from './watchdog.js';
 
 const API_BASE = 'http://127.0.0.1:21520/api';
 
