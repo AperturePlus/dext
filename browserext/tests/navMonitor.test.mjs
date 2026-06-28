@@ -2,200 +2,137 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { importTsModule } from './harness.mjs';
 
-function fakeStorage() {
-  const counts = new Map();
-  const verdicts = new Set();
-  const redirects = new Map();
-  return {
-    async bumpCount(id) { const n = (counts.get(id) ?? 0) + 1; counts.set(id, n); return n; },
-    async getCount(id) { return counts.get(id) ?? 0; },
-    async markVerdictSent(id) { verdicts.add(id); },
-    async wasVerdictSent(id) { return verdicts.has(id); },
-    async recordRedirect(id) { redirects.set(id, Date.now()); },
-    async shouldRedirect(id) { return true; }, // fake: allow every redirect while below threshold
-    async clear(id) { counts.delete(id); verdicts.delete(id); redirects.delete(id); },
-  };
-}
-
-function fakeApi(statusResponse) {
-  const calls = [];
+// A NavController fake that records every delivery (amend §8.1 #17: navMonitor
+// forwards raw event + outcome for all 6 outcomes; it never decides/acts itself).
+function fakeController(boundTabId = 1) {
+  const calls = { beforeRequest: [], beforeRedirect: [], committed: [], http: [], error: [], pageReady: [], scopeReads: 0 };
   return {
     calls,
-    async getStatus() { return statusResponse; },
-    async failJob(id, msg) { calls.push({ kind: 'fail', id, msg }); },
-    async skipJob(id, reason) { calls.push({ kind: 'skip', id, reason }); },
+    getNavScope() { calls.scopeReads += 1; return { boundTabId }; },
+    async deliverBeforeRequest(e) { calls.beforeRequest.push(e); },
+    async deliverBeforeRedirect(e) { calls.beforeRedirect.push(e); },
+    async deliverCommitted(e) { calls.committed.push(e); },
+    async deliverHttpEvent(e, o) { calls.http.push({ e, o }); },
+    async deliverError(e, o) { calls.error.push({ e, o }); },
+    async deliverPageReady(e) { calls.pageReady.push(e); },
   };
 }
 
 function fakeChrome() {
-  const updates = [];
-  const completedCbs = [], errorCbs = [];
+  const cbs = { beforeRequest: [], beforeRedirect: [], committed: [], history: [], completed: [], error: [] };
   return {
-    onNavCompleted(cb) { completedCbs.push(cb); },
-    onNavError(cb) { errorCbs.push(cb); },
-    async updateTabUrl(tabId, url) { updates.push({ tabId, url }); },
-    async findOwnerTab() { return 1; },
-    registerAlarm() {},
-    // test helpers
-    updates,
-    async fireCompleted(e) { for (const cb of completedCbs) await cb(e); },
-    async fireError(e) { for (const cb of errorCbs) await cb(e); },
+    onBeforeRequest(cb) { cbs.beforeRequest.push(cb); },
+    onBeforeRedirect(cb) { cbs.beforeRedirect.push(cb); },
+    onCommitted(cb) { cbs.committed.push(cb); },
+    onHistoryStateUpdated(cb) { cbs.history.push(cb); },
+    onNavCompleted(cb) { cbs.completed.push(cb); },
+    onNavError(cb) { cbs.error.push(cb); },
+    fire(kind, e) { for (const cb of cbs[kind]) cb(e); },
   };
 }
 
-test('404 posts skip with reason=not_found', async () => {
+test('navMonitor accepts only {chrome, controller} deps (thin adapter; no api/storage)', async () => {
   const { mod, cleanup } = await importTsModule('../src/navMonitor.ts', 'navMonitor.ts');
   try {
-    const api = fakeApi({ current_job: { id: 'job-1', url: 'https://x.edu.cn/p' }, frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
-    const chr = fakeChrome();
-    const nm = mod.createNavMonitor({ chrome: chr, api, storage: fakeStorage() });
+    const nm = mod.createNavMonitor({ chrome: fakeChrome(), controller: fakeController() });
     nm.start();
-    await chr.fireCompleted({ tabId: 1, url: 'https://x.edu.cn/p', statusCode: 404, frameId: 0 });
-    assert.deepEqual(api.calls, [{ kind: 'skip', id: 'job-1', reason: 'not_found' }]);
+    assert.equal(typeof nm.start, 'function');
   } finally {
     await cleanup();
   }
 });
 
-test('502 counts; on 3rd posts fail message=gateway_5xx; does NOT redirect', async () => {
+test('onNavCompleted forwards raw event + classifyNavigation outcome for every NavOutcome (amend §8.1 #17)', async () => {
   const { mod, cleanup } = await importTsModule('../src/navMonitor.ts', 'navMonitor.ts');
   try {
-    const api = fakeApi({ current_job: { id: 'job-1', url: 'https://x.edu.cn/p' }, frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
+    const ctrl = fakeController();
     const chr = fakeChrome();
-    const nm = mod.createNavMonitor({ chrome: chr, api, storage: fakeStorage() });
-    nm.start();
-    await chr.fireCompleted({ tabId: 1, url: 'https://x.edu.cn/p', statusCode: 502, frameId: 0 });
-    await chr.fireCompleted({ tabId: 1, url: 'https://x.edu.cn/p', statusCode: 502, frameId: 0 });
-    assert.deepEqual(api.calls, []); // not yet
-    assert.equal(chr.updates.length, 0); // gateway never self-redirects
-    await chr.fireCompleted({ tabId: 1, url: 'https://x.edu.cn/p', statusCode: 502, frameId: 0 });
-    assert.deepEqual(api.calls, [{ kind: 'fail', id: 'job-1', msg: 'gateway_5xx' }]);
+    mod.createNavMonitor({ chrome: chr, controller: ctrl }).start();
+    const cases = [
+      [200, 'ok'], [304, 'ok'], [404, 'not_found'], [410, 'not_found'], [429, 'rate_limited'],
+      [500, 'gateway'], [502, 'gateway'], [503, 'gateway'], [504, 'gateway'],
+      [204, 'unexpected_status'], [401, 'unexpected_status'], [403, 'unexpected_status'], [301, 'unexpected_status'],
+    ];
+    for (const [code, expectedOutcome] of cases) {
+      chr.fire('completed', { tabId: 1, url: 'https://x.edu.cn/p', statusCode: code, frameId: 0, requestId: 'R', documentId: 'D', timeStamp: 100 });
+      assert.equal(ctrl.calls.http.at(-1).o, expectedOutcome, `${code} → ${expectedOutcome}`);
+      assert.equal(ctrl.calls.http.at(-1).e.statusCode, code);
+      assert.equal(ctrl.calls.http.at(-1).e.requestId, 'R');
+    }
+    assert.equal(ctrl.calls.http.length, cases.length);
   } finally {
     await cleanup();
   }
 });
 
-test('nav_error self-redirects on counts 1 and 2; posts fail nav_error on 3rd', async () => {
+test('onNavError forwards raw event + nav_error outcome', async () => {
   const { mod, cleanup } = await importTsModule('../src/navMonitor.ts', 'navMonitor.ts');
   try {
-    const api = fakeApi({ current_job: { id: 'job-1', url: 'https://x.edu.cn/p' }, frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
+    const ctrl = fakeController();
     const chr = fakeChrome();
-    const nm = mod.createNavMonitor({ chrome: chr, api, storage: fakeStorage() });
-    nm.start();
-    await chr.fireError({ tabId: 1, url: 'https://x.edu.cn/p', error: 'ERR_CONNECTION_REFUSED', frameId: 0 });
-    assert.equal(chr.updates.length, 1);
-    assert.equal(chr.updates[0].url, 'https://x.edu.cn/p');
-    await chr.fireError({ tabId: 1, url: 'https://x.edu.cn/p', error: 'ERR_CONNECTION_REFUSED', frameId: 0 });
-    assert.equal(chr.updates.length, 2); // debounced by storage.shouldRedirect — fake allows every time
-    assert.deepEqual(api.calls, []);
-    await chr.fireError({ tabId: 1, url: 'https://x.edu.cn/p', error: 'ERR_CONNECTION_REFUSED', frameId: 0 });
-    assert.deepEqual(api.calls, [{ kind: 'fail', id: 'job-1', msg: 'nav_error:ERR_CONNECTION_REFUSED' }]);
+    mod.createNavMonitor({ chrome: chr, controller: ctrl }).start();
+    chr.fire('error', { tabId: 1, url: 'https://x.edu.cn/p', error: 'ERR_CONNECTION_REFUSED', frameId: 0, requestId: 'R', timeStamp: 100 });
+    assert.equal(ctrl.calls.error.length, 1);
+    assert.equal(ctrl.calls.error[0].o, 'nav_error');
+    assert.equal(ctrl.calls.error[0].e.error, 'ERR_CONNECTION_REFUSED');
   } finally {
     await cleanup();
   }
 });
 
-test('nav_error on a non-owner tab redirects the OWNER tab, not the firing tab', async () => {
+test('onBeforeRedirect forwards raw, NO classifier call (amend §8.1 #14)', async () => {
   const { mod, cleanup } = await importTsModule('../src/navMonitor.ts', 'navMonitor.ts');
   try {
-    const api = fakeApi({ current_job: { id: 'job-1', url: 'https://x.edu.cn/p' }, frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
+    const ctrl = fakeController();
     const chr = fakeChrome();
-    const nm = mod.createNavMonitor({ chrome: chr, api, storage: fakeStorage() });
-    nm.start();
-    await chr.fireError({ tabId: 999, url: 'https://x.edu.cn/p', error: 'ERR_CONNECTION_REFUSED', frameId: 0 });
-    assert.equal(chr.updates.length, 1);
-    assert.equal(chr.updates[0].tabId, 1);
-    assert.equal(chr.updates[0].url, 'https://x.edu.cn/p');
+    mod.createNavMonitor({ chrome: chr, controller: ctrl }).start();
+    chr.fire('beforeRedirect', { tabId: 1, frameId: 0, type: 'main_frame', url: 'https://x.edu.cn/p', redirectUrl: 'https://attacker.edu.cn/x', requestId: 'R', timeStamp: 100 });
+    assert.equal(ctrl.calls.beforeRedirect.length, 1);
+    assert.equal(ctrl.calls.beforeRedirect[0].redirectUrl, 'https://attacker.edu.cn/x');
+    assert.equal(ctrl.calls.http.length, 0, 'onBeforeRedirect must not call the classifier / not deliver an http outcome');
   } finally {
     await cleanup();
   }
 });
 
-test('no current_job → no calls (backend already released slot)', async () => {
+test('scope filter: sub-frame (frameId !== 0) events are dropped', async () => {
   const { mod, cleanup } = await importTsModule('../src/navMonitor.ts', 'navMonitor.ts');
   try {
-    const api = fakeApi({ current_job: null, frontend_health: { alive: false, last_seen_seconds_ago: null } });
+    const ctrl = fakeController();
     const chr = fakeChrome();
-    const nm = mod.createNavMonitor({ chrome: chr, api, storage: fakeStorage() });
-    nm.start();
-    await chr.fireCompleted({ tabId: 1, url: 'https://x.edu.cn/p', statusCode: 502, frameId: 0 });
-    assert.deepEqual(api.calls, []);
+    mod.createNavMonitor({ chrome: chr, controller: ctrl }).start();
+    chr.fire('completed', { tabId: 1, url: 'https://x.edu.cn/p', statusCode: 404, frameId: 2, requestId: 'R', timeStamp: 100 });
+    chr.fire('committed', { tabId: 1, frameId: 2, documentId: 'D', url: 'u', timeStamp: 100 });
+    assert.equal(ctrl.calls.http.length, 0);
+    assert.equal(ctrl.calls.committed.length, 0);
   } finally {
     await cleanup();
   }
 });
 
-test('verdict_sent guard: no double report for same job', async () => {
+test('scope filter: non-bound-tab events are dropped', async () => {
   const { mod, cleanup } = await importTsModule('../src/navMonitor.ts', 'navMonitor.ts');
   try {
-    const api = fakeApi({ current_job: { id: 'job-1', url: 'https://x.edu.cn/p' }, frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
+    const ctrl = fakeController(1);
     const chr = fakeChrome();
-    const nm = mod.createNavMonitor({ chrome: chr, api, storage: fakeStorage() });
-    nm.start();
-    await chr.fireCompleted({ tabId: 1, url: 'https://x.edu.cn/p', statusCode: 404, frameId: 0 });
-    // a second 404 for the same job (e.g. userscript hadn't navigated away yet) must not re-skip
-    await chr.fireCompleted({ tabId: 1, url: 'https://x.edu.cn/p', statusCode: 404, frameId: 0 });
-    assert.equal(api.calls.length, 1);
+    mod.createNavMonitor({ chrome: chr, controller: ctrl }).start();
+    chr.fire('completed', { tabId: 999, url: 'https://x.edu.cn/p', statusCode: 404, frameId: 0, requestId: 'R', timeStamp: 100 });
+    assert.equal(ctrl.calls.http.length, 0, 'non-bound-tab event dropped');
   } finally {
     await cleanup();
   }
 });
 
-test('2xx → no action', async () => {
+test('beforeRequest + committed forwarded raw', async () => {
   const { mod, cleanup } = await importTsModule('../src/navMonitor.ts', 'navMonitor.ts');
   try {
-    const api = fakeApi({ current_job: { id: 'job-1', url: 'https://x.edu.cn/p' }, frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
+    const ctrl = fakeController();
     const chr = fakeChrome();
-    const nm = mod.createNavMonitor({ chrome: chr, api, storage: fakeStorage() });
-    nm.start();
-    await chr.fireCompleted({ tabId: 1, url: 'https://x.edu.cn/p', statusCode: 200, frameId: 0 });
-    assert.deepEqual(api.calls, []);
-    assert.equal(chr.updates.length, 0);
-  } finally {
-    await cleanup();
-  }
-});
-
-test('429 → no action (backend handles rate-limit via status_code path)', async () => {
-  const { mod, cleanup } = await importTsModule('../src/navMonitor.ts', 'navMonitor.ts');
-  try {
-    const api = fakeApi({ current_job: { id: 'job-1', url: 'https://x.edu.cn/p' }, frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
-    const chr = fakeChrome();
-    const nm = mod.createNavMonitor({ chrome: chr, api, storage: fakeStorage() });
-    nm.start();
-    await chr.fireCompleted({ tabId: 1, url: 'https://x.edu.cn/p', statusCode: 429, frameId: 0 });
-    assert.deepEqual(api.calls, []);
-  } finally {
-    await cleanup();
-  }
-});
-
-test('abnormal nav on an UNRELATED url does not touch the in-flight job (spec §4.4)', async () => {
-  const { mod, cleanup } = await importTsModule('../src/navMonitor.ts', 'navMonitor.ts');
-  try {
-    // The owner browses a different page that 404s. The in-flight crawl job (job-1)
-    // must NOT be skipped — the event URL does not match current_job.url.
-    const api = fakeApi({ current_job: { id: 'job-1', url: 'https://x.edu.cn/faculty' }, frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
-    const chr = fakeChrome();
-    const nm = mod.createNavMonitor({ chrome: chr, api, storage: fakeStorage() });
-    nm.start();
-    await chr.fireCompleted({ tabId: 1, url: 'https://other.example.com/gone', statusCode: 404, frameId: 0 });
-    assert.deepEqual(api.calls, []);
-  } finally {
-    await cleanup();
-  }
-});
-
-test('nav_error on an UNRELATED url does not redirect to the job (spec §4.4)', async () => {
-  const { mod, cleanup } = await importTsModule('../src/navMonitor.ts', 'navMonitor.ts');
-  try {
-    const api = fakeApi({ current_job: { id: 'job-1', url: 'https://x.edu.cn/faculty' }, frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
-    const chr = fakeChrome();
-    const nm = mod.createNavMonitor({ chrome: chr, api, storage: fakeStorage() });
-    nm.start();
-    await chr.fireError({ tabId: 1, url: 'https://dead.example.invalid/x', error: 'ERR_NAME_NOT_RESOLVED', frameId: 0 });
-    assert.equal(chr.updates.length, 0);
-    assert.deepEqual(api.calls, []);
+    mod.createNavMonitor({ chrome: chr, controller: ctrl }).start();
+    chr.fire('beforeRequest', { tabId: 1, frameId: 0, type: 'main_frame', url: 'https://x.edu.cn/p', requestId: 'R', timeStamp: 100 });
+    chr.fire('committed', { tabId: 1, frameId: 0, documentId: 'D', url: 'https://x.edu.cn/p', timeStamp: 110 });
+    assert.equal(ctrl.calls.beforeRequest[0].requestId, 'R');
+    assert.equal(ctrl.calls.committed[0].documentId, 'D');
   } finally {
     await cleanup();
   }

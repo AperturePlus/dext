@@ -6,14 +6,17 @@ import { importTsModule } from './harness.mjs';
 // but we CAN test the interface contract by building a fake that matches it,
 // proving the shape navMonitor/controller will consume.
 function fakeRuntime() {
-  const completedCbs = [];
-  const errorCbs = [];
+  const completedCbs = [], errorCbs = [], beforeReqCbs = [], beforeRedirectCbs = [], committedCbs = [], historyCbs = [];
   let alarmCb = null;
   let lastUpdated = null;
   let tabs = [{ id: 1, url: 'https://www.x.edu.cn/faculty' }];
   return {
     onNavCompleted(cb) { completedCbs.push(cb); },
     onNavError(cb) { errorCbs.push(cb); },
+    onBeforeRequest(cb) { beforeReqCbs.push(cb); },
+    onBeforeRedirect(cb) { beforeRedirectCbs.push(cb); },
+    onCommitted(cb) { committedCbs.push(cb); },
+    onHistoryStateUpdated(cb) { historyCbs.push(cb); },
     async updateTabUrl(tabId, url) { lastUpdated = { tabId, url }; },
     async findOwnerTab() {
       const t = tabs.find((t) => /edu\.cn$|github\.io$/.test(new URL(t.url).hostname)) ?? tabs[0] ?? null;
@@ -24,6 +27,10 @@ function fakeRuntime() {
     // test helpers
     fireCompleted(e) { for (const cb of completedCbs) cb(e); },
     fireError(e) { for (const cb of errorCbs) cb(e); },
+    fireBeforeRequest(e) { for (const cb of beforeReqCbs) cb(e); },
+    fireBeforeRedirect(e) { for (const cb of beforeRedirectCbs) cb(e); },
+    fireCommitted(e) { for (const cb of committedCbs) cb(e); },
+    fireHistory(e) { for (const cb of historyCbs) cb(e); },
     fireAlarm() { if (alarmCb) alarmCb(); },
     lastUpdated,
     _tabs: tabs,
@@ -48,6 +55,18 @@ test('createRealChromeRuntime exposes registerAlarm + getTab (rename from watchd
     assert.equal(typeof rt.registerAlarm, 'function');
     assert.equal(typeof rt.getTab, 'function');
     assert.equal(typeof rt.findOwnerTab, 'function');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('createRealChromeRuntime exposes nav listeners + widened events (slice 3)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/chrome.ts', 'chrome.ts');
+  try {
+    const rt = mod.createRealChromeRuntime();
+    for (const m of ['onBeforeRequest','onBeforeRedirect','onCommitted','onHistoryStateUpdated','onNavCompleted','onNavError','updateTabUrl','findOwnerTab','getTab','registerAlarm']) {
+      assert.equal(typeof rt[m], 'function', `${m} is a function`);
+    }
   } finally {
     await cleanup();
   }

@@ -3,11 +3,20 @@
  * createRealChromeRuntime binds the real chrome.* APIs and is used only by
  * background.ts (manual verification). */
 
+import type {
+  BeforeRequestEvent,
+  BeforeRedirectEvent,
+  CommittedEvent,
+} from './shared/navEvents.js';
+
 export interface NavCompletedEvent {
   tabId: number;
   url: string;
   statusCode: number;
   frameId: number;
+  requestId: string;
+  documentId?: string;
+  timeStamp: number;
 }
 
 export interface NavErrorEvent {
@@ -15,11 +24,17 @@ export interface NavErrorEvent {
   url: string;
   error: string;
   frameId: number;
+  requestId: string;
+  timeStamp: number;
 }
 
 export interface ChromeRuntime {
   onNavCompleted(cb: (e: NavCompletedEvent) => void): void;
   onNavError(cb: (e: NavErrorEvent) => void): void;
+  onBeforeRequest(cb: (e: BeforeRequestEvent) => void): void;
+  onBeforeRedirect(cb: (e: BeforeRedirectEvent) => void): void;
+  onCommitted(cb: (e: CommittedEvent) => void): void;
+  onHistoryStateUpdated(cb: (e: CommittedEvent) => void): void;
   updateTabUrl(tabId: number, url: string): Promise<void>;
   findOwnerTab(): Promise<number | null>;
   getTab(tabId: number): Promise<{ id: number; url?: string } | null>;
@@ -38,11 +53,15 @@ function isAllowedHost(hostname: string): boolean {
 export function createRealChromeRuntime(): ChromeRuntime {
   return {
     onNavCompleted(cb) {
-      // Main frame only (frameId === 0) — sub-frame errors are noise.
       chrome.webRequest.onCompleted.addListener(
         (details) => {
           if (details.frameId !== 0) return;
-          cb({ tabId: details.tabId, url: details.url, statusCode: details.statusCode, frameId: details.frameId });
+          cb({
+            tabId: details.tabId, url: details.url, statusCode: details.statusCode,
+            frameId: details.frameId, requestId: details.requestId,
+            documentId: (details as chrome.webRequest.WebResponseDetails & { documentId?: string }).documentId,
+            timeStamp: details.timeStamp,
+          });
         },
         { urls: ['<all_urls>'] },
       );
@@ -51,10 +70,56 @@ export function createRealChromeRuntime(): ChromeRuntime {
       chrome.webRequest.onErrorOccurred.addListener(
         (details) => {
           if (details.frameId !== 0) return;
-          cb({ tabId: details.tabId, url: details.url, error: details.error, frameId: details.frameId });
+          cb({
+            tabId: details.tabId, url: details.url, error: details.error,
+            frameId: details.frameId, requestId: details.requestId, timeStamp: details.timeStamp,
+          });
         },
         { urls: ['<all_urls>'] },
       );
+    },
+    onBeforeRequest(cb) {
+      chrome.webRequest.onBeforeRequest.addListener(
+        (details) => {
+          if (details.type !== 'main_frame') return;
+          cb({
+            tabId: details.tabId, frameId: details.frameId, type: details.type,
+            url: details.url, requestId: details.requestId, timeStamp: details.timeStamp,
+          });
+        },
+        { urls: ['<all_urls>'] },
+      );
+    },
+    onBeforeRedirect(cb) {
+      chrome.webRequest.onBeforeRedirect.addListener(
+        (details) => {
+          if (details.type !== 'main_frame') return;
+          cb({
+            tabId: details.tabId, frameId: details.frameId, type: details.type,
+            url: details.url, redirectUrl: details.redirectUrl, requestId: details.requestId,
+            timeStamp: details.timeStamp,
+          });
+        },
+        { urls: ['<all_urls>'] },
+      );
+    },
+    onCommitted(cb) {
+      chrome.webNavigation.onCommitted.addListener((details) => {
+        if (details.frameId !== 0) return;
+        cb({
+          tabId: details.tabId, frameId: details.frameId, documentId: details.documentId ?? '',
+          url: details.url, timeStamp: details.timeStamp,
+        });
+      });
+    },
+    onHistoryStateUpdated(cb) {
+      chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
+        if (details.frameId !== 0) return;
+        cb({
+          tabId: details.tabId, frameId: details.frameId, documentId: details.documentId ?? '',
+          url: details.url, timeStamp: details.timeStamp,
+        });
+      });
     },
     async updateTabUrl(tabId, url) {
       await chrome.tabs.update(tabId, { url });
