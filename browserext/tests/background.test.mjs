@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { importTsModule } from './harness.mjs';
 
-test('wireBackground constructs navMonitor + watchdog and starts both', async () => {
+test('wireBackground constructs navMonitor + controller (no watchdog), starts navMonitor', async () => {
   const { mod, cleanup } = await importTsModule('../src/background.ts', 'background.ts');
   // wireBackground reads the global chrome.storage.local directly to build the
   // Controller's persistence area; provide a minimal in-memory fake for the test.
@@ -19,28 +19,27 @@ test('wireBackground constructs navMonitor + watchdog and starts both', async ()
     async remove(keys) { const arr = Array.isArray(keys) ? keys : [keys]; for (const k of arr) store.delete(k); },
   };
   try {
-    let started = { nav: false, wd: false };
+    let started = { nav: false };
     const fakeChrome = {
       onNavCompleted() {}, onNavError() {},
       async updateTabUrl() {}, async findOwnerTab() { return null; },
-      registerWatchdogAlarm() {},
+      async getTab() { return null; },
+      registerAlarm() {},
     };
-    const fakeApi = { async getStatus() { return null; }, async failJob() {}, async skipJob() {} };
+    const fakeApi = { async getStatus() { return null; }, async failJob() {}, async skipJob() {}, async sendHeartbeat() {} };
     const fakeStorage = {
       async bumpCount() { return 0; }, async getCount() { return 0; },
       async markVerdictSent() {}, async wasVerdictSent() { return false; },
       async recordRedirect() {}, async shouldRedirect() { return true; }, async clear() {},
     };
-    const { navMonitor, watchdog, controller } = mod.wireBackground({ chrome: fakeChrome, api: fakeApi, storage: fakeStorage });
+    const { navMonitor, controller } = mod.wireBackground({ chrome: fakeChrome, api: fakeApi, storage: fakeStorage });
+    // watchdog is gone from the return shape (deleted in slice 2)
+    assert.equal('watchdog' in { navMonitor, controller }, false, 'no watchdog in wireBackground return');
     // monkeypatch start to detect invocation
     const origNavStart = navMonitor.start.bind(navMonitor);
-    const origWdStart = watchdog.start.bind(watchdog);
     navMonitor.start = () => { started.nav = true; origNavStart(); };
-    watchdog.start = () => { started.wd = true; origWdStart(); };
     navMonitor.start();
-    watchdog.start();
     assert.equal(started.nav, true);
-    assert.equal(started.wd, true);
     assert.ok(controller, 'controller constructed');
     assert.equal(typeof controller.tick, 'function');
     assert.equal(typeof controller.bind, 'function');

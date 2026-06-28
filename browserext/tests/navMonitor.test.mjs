@@ -35,7 +35,7 @@ function fakeChrome() {
     onNavError(cb) { errorCbs.push(cb); },
     async updateTabUrl(tabId, url) { updates.push({ tabId, url }); },
     async findOwnerTab() { return 1; },
-    registerWatchdogAlarm() {},
+    registerAlarm() {},
     // test helpers
     updates,
     async fireCompleted(e) { for (const cb of completedCbs) await cb(e); },

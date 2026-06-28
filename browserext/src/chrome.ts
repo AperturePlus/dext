@@ -21,7 +21,8 @@ export interface ChromeRuntime {
   onNavError(cb: (e: NavErrorEvent) => void): void;
   updateTabUrl(tabId: number, url: string): Promise<void>;
   findOwnerTab(): Promise<number | null>;
-  registerWatchdogAlarm(name: string, periodMinutes: number, cb: () => void): void;
+  getTab(tabId: number): Promise<{ id: number; url?: string } | null>;
+  registerAlarm(name: string, periodMinutes: number, cb: () => void): void;
 }
 
 const ALLOWED_HOST_SUFFIXES = ['edu.cn', 'github.io'];
@@ -70,7 +71,16 @@ export function createRealChromeRuntime(): ChromeRuntime {
       const active = await chrome.tabs.query({ active: true, currentWindow: true });
       return active[0]?.id ?? null;
     },
-    registerWatchdogAlarm(name, periodMinutes, cb) {
+    async getTab(tabId) {
+      try {
+        const t = await chrome.tabs.get(tabId);
+        if (!t) return null;
+        return { id: t.id ?? tabId, url: t.url };
+      } catch {
+        return null;   // tab gone (e.g. TypeError "No tab with id") → invalid bound tab
+      }
+    },
+    registerAlarm(name, periodMinutes, cb) {
       if (registeredAlarms.has(name)) return;
       registeredAlarms.add(name);
       chrome.alarms.create(name, { periodInMinutes: periodMinutes });
