@@ -1239,8 +1239,12 @@ import { createMutex } from './mutex.js';
 import type { Mutex } from './mutex.js';
 import { createControllerStorage } from './storage.js';
 import type { ControllerStorage, StorageArea } from './storage.js';
-import { initialControllerState } from '../shared/state.js';
 import type { ControllerState } from '../shared/state.js';
+
+// Re-export so callers (background.ts, tests) can build a storage + controller
+// from a single import entry point.
+export { createControllerStorage };
+export type { ControllerStorage, StorageArea };
 
 declare const EXCLUSIVE_CONTROL_ENABLED: boolean;
 
