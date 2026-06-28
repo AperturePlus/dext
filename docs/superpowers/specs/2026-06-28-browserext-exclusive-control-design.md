@@ -1,5 +1,6 @@
 # Browser-extension exclusive control — Phase 2 设计
 
+> **规范性修订：** 本设计受 [2026-06-28-browserext-exclusive-control-design-amend.md](./2026-06-28-browserext-exclusive-control-design-amend.md) 修订；两者冲突时以 amendment 为准。
 > **状态：** 本 spec 是 Phase 2 的正式设计，**取代** [2026-06-28-browserext-content-migration-design.md](./2026-06-28-browserext-content-migration-design.md)（per-slice 共存 + localStorage 仲裁模型）。该旧 spec 被标记为 superseded 并指向本文件。
 > **依赖：** Phase 1 扩展（`browserext/` background probe 已就位）、SP4（HTTP 契约 FIXED）、SP6（driver/retry 已就位）。
 > **范围：** 仅扩展独占控制（half A）。后端响应性加固（`to_thread` for `build_snapshot`/html2text/tiktoken、有界队列）是 half B，属后续独立 spec，不在本 spec 展开但 **不修改任何 HTTP 请求/响应结构和数据库 schema**。
@@ -42,7 +43,7 @@
 ### 1.4 Phase 1 既有代码处置
 
 - **`watchdog.ts` 删除**（在 slice 2 完成，被 Controller 的 reconciliation alarm 取代）。其“heartbeat stale → re-redirect”行为正是本设计要消除的刷新循环制造器。reconciliation alarm 重跑与 tick 相同的 `/status` + storage 重水合路径——不是单独的 watchdog 模块。
-- **`navMonitor.ts` 固定为 main-frame Chrome 事件薄适配器**：只把 bound tab、`frameId===0` 的事件投递给 Controller（见 §3 作用域过滤）；不再分类、不再调用 `chrome.tabs.update`/`/fail`/`/skip`。**不删除**。
+- **`navMonitor.ts` 固定为 main-frame Chrome 事件薄适配器**：过滤 bound tab、`frameId===0` 等作用域；对最终 completed/error 调用唯一的 `status.ts` 纯分类器，再把原始事件与 outcome 投递给 Controller（见 §3）。它自身不包含状态码映射或 outcome 决策，不调用 `chrome.tabs.update`/`/fail`/`/skip`。**不删除**。
 - **`status.ts` 是唯一纯分类器**。不创建第二份分类逻辑（`classifyNavigation` 既有的 `ok|not_found|gateway|rate_limited|nav_error` 复用）。
 - **`instanceLock.ts` 留在 userscript**，不迁入扩展。冻结后的 userscript 保留自身锁，在 bootstrap 第一步检测到扩展控制标记即退出（见 §5）。
 
@@ -154,12 +155,11 @@ paused 停止 **自动副作用**：claim、navigate、capture、retry。它 **�
 
    该事件的 `documentId` 写入 `navigation.commit.documentId`，`url` 写入 `navigation.commit.committedUrl`。**不存在 documentId 链**——documentId 是文档身份，不含前驱/后继关系，服务端多跳重定向通常只产生一次最终 `onCommitted`。关联由上述五个条件建立，不是通过遍历文档序列。（SPA 同文档更新见 §3.6：`webNavigation.onHistoryStateUpdated` 携带同一 `documentId`。）
 
-2. **可接受的 HTTP outcome。** 主文档请求的 `chrome.webRequest.onCompleted`（过滤 `types: ['main_frame']`、同 `tabId`、同时间窗、同 `jobId`）产生 `navigation.httpOutcome`：
-   - `200`/`301`/`302`/`304` → `'ok'`
-   - `404`/`410` → `'not_found'`
-   - `502`/`503`/`504` → `'gateway'`
-   - `429` → `'rate_limited'`
-   - `chrome.webRequest.onErrorOccurred`（主框架）→ `'nav_error'` 携错误字符串
+2. **可接受的 HTTP outcome。** 主文档请求中，与当前 navigation 关联的最终
+   `chrome.webRequest.onCompleted` 才能产生 `navigation.httpOutcome`，具体状态分类以 amendment
+   §3.1 为准。`onBeforeRedirect` 只用于同 requestId redirect chain 的 `redirectUrl` same-crawl-site
+   gate；它不得调用最终响应分类器，也不得写入 `navigation.httpOutcome`。同 requestId 的
+   `chrome.webRequest.onErrorOccurred`（主框架）产生 `'nav_error'` 并携错误字符串。
 
    landing 要求 `httpOutcome === 'ok'`。`gateway`/`not_found` 的 commit body 仍会渲染，所以 commit 单独不足以判定——必须有可接受 outcome。
 
@@ -185,7 +185,7 @@ landing 所需三信号（commit、httpOutcome、PAGE_READY）到达顺序不定
 
 ### 3.5 失败分类与 retry funnel
 
-`navMonitor`（薄 main-frame 适配器）把范围内事件投递给 Controller；`status.ts` 是唯一分类器，给出 `ok|not_found|gateway|rate_limited|nav_error`。Controller 拥有 retry funnel；所有重试经它（无他处调 `tabs.update`）。
+`navMonitor`（薄 main-frame 适配器）过滤范围，调用唯一的 `status.ts` 纯分类器，并把原始事件与 outcome 投递给 Controller；分类枚举以 amendment §3.1 为准。`navMonitor` 不拥有映射或决策。Controller 拥有 retry funnel；所有重试经它（无他处调 `tabs.update`）。
 
 | 触发 | 类别 | 动作 |
 |---|---|---|
@@ -193,7 +193,7 @@ landing 所需三信号（commit、httpOutcome、PAGE_READY）到达顺序不定
 | HTTP 502/503/504 | `gateway` | count；第 3 次 → `fail gateway_5xx`；阈值下经 Controller 增 `attempt` 重导航 |
 | `about:neterror`/`ERR_CONNECTION_*` | `nav_error` | count；第 3 次 → `fail nav_error:ERR_…`；阈值下重导航 |
 | 微信重定向 | host gate 失败、识别为微信 | 立即 `skip`（reason=`wechat_redirect`），**不计预算** |
-| 其他站外重定向 | 同爬取站点 gate 失败 | 立即 `skip`（reason=`offsite_redirect`），**不计预算** |
+| 其他站外重定向 | `onBeforeRedirect.redirectUrl` 或最终 commit 的同爬取站点 gate 失败 | 立即 `skip`（reason=`offsite_redirect`），**不计预算** |
 | HTTP 429 | `rate_limited` | 立即 `fail`（reason=`rate_limited`），交回后端 retry —— **不** 在标签页内刷新（避免对受限站点持续轰击）；**不** 标记 skipped |
 | 导航超时、**从未** 收到主框架 commit | 陈旧 `navigation`、无 `commit` | funnel：增 `attempt` 重导航 |
 
@@ -300,7 +300,8 @@ type SwToCs =
 - `rpcId` 匹配当前 `pendingRpc.id`
 - `jobId` 匹配当前 `currentJob.id`
 - `sender.tab.id === boundTabId`
-- `sender.documentId === navigation.commit.documentId`（结果来自已被接受的 landing）
+- `sender.documentId === navigation.commit.documentId`（本条由 amendment §4.1 取代；最终规则为
+  `sender.documentId === pendingRpc.sourceDocumentId`）
 
 验证失败的响应记日志并丢弃——不崩溃。来自不存在/过期 `rpcId` 的响应对应迟到的 RPC 情况（CLAUDE.md bug 陷阱）：记日志 + no-op。
 
@@ -419,7 +420,8 @@ userscript 匹配 `*://*/*`。若 userscript 意外启用并跳转到微信/第�
 
 ### 5.5 测试（browserext 侧）
 
-- **既有 Phase 1 测试**继续通过；`navMonitor` 测试更新以反映薄适配器角色。
+- **未受修订影响的 Phase 1 测试**继续通过；`status.ts` 和 `navMonitor` 测试按 amendment §8.1
+  更新，替换默认-ok 与 navMonitor 自处理的旧预期。
 - **`watchdog` 测试随模块删除**（slice 2）。
 - **`status.ts` 是唯一分类器**——不创建第二份分类逻辑。`navMonitor.ts` 是薄 main-frame 事件适配器，只投递给 Controller；**不删除**。
 - **新 Controller 测试**：单飞 mutex（并发 tick 只 claim 一次）、phase 转移、重水合表（§2.5）每 phase、后端不可达绝不导航、retry 预算 + signal-clear-on-retry、30s-never-landed vs content-unavailable、429→fail rate_limited、站外/微信立即 skip 不计预算。
