@@ -1,6 +1,7 @@
-/** Injectable adapter over the MV3 chrome.* surface. Consumers (navMonitor, watchdog)
- * depend on the ChromeRuntime interface so tests inject fakes. createRealChromeRuntime
- * binds the real chrome.* APIs and is used only by background.ts (manual verification). */
+/** Injectable adapter over the MV3 chrome.* surface. Consumers (navMonitor,
+ * controller) depend on the ChromeRuntime interface so tests inject fakes.
+ * createRealChromeRuntime binds the real chrome.* APIs and is used only by
+ * background.ts (manual verification). */
 
 export interface NavCompletedEvent {
   tabId: number;
