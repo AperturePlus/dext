@@ -1,8 +1,11 @@
 /** Injectable HTTP client for the dext backend. Mirrors userscripts/src/api.ts endpoints
  * but uses fetch (background SW has no GM_xmlhttpRequest). All calls are best-effort:
- * getStatus returns null on error; failJob/skipJob swallow errors (late/stale reports
- * are normal — the backend's 60s job timeout may have already released the slot,
- * and /fail + /skip are idempotent against stale ids anyway). */
+ * getStatus returns null on error; failJob/skipJob/sendHeartbeat swallow errors (late/stale
+ * reports are normal — the backend's 60s job timeout may have already released the slot,
+ * and /fail + /skip are idempotent against stale ids anyway; heartbeat failure is reflected
+ * by /status reconnect, not the heartbeat POST). */
+
+import type { FetchJob } from './shared/types.js';
 
 export interface CurrentJob {
   id: string;
@@ -15,14 +18,24 @@ export interface FrontendHealth {
 }
 
 export interface StatusPayload {
-  current_job: CurrentJob | null;
+  current_job: FetchJob | null;
   frontend_health: FrontendHealth;
+}
+
+export interface HeartbeatPayload {
+  owner_tab_id: string;
+  url: string;
+  current_job_id: string | null;
+  auto_mode: boolean;
+  paused: boolean;
+  timestamp: number;
 }
 
 export interface ApiClient {
   getStatus(): Promise<StatusPayload | null>;
   failJob(jobId: string, message: string): Promise<void>;
   skipJob(jobId: string, reason: string): Promise<void>;
+  sendHeartbeat(payload: HeartbeatPayload): Promise<void>;
 }
 
 type FetchFn = (url: string, init?: { method?: string; headers?: Record<string,string>; body?: string }) => Promise<{
@@ -68,5 +81,16 @@ export function createFetchApi(base: string, fetchFn?: FetchFn): ApiClient {
     }
   }
 
-  return { getStatus, failJob, skipJob };
+  async function sendHeartbeat(payload: HeartbeatPayload): Promise<void> {
+    try {
+      await fetch(`${base}/heartbeat`, {
+        method: 'POST', headers,
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      // backend down is reflected by /status reconnect; heartbeat is best-effort (mirrors userscript)
+    }
+  }
+
+  return { getStatus, failJob, skipJob, sendHeartbeat };
 }

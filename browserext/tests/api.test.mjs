@@ -118,3 +118,75 @@ test('failJob and skipJob swallow errors (idempotent; backend already-resolved â
     await cleanup();
   }
 });
+
+test('sendHeartbeat POSTs the heartbeat payload', async () => {
+  const { mod, cleanup } = await importTsModule('../src/api.ts', 'api.ts');
+  try {
+    let captured = null;
+    const fetchFn = async (url, init) => {
+      captured = { url, method: init.method, body: JSON.parse(init.body) };
+      return { status: 200, ok: true, json: async () => ({ status: 'ok' }) };
+    };
+    const api = mod.createFetchApi('http://127.0.0.1:21520/api', fetchFn);
+    await api.sendHeartbeat({
+      owner_tab_id: 'dext-ext-7-1000',
+      url: 'https://x.edu.cn/p',
+      current_job_id: 'job-1',
+      auto_mode: true,
+      paused: false,
+      timestamp: 12345,
+    });
+    assert.equal(captured.url, 'http://127.0.0.1:21520/api/heartbeat');
+    assert.equal(captured.method, 'POST');
+    assert.deepEqual(captured.body, {
+      owner_tab_id: 'dext-ext-7-1000',
+      url: 'https://x.edu.cn/p',
+      current_job_id: 'job-1',
+      auto_mode: true,
+      paused: false,
+      timestamp: 12345,
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test('sendHeartbeat swallows errors (backend down is reflected by /status, not heartbeat)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/api.ts', 'api.ts');
+  try {
+    const fetchFn = async () => { throw new Error('ECONNREFUSED'); };
+    const api = mod.createFetchApi('http://127.0.0.1:21520/api', fetchFn);
+    await api.sendHeartbeat({
+      owner_tab_id: 'dext-ext-7-1000', url: '', current_job_id: null,
+      auto_mode: false, paused: false, timestamp: 1,
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test('getStatus returns the full FetchJob shape for current_job (widened type)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/api.ts', 'api.ts');
+  try {
+    const fullJob = {
+      id: 'abc', url: 'https://x.edu.cn/p', status: 'assigned',
+      context: { university_name: 'X', agent_state: '', intent: '', parent_url: '', depth: 0, org_unit_name: '', hints: [] },
+      created_at: '2026-06-28T00:00:00', timeout_seconds: 60, action: null, identity_url: null,
+    };
+    const fetchFn = fakeFetch({
+      'GET /api/status': { status: 200, body: {
+        queue: { pending: 0, assigned: 1, completed: 0, failed: 0, skipped: 0 },
+        current_job: fullJob,
+        frontend_health: { alive: true, last_seen_seconds_ago: 1 },
+      } },
+    });
+    const api = mod.createFetchApi('http://127.0.0.1:21520/api', fetchFn);
+    const s = await api.getStatus();
+    assert.equal(s.current_job.id, 'abc');
+    assert.equal(s.current_job.url, 'https://x.edu.cn/p');
+    assert.equal(s.current_job.status, 'assigned');
+    assert.equal(s.current_job.timeout_seconds, 60);
+  } finally {
+    await cleanup();
+  }
+});
