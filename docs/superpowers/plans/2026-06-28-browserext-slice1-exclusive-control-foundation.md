@@ -857,17 +857,23 @@ test('mutex releases on thrown error so next acquire is not deadlocked', async (
   try {
     const m = mod.createMutex();
     const release = await m.acquire();
+    // simulate a critical section that throws; release() in finally must still run
+    let threw = false;
     try {
-      throw new Error('boom');
-    } finally {
-      release();
+      try {
+        throw new Error('boom');
+      } finally {
+        release();
+      }
+    } catch {
+      threw = true;
     }
-    // if release didn't happen, this hangs
+    assert.equal(threw, true, 'error propagated as expected');
+    // the real contract: the lock is released, so the next acquire must not hang
     const release2 = await m.acquire();
     release2();
-    assert.ok(true, 'second acquire succeeded — lock was released despite throw');
-  } catch (e) {
-    assert.fail(e);
+  } finally {
+    await cleanup();
   }
 });
 ```
