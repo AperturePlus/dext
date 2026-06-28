@@ -44,7 +44,22 @@ function isWechatHostUrl(url: string): boolean {
 
 export function evaluateLanding(state: ControllerState, _now: number): LandingVerdict {
   const nav = state.navigation;
-  if (!nav || !nav.commit) return { kind: 'waiting' };
+  if (!nav) return { kind: 'waiting' };
+  if (!nav.commit) {
+    // amend §3.2: a terminal HTTP outcome that arrives BEFORE onCommitted
+    // (429/404/5xx/nav_error) must enter the funnel immediately, not wait for a
+    // commit that will never come for a failed request.
+    if (nav.http && nav.http.outcome !== 'ok') {
+      const outcome = nav.http.outcome;
+      const detail = outcome === 'unexpected_status'
+        ? String(nav.http.statusCode)
+        : outcome === 'nav_error'
+          ? nav.http.error
+          : undefined;
+      return { kind: 'error_retry', outcome, detail };
+    }
+    return { kind: 'waiting' };
+  }
 
   // (3) same-crawl-site gate on the committed URL.
   if (!sameCrawlSite(nav.commit.committedUrl, nav.requestedUrl)) {

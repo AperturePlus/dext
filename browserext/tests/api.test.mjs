@@ -190,3 +190,37 @@ test('getStatus returns the full FetchJob shape for current_job (widened type)',
     await cleanup();
   }
 });
+
+test('claimNextJob GETs /jobs/next; 204 → null; 200 → FetchJob', async () => {
+  const { mod, cleanup } = await importTsModule('../src/api.ts', 'api.ts');
+  try {
+    const fullJob = {
+      id: 'abc', url: 'https://x.edu.cn/p', status: 'assigned',
+      context: { university_name: 'X', agent_state: '', intent: '', parent_url: '', depth: 0, org_unit_name: '', hints: [] },
+      created_at: '2026-06-28T00:00:00', timeout_seconds: 60, action: null, identity_url: null,
+    };
+    let count = 0;
+    const fetchFn = async () => {
+      count += 1;
+      if (count === 1) return { status: 204, ok: true, json: async () => null };
+      return { status: 200, ok: true, json: async () => fullJob };
+    };
+    const api = mod.createFetchApi('http://127.0.0.1:21520/api', fetchFn);
+    assert.equal(await api.claimNextJob(), null);
+    const j = await api.claimNextJob();
+    assert.equal(j.id, 'abc');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('claimNextJob returns null on fetch error', async () => {
+  const { mod, cleanup } = await importTsModule('../src/api.ts', 'api.ts');
+  try {
+    const fetchFn = async () => { throw new Error('ECONNREFUSED'); };
+    const api = mod.createFetchApi('http://127.0.0.1:21520/api', fetchFn);
+    assert.equal(await api.claimNextJob(), null);
+  } finally {
+    await cleanup();
+  }
+});

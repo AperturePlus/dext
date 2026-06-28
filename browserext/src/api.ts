@@ -33,6 +33,7 @@ export interface HeartbeatPayload {
 
 export interface ApiClient {
   getStatus(): Promise<StatusPayload | null>;
+  claimNextJob(): Promise<FetchJob | null>;
   failJob(jobId: string, message: string): Promise<void>;
   skipJob(jobId: string, reason: string): Promise<void>;
   sendHeartbeat(payload: HeartbeatPayload): Promise<void>;
@@ -54,6 +55,17 @@ export function createFetchApi(base: string, fetchFn?: FetchFn): ApiClient {
       if (!res.ok) return null;
       const body = (await res.json()) as StatusPayload;
       return body;
+    } catch {
+      return null;
+    }
+  }
+
+  async function claimNextJob(): Promise<FetchJob | null> {
+    try {
+      const res = await fetch(`${base}/jobs/next`, { method: 'GET' });
+      if (res.status === 204) return null;
+      if (!res.ok) return null;
+      return (await res.json()) as FetchJob;
     } catch {
       return null;
     }
@@ -92,5 +104,5 @@ export function createFetchApi(base: string, fetchFn?: FetchFn): ApiClient {
     }
   }
 
-  return { getStatus, failJob, skipJob, sendHeartbeat };
+  return { getStatus, claimNextJob, failJob, skipJob, sendHeartbeat };
 }

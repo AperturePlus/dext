@@ -243,3 +243,375 @@ test('reconciliation alarm constants are exported', async () => {
     assert.equal(mod.RECONCILIATION_PERIOD_MINUTES, 1);
   } finally { await cleanup(); }
 });
+
+// ---- slice 3: claim + navigate + landing + funnel + deadline + deliver/join ----
+
+function fakeApi3({ statusResponse, nextJob }) {
+  const calls = { getStatus: 0, claimNextJob: 0, fail: [], skip: [], sendHeartbeat: [] };
+  return {
+    calls,
+    async getStatus() { calls.getStatus += 1; return statusResponse; },
+    async claimNextJob() {
+      calls.claimNextJob += 1;
+      if (typeof nextJob === 'function') return nextJob();
+      return nextJob ?? null;
+    },
+    async failJob(id, msg) { calls.fail.push({ id, msg }); },
+    async skipJob(id, reason) { calls.skip.push({ id, reason }); },
+    async sendHeartbeat(p) { calls.sendHeartbeat.push(p); },
+  };
+}
+
+function fakeChrome3({ tab }) {
+  const updates = [];
+  return {
+    calls: { updates },
+    async getTab() { return tab; },
+    async updateTabUrl(t, url) { updates.push({ tabId: t, url }); },
+  };
+}
+
+function fullJob(id, url = `https://xjtu.edu.cn/${id}`) {
+  return {
+    id, url, status: 'assigned',
+    context: { university_name: 'X', agent_state: '', intent: '', parent_url: '', depth: 0, org_unit_name: '', hints: [] },
+    created_at: '2026-06-28T00:00:00', timeout_seconds: 60, action: null, identity_url: null,
+  };
+}
+
+test('claim: idle+bound+auto → claimNextJob → navigate; persists navigation BEFORE updateTabUrl', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: null, frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: fullJob('job-1') });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://xjtu.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.setAutoMode(true);
+    await c.tick(5000);   // idle → claim → assigned → navigate
+    const s = await c.getState();
+    assert.equal(s.currentJob.id, 'job-1');
+    assert.equal(s.phase, 'navigating');
+    assert.ok(s.navigation, 'navigation persisted BEFORE updateTabUrl');
+    assert.equal(s.navigation.attempt, 1);
+    assert.equal(s.navigation.kind, 'navigate');
+    assert.equal(s.navigation.requestedUrl, 'https://xjtu.edu.cn/job-1');
+    assert.deepEqual(chr.calls.updates, [{ tabId: 42, url: 'https://xjtu.edu.cn/job-1' }]);
+  } finally { await cleanup(); }
+});
+
+test('claim: 204 (no job) → stays idle, no navigate', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: null, frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: null });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://xjtu.edu.cn/' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.setAutoMode(true);
+    await c.tick(5000);
+    const s = await c.getState();
+    assert.equal(s.phase, 'idle');
+    assert.equal(s.currentJob, null);
+    assert.equal(chr.calls.updates.length, 0);
+  } finally { await cleanup(); }
+});
+
+test('claim does NOT fire when !autoMode (defaults false)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: null, frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: fullJob('job-1') });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://xjtu.edu.cn/' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);   // autoMode defaults false
+    await c.tick(5000);
+    assert.equal(api.calls.claimNextJob, 0);
+    assert.equal(chr.calls.updates.length, 0);
+  } finally { await cleanup(); }
+});
+
+test('deliverCommitted+Http+PageReady (same requestId/documentId, ok) → landed', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: null, frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: fullJob('job-1') });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://xjtu.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.setAutoMode(true);
+    await c.tick(5000);
+    assert.equal(c.getNavScope().boundTabId, 42);
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverCommitted({ tabId: 42, frameId: 0, documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', timeStamp: 5200 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 200, frameId: 0, requestId: 'REQ-1', documentId: 'DOC-1', timeStamp: 5300 }, 'ok');
+    await c.deliverPageReady({ documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', detection: { errorPage: false, terminalReason: null }, timeStamp: 5400 });
+    const s = await c.getState();
+    assert.equal(s.phase, 'landed');
+    assert.equal(s.navigation.acceptedUrl, 'https://xjtu.edu.cn/job-1');
+  } finally { await cleanup(); }
+});
+
+test('deliverHttpEvent 429 → immediate fail rate_limited (amend §8.1 #12)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: fullJob('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: null });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://xjtu.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.setAutoMode(true);
+    await c.tick(5000);
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 429, frameId: 0, requestId: 'REQ-1', timeStamp: 5200 }, 'rate_limited');
+    const s = await c.getState();
+    assert.equal(s.phase, 'error');
+    assert.deepEqual(s.lastError, { kind: 'rate_limited' });
+    assert.equal(s.navigation, null);
+    assert.deepEqual(api.calls.fail, [{ id: 'job-1', msg: 'rate_limited' }]);
+    assert.equal(chr.calls.updates.length, 1, 'no re-navigate on 429 (only the initial navigate)');
+  } finally { await cleanup(); }
+});
+
+test('deliverHttpEvent 502 attempt 1 → retry_navigate (clears signals, attempt 2, updateTabUrl again)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: fullJob('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: null });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://xjtu.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.setAutoMode(true);
+    await c.tick(5000);
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 502, frameId: 0, requestId: 'REQ-1', timeStamp: 5200 }, 'gateway');
+    const s = await c.getState();
+    assert.equal(s.phase, 'navigating');
+    assert.equal(s.navigation.attempt, 2);
+    assert.equal(s.navigation.requestId, undefined, 'requestId cleared on retry');
+    assert.equal(s.navigation.commit, undefined, 'commit cleared on retry');
+    assert.equal(chr.calls.updates.length, 2, 're-navigated');
+  } finally { await cleanup(); }
+});
+
+test('deliverHttpEvent 502 attempt 3 → fail gateway_5xx (signal-clear + budget)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: fullJob('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: null });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://xjtu.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.setAutoMode(true);
+    await c.tick(5000);
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 502, frameId: 0, requestId: 'REQ-1', timeStamp: 5200 }, 'gateway');  // attempt 1 → retry 2
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-2', timeStamp: 6100 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 502, frameId: 0, requestId: 'REQ-2', timeStamp: 6200 }, 'gateway');  // attempt 2 → retry 3
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-3', timeStamp: 7100 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 502, frameId: 0, requestId: 'REQ-3', timeStamp: 7200 }, 'gateway');  // attempt 3 → fail
+    const s = await c.getState();
+    assert.equal(s.phase, 'error');
+    assert.deepEqual(s.lastError, { kind: 'gateway_5xx' });
+    assert.deepEqual(api.calls.fail, [{ id: 'job-1', msg: 'gateway_5xx' }]);
+  } finally { await cleanup(); }
+});
+
+test('deliverHttpEvent 404 → immediate skip not_found (no budget)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: fullJob('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: null });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://xjtu.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.setAutoMode(true);
+    await c.tick(5000);
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 404, frameId: 0, requestId: 'REQ-1', timeStamp: 5200 }, 'not_found');
+    const s = await c.getState();
+    assert.equal(s.phase, 'error');
+    assert.equal(s.lastError, null, 'skip does not set a fail error');
+    assert.deepEqual(api.calls.skip, [{ id: 'job-1', reason: 'not_found' }]);
+  } finally { await cleanup(); }
+});
+
+test('deliverBeforeRedirect offsite → terminal skip offsite_redirect (amend §8.1 #14)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: fullJob('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: null });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://xjtu.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.setAutoMode(true);
+    await c.tick(5000);
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverBeforeRedirect({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', redirectUrl: 'https://attacker.edu.cn/x', requestId: 'REQ-1', timeStamp: 5200 });
+    const s = await c.getState();
+    assert.equal(s.phase, 'error');
+    assert.deepEqual(api.calls.skip, [{ id: 'job-1', reason: 'offsite_redirect' }]);
+  } finally { await cleanup(); }
+});
+
+test('deliverBeforeRedirect onsite → no skip; keep waiting for onCompleted (amend §8.1 #14)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: fullJob('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: null });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://xjtu.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.setAutoMode(true);
+    await c.tick(5000);
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverBeforeRedirect({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', redirectUrl: 'https://xjtu.edu.cn/renxueguang', requestId: 'REQ-1', timeStamp: 5200 });
+    const s = await c.getState();
+    assert.equal(s.phase, 'navigating', 'onsite redirect keeps waiting');
+    assert.deepEqual(api.calls.skip, []);
+  } finally { await cleanup(); }
+});
+
+test('deliverHttpEvent with documentId !== commit.documentId → discarded (amend §8.1 #7)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: fullJob('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: null });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://xjtu.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.setAutoMode(true);
+    await c.tick(5000);
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverCommitted({ tabId: 42, frameId: 0, documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', timeStamp: 5200 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 200, frameId: 0, requestId: 'REQ-1', documentId: 'DOC-OTHER', timeStamp: 5300 }, 'ok');
+    const s = await c.getState();
+    assert.equal(s.navigation.http, undefined, 'http with mismatched documentId discarded');
+    assert.equal(s.phase, 'navigating', 'still waiting');
+  } finally { await cleanup(); }
+});
+
+test('stale requestId from previous attempt does NOT pollute current attempt (amend §8.1 #6)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: fullJob('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: null });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://xjtu.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.setAutoMode(true);
+    await c.tick(5000);
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 502, frameId: 0, requestId: 'REQ-1', timeStamp: 5200 }, 'gateway');  // attempt 1 fail → retry
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-2', timeStamp: 6100 });
+    // a LATE 502 from the OLD requestId REQ-1 arrives → must be discarded
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 502, frameId: 0, requestId: 'REQ-1', timeStamp: 6200 }, 'gateway');
+    const s = await c.getState();
+    assert.equal(s.navigation.requestId, 'REQ-2', 'current attempt keeps REQ-2');
+    assert.equal(s.navigation.attempt, 2, 'not bumped to 3 by the stale event');
+    assert.equal(s.navigation.http, undefined, 'stale http not written');
+  } finally { await cleanup(); }
+});
+
+test('deliverError ERR_CONNECTION_REFUSED attempt 3 → fail nav_error:ERR_…', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: fullJob('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: null });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://xjtu.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.setAutoMode(true);
+    await c.tick(5000);
+    for (const [req, t] of [['REQ-1',5100],['REQ-2',6100],['REQ-3',7100]]) {
+      await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: req, timeStamp: t });
+      await c.deliverError({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', error: 'ERR_CONNECTION_REFUSED', frameId: 0, requestId: req, timeStamp: t + 100 }, 'nav_error');
+    }
+    const s = await c.getState();
+    assert.equal(s.phase, 'error');
+    assert.deepEqual(s.lastError, { kind: 'nav_error', error: 'ERR_CONNECTION_REFUSED' });
+    assert.deepEqual(api.calls.fail, [{ id: 'job-1', msg: 'nav_error:ERR_CONNECTION_REFUSED' }]);
+  } finally { await cleanup(); }
+});
+
+test('navigation deadline (never landed, 30s no commit) → funnel retry then fail nav_error:timeout at attempt 3', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: fullJob('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: null });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://xjtu.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.setAutoMode(true);
+    await c.tick(5000);   // issuedAt=5000, attempt 1
+    await c.tick(36000);   // 5000+30000=35000; 36000>=35000 expired, no commit → never_landed → retry attempt 2
+    let s = await c.getState();
+    assert.equal(s.navigation.attempt, 2);
+    assert.equal(chr.calls.updates.length, 2);
+    await c.tick(66000);   // attempt 2 expired → attempt 3
+    s = await c.getState();
+    assert.equal(s.navigation.attempt, 3);
+    await c.tick(96000);   // attempt 3 expired → fail nav_error:timeout
+    s = await c.getState();
+    assert.equal(s.phase, 'error');
+    assert.deepEqual(s.lastError, { kind: 'nav_error', error: 'timeout' });
+    assert.deepEqual(api.calls.fail, [{ id: 'job-1', msg: 'nav_error:timeout' }]);
+  } finally { await cleanup(); }
+});
+
+test('landing deadline (commit present, no PAGE_READY, 30s) → content_unavailable/page_ready, NO refresh', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: fullJob('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: null });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://xjtu.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.setAutoMode(true);
+    await c.tick(5000);
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverCommitted({ tabId: 42, frameId: 0, documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', timeStamp: 5200 });   // committedAt=5200
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 200, frameId: 0, requestId: 'REQ-1', documentId: 'DOC-1', timeStamp: 5300 }, 'ok');
+    await c.tick(36000);   // 5200+30000=35200; 36000>=35200 expired, no PAGE_READY → content_unavailable/page_ready
+    const s = await c.getState();
+    assert.equal(s.phase, 'error');
+    assert.equal(s.lastError.kind, 'content_unavailable');
+    assert.equal(s.lastError.missing, 'page_ready');
+    assert.equal(s.lastError.sourceDocumentId, 'DOC-1');
+    assert.equal(s.lastError.recoveryExhausted, true);
+    assert.equal(chr.calls.updates.length, 1, 'NEVER refreshed on content_unavailable');
+  } finally { await cleanup(); }
+});
+
+test('deliver* ignores events from a non-bound tab (scope guard)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: fullJob('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: null });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://xjtu.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.setAutoMode(true);
+    await c.tick(5000);
+    await c.deliverBeforeRequest({ tabId: 999, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-X', timeStamp: 5100 });
+    const s = await c.getState();
+    assert.equal(s.navigation.requestId, undefined, 'non-bound-tab event discarded');
+  } finally { await cleanup(); }
+});
+
+test('deliver* does not throw on an unbound controller (no navigation to correlate)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi3({ statusResponse: { current_job: null, frontend_health: { alive: true, last_seen_seconds_ago: 1 } }, nextJob: null });
+    const chr = fakeChrome3({ tab: null });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await assert.doesNotReject(async () => {
+      await c.deliverCommitted({ tabId: 42, frameId: 0, documentId: 'DOC-1', url: 'u', timeStamp: 5000 });
+      await c.deliverHttpEvent({ tabId: 42, url: 'u', statusCode: 200, frameId: 0, requestId: 'R', timeStamp: 5000 }, 'ok');
+      await c.deliverPageReady({ documentId: 'DOC-1', url: 'u', detection: { errorPage: false, terminalReason: null }, timeStamp: 5000 });
+    });
+    assert.deepEqual(api.calls.fail, []);
+    assert.deepEqual(api.calls.skip, []);
+  } finally { await cleanup(); }
+});
