@@ -3,15 +3,12 @@
     "target": "esnext",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["ESNext", "WebWorker"],
     "types": ["chrome"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
-    "outDir": "dist",
     "sourceMap": false,
     "declaration": false,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames":true
-  },
-  "include": ["src/**/*.ts"]
+    "forceConsistentCasingInFileNames": true
+  }
 }
