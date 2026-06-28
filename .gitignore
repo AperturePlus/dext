@@ -10,6 +10,9 @@ __pycache__/
 # Runtime data (per-university SQLite DBs + backups)
 /data/
 
+# Local compose data volumes (neo4j / qdrant) — see docker/compose.yaml
+/docker/data/
+
 # Secrets
 .env
 
