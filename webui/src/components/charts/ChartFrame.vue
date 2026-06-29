@@ -43,7 +43,9 @@ onMounted(() => {
 
 watch(
   () => props.option,
-  (option) => instance?.setOption(option, true),
+  // P2-18: merge mode (no notMerge=true) so 5s polling updates are incremental
+  // instead of rebuilding the whole chart on every refresh (flicker + re-animation).
+  (option) => instance?.setOption(option),
   { deep: true }
 )
 
