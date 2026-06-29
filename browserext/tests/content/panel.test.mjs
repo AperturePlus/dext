@@ -189,3 +189,23 @@ test('mountPanel: override command returns DEAD when no formData injected (back-
     assert.equal(captured.length, 0, 'override stays dead without formData (back-compat)');
   } finally { await cleanup(); }
 });
+
+test('mountPanel: render shows "已绑定其他标签" when bound but not the bound tab (amend §7 non-preemptible, slice-6 coverage)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/content/panel.ts', 'panel.ts');
+  try {
+    const dom = fakeDom();
+    const panel = mod.mountPanel(dom);
+    panel.render({
+      isBoundTab: false, bound: true, connected: true, autoMode: false, paused: false,
+      phase: 'navigating', currentJob: null, navigationAttempt: 0, lastError: null, pendingDecision: null,
+    });
+    // The non-bound-tab branch shows the muted "already bound elsewhere" text.
+    assert.match(dom.shadowRoot.innerHTML, /已绑定其他标签/);
+    // It must NOT render any command controls (no bind, no unbind, no submit/skip/fail)
+    // — a non-bound tab cannot take over or issue commands (amend §7 non-preemptible).
+    assert.doesNotMatch(dom.shadowRoot.innerHTML, /data-cmd="bind"/);
+    assert.doesNotMatch(dom.shadowRoot.innerHTML, /data-cmd="unbind"/);
+    assert.doesNotMatch(dom.shadowRoot.innerHTML, /data-cmd="submit"/);
+    assert.doesNotMatch(dom.shadowRoot.innerHTML, /data-cmd="skip"/);
+  } finally { await cleanup(); }
+});
