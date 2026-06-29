@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as echarts from 'echarts/core'
-import { BarChart, GraphChart, PieChart } from 'echarts/charts'
+import { BarChart, GraphChart, LineChart, PieChart } from 'echarts/charts'
 import {
   GridComponent,
   LegendComponent,
@@ -14,6 +14,7 @@ import type { ChartOption } from './options'
 echarts.use([
   BarChart,
   GraphChart,
+  LineChart,
   PieChart,
   GridComponent,
   LegendComponent,
@@ -43,7 +44,9 @@ onMounted(() => {
 
 watch(
   () => props.option,
-  (option) => instance?.setOption(option, true),
+  // P2-18: merge mode (no notMerge=true) so 5s polling updates are incremental
+  // instead of rebuilding the whole chart on every refresh (flicker + re-animation).
+  (option) => instance?.setOption(option),
   { deep: true }
 )
 

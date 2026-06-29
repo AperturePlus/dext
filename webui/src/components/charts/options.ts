@@ -1,5 +1,5 @@
 import type { ComposeOption } from 'echarts/core'
-import type { BarSeriesOption, GraphSeriesOption, PieSeriesOption } from 'echarts/charts'
+import type { BarSeriesOption, GraphSeriesOption, LineSeriesOption, PieSeriesOption } from 'echarts/charts'
 import type {
   GridComponentOption,
   LegendComponentOption,
@@ -10,6 +10,7 @@ import type {
 export type ChartOption = ComposeOption<
   | BarSeriesOption
   | GraphSeriesOption
+  | LineSeriesOption
   | PieSeriesOption
   | GridComponentOption
   | LegendComponentOption

@@ -16,6 +16,7 @@ const {
   error,
   paused,
   lastUpdated,
+  history,
   refresh,
   selectBuild,
   togglePause
@@ -65,6 +66,7 @@ const selected = computed(() => selectedBuildId.value)
     :error="error"
     :paused="paused"
     :last-updated="lastUpdated"
+    :history="history"
     @refresh="refresh"
     @toggle-pause="togglePause"
     @select-build="selectBuild"

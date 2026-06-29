@@ -50,6 +50,7 @@ function mockActive() {
   })
   apiMocks.metrics.mockResolvedValue({
     build_id: 'build-1', stage: [], source_status_counts: {}, finding_counts: {},
+    role_counts: {}, title_family_counts: {},
     export_partitions: [], observations_by_source: []
   })
   apiMocks.graphPreview.mockResolvedValue({

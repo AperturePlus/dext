@@ -120,6 +120,8 @@ export interface MetricsResponse {
   stage: StageItem[]
   source_status_counts: Record<string, number>
   finding_counts: Record<string, number>
+  role_counts: Record<string, number>
+  title_family_counts: Record<string, number>
   export_partitions: ExportPartition[]
   observations_by_source: SourceMetric[]
 }
