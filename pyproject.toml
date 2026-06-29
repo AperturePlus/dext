@@ -23,6 +23,7 @@ dependencies = [
     "transformers>=4.46.0",
     "zstandard>=0.23.0",
     "psutil>=7.0.0",
+    "neo4j>=6.2,<7",
 ]
 
 [project.scripts]
@@ -40,7 +41,7 @@ requires = ["hatchling>=1.25.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/dext", "src/dext_graph"]
+packages = ["src/dext", "src/dext_graph", "src/dext_monitor"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -48,4 +49,5 @@ pythonpath = ["src"]
 asyncio_mode = "auto"
 markers = [
     "slow: resource-intensive acceptance tests excluded from normal runs",
+    "integration: tests requiring a real local service",
 ]

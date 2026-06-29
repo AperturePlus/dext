@@ -4,12 +4,17 @@ import json
 import pytest
 
 from dext_graph.catalog.db import initialize_catalog
-from dext_graph.catalog.models import CATALOG_SCHEMA_VERSION, SCHEMA_SQL
+from dext_graph.catalog.models import (
+    CATALOG_SCHEMA_VERSION,
+    CURATION_SCHEMA_SQL,
+    EVIDENCE_GRAPH_SCHEMA_SQL,
+    SCHEMA_SQL,
+)
 from dext_graph.catalog.workflow import create_build, resume_build
 from test_catalog_workflow import _patch_runtime, _settings, _source_db
 
 
-def test_v1_catalog_migrates_in_place_to_v2(tmp_path):
+def test_v1_catalog_migrates_in_place_to_v3(tmp_path):
     path = tmp_path / "catalog.db"
     with sqlite3.connect(path) as connection:
         connection.executescript(SCHEMA_SQL)
@@ -35,6 +40,43 @@ def test_v1_catalog_migrates_in_place_to_v2(tmp_path):
         assert connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='canonical_professors'"
         ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='graph_export_rows'"
+        ).fetchone() == (1,)
+
+
+def test_v2_catalog_migrates_in_place_to_v3(tmp_path):
+    path = tmp_path / "catalog-v2.db"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(SCHEMA_SQL)
+        connection.executescript(CURATION_SCHEMA_SQL)
+        connection.execute("INSERT INTO catalog_meta VALUES ('schema_version', '2')")
+        connection.execute("PRAGMA user_version=2")
+    initialize_catalog(path)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == CATALOG_SCHEMA_VERSION
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='research_statements'"
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='embedding_jobs'"
+        ).fetchone() == (1,)
+
+
+def test_v3_catalog_migrates_in_place_to_v4(tmp_path):
+    path = tmp_path / "catalog-v3.db"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(SCHEMA_SQL)
+        connection.executescript(CURATION_SCHEMA_SQL)
+        connection.executescript(EVIDENCE_GRAPH_SCHEMA_SQL)
+        connection.execute("INSERT INTO catalog_meta VALUES ('schema_version', '3')")
+        connection.execute("PRAGMA user_version=3")
+    initialize_catalog(path)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == CATALOG_SCHEMA_VERSION
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='vector_runs'"
+        ).fetchone() == (1,)
 
 
 @pytest.mark.asyncio
@@ -47,6 +89,11 @@ async def test_existing_v1_curating_build_resumes_through_stage2(tmp_path, monke
     with sqlite3.connect(settings.catalog_path) as connection:
         connection.execute("PRAGMA foreign_keys=OFF")
         for table in (
+            "graph_export_partitions",
+            "graph_export_rows",
+            "publication_mentions",
+            "research_statements",
+            "graph_runs",
             "canonical_professors",
             "field_claims",
             "entity_observations",
@@ -57,7 +104,8 @@ async def test_existing_v1_curating_build_resumes_through_stage2(tmp_path, monke
         ):
             connection.execute(f"DROP TABLE {table}")
         connection.execute(
-            "DELETE FROM sink_checkpoints WHERE build_id=? AND sink LIKE 'curation_%'",
+            "DELETE FROM sink_checkpoints WHERE build_id=? AND sink IN "
+            "('curation_identity','curation_fields','curation_canonical','graph_evidence','graph_export','neo4j')",
             (build_id,),
         )
         frozen = json.loads(
@@ -74,7 +122,7 @@ async def test_existing_v1_curating_build_resumes_through_stage2(tmp_path, monke
         connection.execute("UPDATE catalog_meta SET value='1' WHERE key='schema_version'")
         connection.execute("PRAGMA user_version=1")
     resumed = await resume_build(build_id, settings)
-    assert resumed["build"]["status"] == "EMBEDDING"
+    assert resumed["build"]["status"] == "WRITING_VECTOR"
     assert resumed["curation"]["status"] == "COMPLETED"
     with sqlite3.connect(settings.catalog_path) as connection:
         assert connection.execute(

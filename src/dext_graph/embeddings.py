@@ -13,6 +13,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
+from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
 
 from dext_graph.config import GraphSettings
 from dext_graph.models import EmbeddingResult, RequestMetric, ValueValidationError
@@ -44,7 +45,7 @@ class EmbeddingClient:
         settings: GraphSettings,
         metric_sink: MetricSink,
         *,
-        client: httpx.AsyncClient | None = None,
+        client: Any | None = None,
         sleep: Sleep = asyncio.sleep,
         random_value: Callable[[], float] = random.random,
     ) -> None:
@@ -52,9 +53,11 @@ class EmbeddingClient:
             raise ValueValidationError("DEXT_EMBEDDING_API_KEY is not set")
         self.settings = settings
         self._metric_sink = metric_sink
-        self._client = client or httpx.AsyncClient(
+        self._client = client or AsyncOpenAI(
+            api_key=settings.embedding_api_key,
+            base_url=settings.embedding_base_url,
             timeout=settings.embedding_timeout_seconds,
-            follow_redirects=False,
+            max_retries=0,
         )
         self._owns_client = client is None
         self._sleep = sleep
@@ -62,7 +65,13 @@ class EmbeddingClient:
 
     async def close(self) -> None:
         if self._owns_client:
-            await self._client.aclose()
+            close = getattr(self._client, "close", None)
+            if close is None:
+                close = getattr(self._client, "aclose", None)
+            if close is not None:
+                result = close()
+                if hasattr(result, "__await__"):
+                    await result
 
     async def __aenter__(self) -> "EmbeddingClient":
         return self
@@ -74,22 +83,16 @@ class EmbeddingClient:
         if not texts:
             return EmbeddingResult([])
         request_id = str(uuid.uuid4())
-        url = f"{self.settings.embedding_base_url}/embeddings"
-        payload = {
-            "model": self.settings.embedding_model,
-            "input": texts,
-            "encoding_format": "float",
-        }
-        headers = {
-            "Authorization": f"Bearer {self.settings.embedding_api_key}",
-            "Content-Type": "application/json",
-        }
         attempts = self.settings.embedding_max_retries + 1
         for attempt in range(1, attempts + 1):
             started = time.perf_counter()
             try:
-                response = await self._client.post(url, json=payload, headers=headers)
-            except httpx.RequestError as exc:
+                response = await self._client.embeddings.with_raw_response.create(
+                    model=self.settings.embedding_model,
+                    input=texts,
+                    encoding_format="float",
+                )
+            except (APITimeoutError, APIConnectionError, httpx.RequestError) as exc:
                 latency = (time.perf_counter() - started) * 1000
                 metric = RequestMetric(
                     request_id=request_id,
@@ -107,34 +110,39 @@ class EmbeddingClient:
                     ) from None
                 await self._sleep(self._backoff(attempt))
                 continue
+            except APIStatusError as exc:
+                latency = (time.perf_counter() - started) * 1000
+                trace_id = exc.response.headers.get("x-siliconcloud-trace-id")
+                retry_after = _retry_after_seconds(exc.response.headers.get("Retry-After"))
+                status_code = int(exc.status_code)
+                self._metric_sink(
+                    RequestMetric(
+                        request_id=request_id,
+                        purpose=purpose,
+                        attempt=attempt,
+                        item_count=len(texts),
+                        status_code=status_code,
+                        latency_ms=latency,
+                        trace_id=trace_id,
+                        retry_after_seconds=retry_after,
+                        error_kind=f"http_{status_code}",
+                    )
+                )
+                retryable = status_code in {429, 503, 504}
+                if retryable and attempt < attempts:
+                    await self._sleep(
+                        retry_after if retry_after is not None else self._backoff(attempt)
+                    )
+                    continue
+                raise ValueValidationError(
+                    f"embedding provider returned HTTP {status_code} "
+                    f"after {attempt} attempt(s); trace_id={trace_id or 'unavailable'}"
+                ) from None
 
             latency = (time.perf_counter() - started) * 1000
             trace_id = response.headers.get("x-siliconcloud-trace-id")
-            retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
-            if response.status_code != 200:
-                metric = RequestMetric(
-                    request_id=request_id,
-                    purpose=purpose,
-                    attempt=attempt,
-                    item_count=len(texts),
-                    status_code=response.status_code,
-                    latency_ms=latency,
-                    trace_id=trace_id,
-                    retry_after_seconds=retry_after,
-                    error_kind=f"http_{response.status_code}",
-                )
-                self._metric_sink(metric)
-                retryable = response.status_code == 429 or 500 <= response.status_code <= 599
-                if retryable and attempt < attempts:
-                    await self._sleep(retry_after if retry_after is not None else self._backoff(attempt))
-                    continue
-                raise ValueValidationError(
-                    f"embedding provider returned HTTP {response.status_code} "
-                    f"after {attempt} attempt(s); trace_id={trace_id or 'unavailable'}"
-                )
-
             try:
-                body = response.json()
+                body = self._response_to_dict(response.parse())
                 vectors = self._validated_vectors(body, len(texts))
                 usage = self._usage(body)
             except (ValueError, TypeError, KeyError) as exc:
@@ -209,6 +217,34 @@ class EmbeddingClient:
             if isinstance(value, int) and value >= 0:
                 usage[key] = value
         return usage
+
+    @staticmethod
+    def _response_to_dict(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        data = []
+        for item in getattr(value, "data", []) or []:
+            if isinstance(item, dict):
+                data.append(item)
+            else:
+                data.append(
+                    {
+                        "index": getattr(item, "index", None),
+                        "embedding": getattr(item, "embedding", None),
+                    }
+                )
+        usage_obj = getattr(value, "usage", None)
+        usage: dict[str, Any]
+        if isinstance(usage_obj, dict):
+            usage = usage_obj
+        elif usage_obj is None:
+            usage = {}
+        else:
+            usage = {
+                key: getattr(usage_obj, key, None)
+                for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+            }
+        return {"data": data, "usage": usage}
 
 
 __all__ = ["EmbeddingClient", "_retry_after_seconds"]

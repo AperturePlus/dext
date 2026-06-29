@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-CATALOG_SCHEMA_VERSION = 2
+CATALOG_SCHEMA_VERSION = 4
 
 BUILD_STATUSES = (
     "CREATED",
@@ -307,11 +307,167 @@ ON canonical_professors(build_id, active, entity_id);
 """
 
 
+EVIDENCE_GRAPH_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS graph_runs (
+    id TEXT PRIMARY KEY,
+    build_id TEXT NOT NULL UNIQUE REFERENCES graph_builds(id),
+    status TEXT NOT NULL CHECK (status IN ('PENDING','RUNNING','COMPLETED','FAILED')),
+    evidence_version TEXT NOT NULL,
+    export_version TEXT NOT NULL,
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    started_at TEXT,
+    finished_at TEXT,
+    last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS research_statements (
+    id TEXT NOT NULL,
+    build_id TEXT NOT NULL REFERENCES graph_builds(id),
+    entity_id TEXT NOT NULL REFERENCES entities(id),
+    observation_id TEXT NOT NULL REFERENCES professor_observations(id),
+    raw_text TEXT NOT NULL,
+    normalized_text TEXT NOT NULL,
+    language TEXT NOT NULL CHECK (language IN ('zh','en','mixed','unknown')),
+    statement_hash TEXT NOT NULL,
+    PRIMARY KEY (build_id, id),
+    UNIQUE (build_id, entity_id, observation_id, normalized_text)
+);
+
+CREATE TABLE IF NOT EXISTS publication_mentions (
+    id TEXT NOT NULL,
+    build_id TEXT NOT NULL REFERENCES graph_builds(id),
+    entity_id TEXT NOT NULL REFERENCES entities(id),
+    observation_id TEXT NOT NULL REFERENCES professor_observations(id),
+    raw_text TEXT NOT NULL,
+    normalized_text TEXT NOT NULL,
+    doi TEXT,
+    year INTEGER,
+    confidence REAL NOT NULL,
+    needs_review INTEGER NOT NULL DEFAULT 0 CHECK (needs_review IN (0,1)),
+    PRIMARY KEY (build_id, id, observation_id),
+    UNIQUE (build_id, entity_id, observation_id, normalized_text)
+);
+
+CREATE TABLE IF NOT EXISTS graph_export_rows (
+    build_id TEXT NOT NULL REFERENCES graph_builds(id),
+    partition_key TEXT NOT NULL,
+    row_key TEXT NOT NULL,
+    row_kind TEXT NOT NULL CHECK (row_kind IN ('node','relationship')),
+    label_or_type TEXT NOT NULL,
+    start_graph_key TEXT,
+    end_graph_key TEXT,
+    payload_json TEXT NOT NULL,
+    provenance_ref TEXT NOT NULL,
+    row_checksum TEXT NOT NULL,
+    PRIMARY KEY (build_id, partition_key, row_key)
+);
+
+CREATE TABLE IF NOT EXISTS graph_export_partitions (
+    build_id TEXT NOT NULL REFERENCES graph_builds(id),
+    partition_key TEXT NOT NULL,
+    row_kind TEXT NOT NULL CHECK (row_kind IN ('node','relationship')),
+    label_or_type TEXT NOT NULL,
+    row_count INTEGER NOT NULL,
+    min_key TEXT,
+    max_key TEXT,
+    checksum TEXT NOT NULL,
+    generated_at TEXT NOT NULL,
+    PRIMARY KEY (build_id, partition_key)
+);
+
+CREATE INDEX IF NOT EXISTS ix_statements_build_entity
+ON research_statements(build_id, entity_id, id);
+
+CREATE INDEX IF NOT EXISTS ix_mentions_build_entity
+ON publication_mentions(build_id, entity_id, id);
+
+CREATE INDEX IF NOT EXISTS ix_graph_export_partition_key
+ON graph_export_rows(build_id, partition_key, row_key);
+	"""
+
+
+SEMANTIC_VECTOR_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS vector_runs (
+    id TEXT PRIMARY KEY,
+    build_id TEXT NOT NULL UNIQUE REFERENCES graph_builds(id),
+    status TEXT NOT NULL CHECK (status IN ('PENDING','RUNNING','COMPLETED','FAILED')),
+    profile_template_version TEXT NOT NULL,
+    tokenizer_identity TEXT NOT NULL,
+    sparse_tokenizer_version TEXT NOT NULL,
+    embedding_fingerprint TEXT,
+    collection_name TEXT NOT NULL,
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    started_at TEXT,
+    finished_at TEXT,
+    last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS professor_profiles (
+    build_id TEXT NOT NULL REFERENCES graph_builds(id),
+    entity_id TEXT NOT NULL REFERENCES entities(id),
+    profile_hash TEXT NOT NULL,
+    template_version TEXT NOT NULL,
+    tokenizer_identity TEXT NOT NULL,
+    normalized_profile TEXT NOT NULL,
+    token_count INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (build_id, entity_id)
+);
+
+CREATE TABLE IF NOT EXISTS embedding_jobs (
+    build_id TEXT NOT NULL REFERENCES graph_builds(id),
+    entity_id TEXT NOT NULL REFERENCES entities(id),
+    profile_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+      status IN ('pending','running','retry','succeeded','terminal-invalid-input')
+    ),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    vector_checksum TEXT,
+    last_error TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (build_id, entity_id)
+);
+
+CREATE TABLE IF NOT EXISTS embedding_cache (
+    profile_hash TEXT NOT NULL,
+    embedding_fingerprint TEXT NOT NULL,
+    dense_blob BLOB NOT NULL,
+    sparse_blob BLOB NOT NULL,
+    vector_checksum TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (profile_hash, embedding_fingerprint)
+);
+
+CREATE TABLE IF NOT EXISTS vector_sentinel_runs (
+    build_id TEXT NOT NULL REFERENCES graph_builds(id),
+    sentinel_version TEXT NOT NULL,
+    sentinel_id TEXT NOT NULL,
+    embedding_fingerprint TEXT NOT NULL,
+    vector_checksum TEXT NOT NULL,
+    cosine_to_active REAL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (build_id, sentinel_version, sentinel_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_professor_profiles_hash
+ON professor_profiles(profile_hash);
+
+CREATE INDEX IF NOT EXISTS ix_embedding_jobs_status
+ON embedding_jobs(build_id, status, entity_id);
+
+CREATE INDEX IF NOT EXISTS ix_embedding_cache_fingerprint
+ON embedding_cache(embedding_fingerprint, profile_hash);
+"""
+
+
 __all__ = [
     "BUILD_STATUSES",
     "BuildSource",
     "CATALOG_SCHEMA_VERSION",
     "CURATION_SCHEMA_SQL",
+    "EVIDENCE_GRAPH_SCHEMA_SQL",
+    "SEMANTIC_VECTOR_SCHEMA_SQL",
     "SCHEMA_SQL",
     "SOURCE_TASK_STATUSES",
 ]

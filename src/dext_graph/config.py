@@ -21,6 +21,11 @@ class GraphSettings(BaseSettings):
     source_data_dir: Path = Path("data/universities")
     seed_path: Path = Path("entrances.yaml")
     qdrant_url: str = "http://127.0.0.1:6333"
+    neo4j_uri: str = "bolt://127.0.0.1:7687"
+    neo4j_database: str = "neo4j"
+    neo4j_username: str = ""
+    neo4j_password: str = Field(default="", repr=False)
+    neo4j_max_retry_seconds: float = 30.0
 
     embedding_base_url: str = "https://api.siliconflow.cn/v1"
     embedding_api_key: str = Field(default="", repr=False)
@@ -31,8 +36,10 @@ class GraphSettings(BaseSettings):
     embedding_max_concurrency: int = 4
     embedding_timeout_seconds: float = 60.0
     embedding_max_retries: int = 5
+    embedding_queue_maxsize: int = 8
     embedding_passage_prefix: str = ""
     embedding_query_prefix: str = ""
+    bm25_tokenizer_version: str = "bm25-simple-v1"
 
     tokenizer_model: str = "BAAI/bge-m3"
     tokenizer_revision: str = "5617a9f61b028005a4858fdac845db406aefb181"
@@ -45,6 +52,7 @@ class GraphSettings(BaseSettings):
     build_max_rss_mb: int = 1024
     build_min_source_retention_ratio: float = 0.80
     curation_queue: int = 16
+    build_neo4j_batch: int = 200
 
     @field_validator("embedding_base_url")
     @classmethod
@@ -60,6 +68,7 @@ class GraphSettings(BaseSettings):
         "embedding_request_batch",
         "embedding_max_concurrency",
         "embedding_max_retries",
+        "embedding_queue_maxsize",
         "profile_max_tokens",
         "source_read_batch",
         "qdrant_upsert_batch",
@@ -67,6 +76,7 @@ class GraphSettings(BaseSettings):
         "build_write_queue",
         "build_max_rss_mb",
         "curation_queue",
+        "build_neo4j_batch",
     )
     @classmethod
     def positive_integers(cls, value: int) -> int:
@@ -82,7 +92,9 @@ class GraphSettings(BaseSettings):
         return value
 
     def safe_snapshot(self) -> dict[str, object]:
-        return self.model_dump(mode="json", exclude={"embedding_api_key"})
+        return self.model_dump(
+            mode="json", exclude={"embedding_api_key", "neo4j_password"}
+        )
 
 
 __all__ = ["GraphSettings"]

@@ -39,9 +39,14 @@ def test_catalog_schema_is_versioned_and_complete(tmp_path):
         "identity_claims",
         "entity_observations",
         "field_claims",
-        "curation_overrides",
-        "canonical_professors",
-    }.issubset(tables)
+            "curation_overrides",
+            "canonical_professors",
+            "vector_runs",
+            "professor_profiles",
+            "embedding_jobs",
+            "embedding_cache",
+            "vector_sentinel_runs",
+        }.issubset(tables)
 
 
 def test_catalog_refuses_unversioned_existing_schema(tmp_path):

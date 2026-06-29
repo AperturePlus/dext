@@ -58,6 +58,19 @@ _RESUME_SETTING_KEYS = (
     "embedding_base_url",
     "embedding_model",
     "embedding_dimension",
+    "embedding_max_input_tokens",
+    "embedding_request_batch",
+    "embedding_max_concurrency",
+    "embedding_passage_prefix",
+    "tokenizer_model",
+    "tokenizer_revision",
+    "profile_max_tokens",
+    "qdrant_url",
+    "qdrant_upsert_batch",
+    "bm25_tokenizer_version",
+    "neo4j_uri",
+    "neo4j_database",
+    "build_neo4j_batch",
 )
 
 
@@ -1141,10 +1154,23 @@ async def create_build(
                 lambda connection: _insert_build(connection, build_id, sources, settings)
             )
             result = await _run_build(writer, build_id, settings)
+            if os.getenv("DEXT_TEST_STOP_AFTER_INGEST") == "1":
+                return result
             if result["build"]["status"] == "CURATING":
                 from dext_graph.catalog.curation import run_curation
 
-                return await run_curation(writer, build_id, settings)
+                result = await run_curation(writer, build_id, settings)
+            if result["build"]["status"] == "EMBEDDING":
+                from dext_graph.catalog.graph_workflow import run_graph_stage
+
+                result = await run_graph_stage(writer, build_id, settings)
+            if (
+                result["build"]["status"] == "WRITING_VECTOR"
+                and os.getenv("DEXT_TEST_SKIP_VECTOR") != "1"
+            ):
+                from dext_graph.catalog.vector_workflow import run_vector_stage
+
+                return await run_vector_stage(writer, build_id, settings)
             return result
 
 
@@ -1161,7 +1187,7 @@ def _assert_resume_compatible(build: dict[str, Any], settings: GraphSettings) ->
             "resume settings are incompatible with the frozen build: "
             + ", ".join(differences)
         )
-    if frozen.get("catalog_schema_version") not in {1, CATALOG_SCHEMA_VERSION}:
+    if frozen.get("catalog_schema_version") not in {1, 2, 3, CATALOG_SCHEMA_VERSION}:
         raise CatalogError("build catalog schema version is incompatible")
 
 
@@ -1175,7 +1201,7 @@ async def resume_build(
     with closing(connect_catalog_read_only(path)) as connection:
         build = _load_build(connection, build_id)
     _assert_resume_compatible(build, settings)
-    if build["status"] == "EMBEDDING":
+    if build["status"] == "WRITING_VECTOR" and os.getenv("DEXT_TEST_SKIP_VECTOR") == "1":
         return build_status(path, build_id)
     with catalog_write_lock(path):
         backup_existing_catalog(path, progress_hook=_backup_progress(settings))
@@ -1188,17 +1214,78 @@ async def resume_build(
                 is not None,
                 transactional=False,
             )
+            has_graph_run = await writer.execute(
+                lambda connection: connection.execute(
+                    "SELECT 1 FROM graph_runs WHERE build_id=?", (build_id,)
+                ).fetchone()
+                is not None,
+                transactional=False,
+            )
+            if build["status"] == "WRITING_VECTOR" or (
+                build["status"] == "FAILED"
+                and await writer.execute(
+                    lambda connection: connection.execute(
+                        "SELECT 1 FROM vector_runs WHERE build_id=?", (build_id,)
+                    ).fetchone()
+                    is not None,
+                    transactional=False,
+                )
+            ):
+                from dext_graph.catalog.vector_workflow import run_vector_stage
+
+                if os.getenv("DEXT_TEST_SKIP_VECTOR") == "1":
+                    return build_status(path, build_id)
+                return await run_vector_stage(writer, build_id, settings)
+            if build["status"] in {"EMBEDDING", "WRITING_GRAPH"} or (
+                build["status"] == "FAILED" and has_graph_run
+            ):
+                from dext_graph.catalog.graph_workflow import run_graph_stage
+
+                result = await run_graph_stage(writer, build_id, settings)
+                if (
+                    result["build"]["status"] == "WRITING_VECTOR"
+                    and os.getenv("DEXT_TEST_SKIP_VECTOR") != "1"
+                ):
+                    from dext_graph.catalog.vector_workflow import run_vector_stage
+
+                    return await run_vector_stage(writer, build_id, settings)
+                return result
             if build["status"] == "CURATING" or (
-                build["status"] == "FAILED" and has_curation_run
+                build["status"] == "FAILED" and has_curation_run and not has_graph_run
             ):
                 from dext_graph.catalog.curation import run_curation
 
-                return await run_curation(writer, build_id, settings)
+                result = await run_curation(writer, build_id, settings)
+                if result["build"]["status"] == "EMBEDDING":
+                    from dext_graph.catalog.graph_workflow import run_graph_stage
+
+                    result = await run_graph_stage(writer, build_id, settings)
+                    if (
+                        result["build"]["status"] == "WRITING_VECTOR"
+                        and os.getenv("DEXT_TEST_SKIP_VECTOR") != "1"
+                    ):
+                        from dext_graph.catalog.vector_workflow import run_vector_stage
+
+                        return await run_vector_stage(writer, build_id, settings)
+                    return result
+                return result
             result = await _run_build(writer, build_id, settings)
             if result["build"]["status"] == "CURATING":
                 from dext_graph.catalog.curation import run_curation
 
-                return await run_curation(writer, build_id, settings)
+                result = await run_curation(writer, build_id, settings)
+            if result["build"]["status"] == "EMBEDDING":
+                from dext_graph.catalog.graph_workflow import run_graph_stage
+
+                result = await run_graph_stage(writer, build_id, settings)
+                if (
+                    result["build"]["status"] == "WRITING_VECTOR"
+                    and os.getenv("DEXT_TEST_SKIP_VECTOR") != "1"
+                ):
+                    from dext_graph.catalog.vector_workflow import run_vector_stage
+
+                    return await run_vector_stage(writer, build_id, settings)
+                return result
             return result
 
 
@@ -1266,6 +1353,26 @@ def build_status(catalog_path: str | Path, build_id: str | None = None) -> dict[
             ).fetchone()
             if row is not None:
                 curation_run = _serializable_row(row)
+        graph_run = None
+        has_graph_table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='graph_runs'"
+        ).fetchone()
+        if has_graph_table is not None:
+            row = connection.execute(
+                "SELECT * FROM graph_runs WHERE build_id=?", (build_id,)
+            ).fetchone()
+            if row is not None:
+                graph_run = _serializable_row(row)
+        vector_run = None
+        has_vector_table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='vector_runs'"
+        ).fetchone()
+        if has_vector_table is not None:
+            row = connection.execute(
+                "SELECT * FROM vector_runs WHERE build_id=?", (build_id,)
+            ).fetchone()
+            if row is not None:
+                vector_run = _serializable_row(row)
         return {
             "catalog_path": str(Path(catalog_path).resolve()),
             "build": _serializable_row(build),
@@ -1273,6 +1380,8 @@ def build_status(catalog_path: str | Path, build_id: str | None = None) -> dict[
             "checkpoints": checkpoints,
             "unresolved_findings": finding_counts,
             "curation": curation_run,
+            "graph": graph_run,
+            "vector": vector_run,
         }
 
 

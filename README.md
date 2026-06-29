@@ -117,7 +117,7 @@ uv run dext graph value-validation run \
 显式选择可重复传入学校名称。
 
 ```bash
-# 构建全部现有规范学校库，完成 Catalog 与清洗后停在 EMBEDDING
+# 构建全部现有规范学校库，完成证据层与 Neo4j staging 后停在 WRITING_VECTOR
 uv run dext graph build
 
 # 只构建指定学校
@@ -145,6 +145,59 @@ uv run dext graph resume BUILD_ID
 identity、field 和 canonical 三段均使用按学校分区的 checkpoint。`dext graph resume BUILD_ID`
 会从最后提交批次恢复；成功后状态为 `EMBEDDING`。`DEXT_CURATION_QUEUE` 控制有界 curation 队列，
 默认值为 16。真实 gold set 尚未提供时，status 中的 `gold_status` 为 `not_evaluated`。
+
+## 阶段 3：证据层与 Neo4j 基础投影
+
+阶段 3 从 active canonical professor 及其 observation 生成可追溯的 ResearchStatement 和
+PublicationMention，冻结按节点/关系类型分区的 catalog export，再以单 writer、小批 `UNWIND` 幂等写入
+Neo4j staging 子图。成果只按上游编码边界 `；/换行` 切分，ASCII 分号保留在单条成果内。
+
+`dext graph build` 和 `resume` 会自动继续本阶段，成功后状态为 `WRITING_VECTOR`。Neo4j 不可用时
+build 进入可恢复的 `FAILED`；服务恢复后执行 `resume BUILD_ID` 即可从最后成功的 evidence、export 或
+Neo4j batch 继续。
+
+```bash
+# 生成绑定 immutable source snapshots 的 400 条证据型 Gold
+uv run dext graph gold generate BUILD_ID --size 400
+
+# 同时核对 catalog export 与 Neo4j 完整 manifest
+uv run dext graph gold evaluate BUILD_ID \
+  --dataset data/catalog/gold/graph-evidence-v1/BUILD_ID.jsonl
+```
+
+阶段 3 使用 `DEXT_NEO4J_URI`、`DEXT_NEO4J_DATABASE`、可选的用户名/密码和
+`DEXT_BUILD_NEO4J_BATCH`。密码不会进入 build settings、catalog 或日志。证据型 Gold 只验证
+SQLite snapshot 到 catalog/Neo4j 的结构保真度，不替代人工 curation/语义 gold set。
+
+## Monitor WebUI
+
+Monitor 是 `dext graph` 的平级只读观察面，只读取 catalog SQLite，不触发 build/resume，也不持有
+writer lock。前端位于 `webui/`，使用 Vue + Vite + Bun + ECharts。
+
+~~~bash
+# 首次安装前端依赖
+cd webui
+bun install
+
+# 开发前端，API 代理到 localhost:21530
+bun run dev
+
+# 构建静态 WebUI
+bun run build
+
+# 回到项目根目录启动只读 monitor 服务，默认监听 localhost:21530
+uv run dext monitor serve
+~~~
+
+生产模式下，如果 `webui/dist` 存在，`dext monitor serve` 会同时提供静态页面和
+`/api/monitor/*` JSON API。核心 API：
+
+- `GET /api/monitor/health`
+- `GET /api/monitor/builds`
+- `GET /api/monitor/builds/{build_id}`
+- `GET /api/monitor/builds/{build_id}/metrics`
+- `GET /api/monitor/builds/{build_id}/graph-preview?limit=300`
+- `GET /api/monitor/findings?build_id=...`
 
 涉及 LLM 的测试使用真实 DeepSeek 接口，需先在 `.env` 配置 `DEEPSEEK_API_KEY`。
 

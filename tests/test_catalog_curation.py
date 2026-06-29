@@ -58,7 +58,7 @@ async def test_build_curates_canonical_professors_and_status(tmp_path, monkeypat
     settings = _settings(tmp_path, batch=1)
     _source_db(settings.source_data_dir / "test.db", count=3)
     result = await create_build(["测试大学"], settings)
-    assert result["build"]["status"] == "EMBEDDING"
+    assert result["build"]["status"] == "WRITING_VECTOR"
     assert result["curation"]["status"] == "COMPLETED"
     canonical = _rows(
         settings.catalog_path,

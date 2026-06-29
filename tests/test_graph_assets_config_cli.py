@@ -22,16 +22,23 @@ def test_versioned_assets_have_required_sizes():
 
 
 def test_safe_settings_snapshot_excludes_key():
-    settings = GraphSettings(embedding_api_key="must-not-appear")
+    settings = GraphSettings(
+        embedding_api_key="must-not-appear", neo4j_password="also-secret"
+    )
     snapshot = settings.safe_snapshot()
     assert "embedding_api_key" not in snapshot
+    assert "neo4j_password" not in snapshot
     assert "must-not-appear" not in repr(settings)
+    assert "also-secret" not in repr(settings)
     assert settings.catalog_path.as_posix() == "data/catalog/catalog.db"
     assert settings.build_read_batch == 100
     assert settings.build_write_queue == 2
     assert settings.build_max_rss_mb == 1024
     assert settings.build_min_source_retention_ratio == 0.8
     assert settings.curation_queue == 16
+    assert settings.build_neo4j_batch == 200
+    assert settings.embedding_queue_maxsize == 8
+    assert settings.bm25_tokenizer_version == "bm25-simple-v1"
 
 
 def test_cli_exposes_nested_value_validation_commands():
@@ -46,8 +53,12 @@ def test_cli_exposes_catalog_build_commands():
     runner = CliRunner()
     result = runner.invoke(main, ["graph", "--help"])
     assert result.exit_code == 0
-    for command in ("build", "resume", "status", "value-validation"):
+    for command in ("build", "resume", "status", "vector", "gold", "value-validation"):
         assert command in result.output
     build_help = runner.invoke(main, ["graph", "build", "--help"])
     assert build_help.exit_code == 0
     assert "--university" in build_help.output
+    gold_help = runner.invoke(main, ["graph", "gold", "--help"])
+    assert gold_help.exit_code == 0
+    assert "generate" in gold_help.output
+    assert "evaluate" in gold_help.output

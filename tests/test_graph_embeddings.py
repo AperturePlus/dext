@@ -1,8 +1,10 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 from aiohttp import web
 
+import dext_graph.embeddings as embeddings_module
 from dext_graph.config import GraphSettings
 from dext_graph.embeddings import EmbeddingClient
 from dext_graph.models import ValueValidationError
@@ -29,6 +31,52 @@ def _settings(base_url, **overrides):
     }
     values.update(overrides)
     return GraphSettings(**values)
+
+
+async def test_embedding_client_uses_independent_async_openai_client(monkeypatch):
+    created = {}
+
+    class FakeRawResponse:
+        headers = {"x-siliconcloud-trace-id": "trace-openai"}
+
+        def parse(self):
+            return SimpleNamespace(
+                data=[SimpleNamespace(index=0, embedding=[1, 2, 3])],
+                usage=SimpleNamespace(prompt_tokens=1, total_tokens=1),
+            )
+
+    class FakeEmbeddings:
+        def __init__(self):
+            self.with_raw_response = self
+
+        async def create(self, **kwargs):
+            created["request"] = kwargs
+            return FakeRawResponse()
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            created["client"] = kwargs
+            self.embeddings = FakeEmbeddings()
+
+        async def close(self):
+            created["closed"] = True
+
+    monkeypatch.setattr(embeddings_module, "AsyncOpenAI", FakeAsyncOpenAI, raising=False)
+    metrics = []
+    async with EmbeddingClient(_settings("https://example.test/v1"), metrics.append) as client:
+        result = await client.embed(["文本"], purpose="unit")
+
+    assert created["client"]["api_key"] == "top-secret-key"
+    assert str(created["client"]["base_url"]) == "https://example.test/v1"
+    assert created["client"]["max_retries"] == 0
+    assert created["request"] == {
+        "model": "BAAI/bge-m3",
+        "input": ["文本"],
+        "encoding_format": "float",
+    }
+    assert result.vectors == [[1.0, 2.0, 3.0]]
+    assert metrics[0].trace_id == "trace-openai"
+    assert created["closed"] is True
 
 
 async def test_embedding_http_contract_reorders_indexes_and_records_trace():

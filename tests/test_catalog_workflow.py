@@ -94,6 +94,8 @@ def _settings(tmp_path: Path, *, batch: int = 2, ratio: float = 0.8) -> GraphSet
 
 
 def _patch_runtime(monkeypatch) -> None:
+    monkeypatch.setenv("DEXT_TEST_SKIP_NEO4J", "1")
+    monkeypatch.setenv("DEXT_TEST_SKIP_VECTOR", "1")
     monkeypatch.setattr(workflow, "_check_rss", lambda settings: 123456)
     monkeypatch.setattr(
         workflow,
@@ -129,7 +131,7 @@ async def test_legacy_build_is_idempotent_and_reaches_curating(tmp_path, monkeyp
     _source_db(settings.source_data_dir / "test.db", count=3)
     _patch_runtime(monkeypatch)
     first = await create_build(["测试大学"], settings)
-    assert first["build"]["status"] == "EMBEDDING"
+    assert first["build"]["status"] == "WRITING_VECTOR"
     assert first["build"]["summary_json"]["observations_inserted"] == 3
     assert first["sources"][0]["deactivation_eligible"] is True
     with sqlite3.connect(settings.catalog_path) as connection:
@@ -146,7 +148,14 @@ async def test_legacy_build_is_idempotent_and_reaches_curating(tmp_path, monkeyp
                 "SELECT sink FROM sink_checkpoints WHERE build_id=?",
                 (first["build"]["id"],),
             )
-        } == {"observations", "curation_identity", "curation_fields", "curation_canonical"}
+        } == {
+            "observations",
+            "curation_identity",
+            "curation_fields",
+            "curation_canonical",
+            "graph_evidence",
+            "graph_export",
+        }
         checkpoint = connection.execute(
             "SELECT last_batch_id FROM sink_checkpoints WHERE build_id=? AND sink='observations'",
             (first["build"]["id"],),
@@ -156,7 +165,7 @@ async def test_legacy_build_is_idempotent_and_reaches_curating(tmp_path, monkeyp
             "SELECT fetched_at FROM source_documents ORDER BY id LIMIT 1"
         ).fetchone()[0].endswith("+00:00")
     second = await create_build(["测试大学"], settings)
-    assert second["build"]["status"] == "EMBEDDING"
+    assert second["build"]["status"] == "WRITING_VECTOR"
     assert second["build"]["summary_json"]["observations_inserted"] == 0
     assert second["build"]["summary_json"]["observations_reused"] == 3
     assert second["build"]["summary_json"]["source_snapshots_reused"] == 1
@@ -173,7 +182,7 @@ async def test_legacy_build_is_idempotent_and_reaches_curating(tmp_path, monkeyp
         second["build"]["id"],
         first["build"]["id"],
     ]
-    assert (await resume_build(second["build"]["id"], settings))["build"]["status"] == "EMBEDDING"
+    assert (await resume_build(second["build"]["id"], settings))["build"]["status"] == "WRITING_VECTOR"
 
 
 async def test_resume_rejects_incompatible_frozen_settings(tmp_path, monkeypatch):
@@ -217,7 +226,7 @@ async def test_resume_after_batch_failure_uses_checkpoint(tmp_path, monkeypatch)
     assert failed["checkpoints"][0]["last_key"] == "1"
     monkeypatch.setattr(workflow, "_commit_batch", original)
     resumed = await resume_build(failed["build"]["id"], settings)
-    assert resumed["build"]["status"] == "EMBEDDING"
+    assert resumed["build"]["status"] == "WRITING_VECTOR"
     assert _counts(settings.catalog_path)["observations"] == 3
     observation_checkpoint = next(
         item for item in resumed["checkpoints"] if item["sink"] == "observations"
@@ -240,7 +249,7 @@ async def test_resume_after_snapshot_failure(tmp_path, monkeypatch):
     assert failed["sources"][0]["source_snapshot_id"] is None
     monkeypatch.setattr(workflow, "create_source_snapshot", original)
     resumed = await resume_build(failed["build"]["id"], settings)
-    assert resumed["build"]["status"] == "EMBEDDING"
+    assert resumed["build"]["status"] == "WRITING_VECTOR"
     assert _counts(settings.catalog_path)["observations"] == 2
 
 
@@ -313,7 +322,7 @@ async def test_page_mismatch_and_empty_text_still_import_observations(
         )
     _patch_runtime(monkeypatch)
     result = await create_build(["测试大学"], settings)
-    assert result["build"]["status"] == "EMBEDDING"
+    assert result["build"]["status"] == "WRITING_VECTOR"
     with sqlite3.connect(settings.catalog_path) as connection:
         connection.row_factory = sqlite3.Row
         rows = connection.execute(
@@ -355,7 +364,7 @@ async def test_row_rejection_is_finding_and_blocks_deactivation(tmp_path, monkey
         connection.execute("UPDATE professors SET name='' WHERE id=2")
     _patch_runtime(monkeypatch)
     result = await create_build(["测试大学"], settings)
-    assert result["build"]["status"] == "EMBEDDING"
+    assert result["build"]["status"] == "WRITING_VECTOR"
     assert result["sources"][0]["rejected_rows"] == 1
     assert result["sources"][0]["deactivation_eligible"] is False
     with sqlite3.connect(settings.catalog_path) as connection:
@@ -380,7 +389,7 @@ async def test_minimal_legacy_source_builds_with_capability_findings(
         )
     _patch_runtime(monkeypatch)
     result = await create_build(["测试大学"], settings)
-    assert result["build"]["status"] == "EMBEDDING"
+    assert result["build"]["status"] == "WRITING_VECTOR"
     assert result["build"]["summary_json"]["observations_inserted"] == 1
     assert result["sources"][0]["deactivation_eligible"] is False
     assert result["unresolved_findings"]["warning"] >= 1
