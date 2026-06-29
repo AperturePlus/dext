@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -85,13 +86,35 @@ async def handle_findings(request: web.Request) -> web.Response:
 @web.middleware
 async def error_middleware(request: web.Request, handler):
     try:
-        return await handler(request)
+        response = await handler(request)
     except MonitorCatalogError as exc:
         return error_response(exc, status=404)
     except MonitorNotFoundError as exc:
         return error_response(exc, status=404)
     except ValueError as exc:
         return error_response(exc, status=400)
+    # Tag successful JSON responses under /api/monitor with a weak ETag derived
+    # from the body and honor If-None-Match → 304. Read-only monitor data is a
+    # natural fit: a terminal build's payload is byte-stable across polls, so
+    # the client gets a zero-byte 304 instead of re-downloading the body.
+    if (
+        response.status == 200
+        and request.path.startswith(API_PREFIX)
+        and response.content_type == "application/json"
+    ):
+        etag = _weak_etag(response.body)
+        response.headers["ETag"] = etag
+        response.headers["Cache-Control"] = "no-cache"
+        if request.headers.get("If-None-Match", "") == etag:
+            response = web.Response(status=304, headers=response.headers)
+            response.body = b""
+    return response
+
+
+def _weak_etag(body: bytes | str | None) -> str:
+    payload = body if isinstance(body, bytes) else (body or "").encode("utf-8")
+    digest = hashlib.sha1(payload, usedforsecurity=False).hexdigest()[:16]
+    return f'W/"{digest}"'
 
 
 def create_app(settings: MonitorSettings | None = None) -> web.Application:

@@ -350,6 +350,21 @@ async def test_monitor_aiohttp_api(tmp_path: Path) -> None:
         body = await resp.json()
         assert body["error"]["type"] == "MonitorNotFoundError"
 
+        # P1-5: read-only endpoints emit an ETag and honor If-None-Match (304).
+        # Use /builds (stable payload) — /health carries server_time and so is
+        # intentionally never cacheable across calls.
+        resp = await client.get("/api/monitor/builds")
+        etag = resp.headers.get("ETag")
+        assert etag and etag.startswith("W/")
+        assert resp.headers.get("Cache-Control") == "no-cache"
+
+        # Second request with the same ETag returns 304 with no body.
+        resp2 = await client.get(
+            "/api/monitor/builds", headers={"If-None-Match": etag}
+        )
+        assert resp2.status == 304
+        assert await resp2.text() == ""
+
 
 @pytest.mark.asyncio
 async def test_monitor_static_dir_resolves_relative_to_repo_root(
