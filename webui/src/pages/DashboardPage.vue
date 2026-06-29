@@ -8,12 +8,14 @@ import type {
   MetricsResponse
 } from '../types/monitor'
 import { formatNumber, shortId } from '../utils/format'
+import type { ThroughputSample } from '../composables/useMonitorData'
 import BuildStageTimeline from '../components/charts/BuildStageTimeline.vue'
 import ExportPartitionChart from '../components/charts/ExportPartitionChart.vue'
 import FindingSummaryChart from '../components/charts/FindingSummaryChart.vue'
 import GraphNetworkPreview from '../components/charts/GraphNetworkPreview.vue'
 import RoleDistributionChart from '../components/charts/RoleDistributionChart.vue'
 import SourceTaskChart from '../components/charts/SourceTaskChart.vue'
+import ThroughputSparkline from '../components/charts/ThroughputSparkline.vue'
 import TitleFamilyChart from '../components/charts/TitleFamilyChart.vue'
 import BuildList from '../components/features/BuildList.vue'
 import CheckpointTable from '../components/features/CheckpointTable.vue'
@@ -38,6 +40,7 @@ defineProps<{
   error: string | null
   paused: boolean
   lastUpdated: Date | null
+  history: ThroughputSample[]
 }>()
 
 defineEmits<{
@@ -130,6 +133,12 @@ defineEmits<{
           <PanelCard title="Source ingestion" subtitle="Rows and observation throughput by university">
             <SourceTaskChart :sources="metrics.observations_by_source" />
             <SourceTaskTable :sources="detail.sources" />
+          </PanelCard>
+
+          <PanelCard title="Throughput" subtitle="Rows read and observations written over recent polls">
+            <div class="panel-body">
+              <ThroughputSparkline :history="history" />
+            </div>
           </PanelCard>
 
           <PanelCard title="Graph preview" subtitle="Limited sample from frozen graph export rows">

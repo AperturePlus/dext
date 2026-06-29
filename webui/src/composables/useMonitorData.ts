@@ -12,6 +12,15 @@ import type {
 const ACTIVE_POLL_MS = 5000
 /** Terminal-build polling interval (READY/FAILED/etc. — data is frozen). */
 const TERMINAL_POLL_MS = 30000
+/** In-memory ring-buffer cap for the throughput history (KISS: no persistence). */
+const HISTORY_CAP = 20
+
+export interface ThroughputSample {
+  at: Date
+  rowsRead: number
+  observations: number
+  documents: number
+}
 
 export function useMonitorData() {
   const health = ref<HealthResponse | null>(null)
@@ -24,6 +33,9 @@ export function useMonitorData() {
   const error = ref<string | null>(null)
   const paused = ref(false)
   const lastUpdated = ref<Date | null>(null)
+  // In-memory ring buffer of recent poll samples for the throughput sparkline.
+  // Not persisted across reloads (KISS); capped at HISTORY_CAP.
+  const history = ref<ThroughputSample[]>([])
   let timer: number | undefined
   let inflight = false
 
@@ -59,6 +71,19 @@ export function useMonitorData() {
     detail.value = nextDetail
     metrics.value = nextMetrics
     graph.value = nextGraph
+    // Push a throughput sample after a successful detail load. Derived from the
+    // latest build summary (point-in-time counters — the sparkline visualizes
+    // the slope over polls, not stored deltas). In-memory only, ring-buffered.
+    const summary = nextDetail.build.summary
+    history.value.push({
+      at: new Date(),
+      rowsRead: summary.rows_read,
+      observations: summary.observations_written,
+      documents: summary.documents_seen
+    })
+    while (history.value.length > HISTORY_CAP) {
+      history.value.shift()
+    }
     // Do not clear `error` here: loadAll owns the global error surface; a failed
     // detail fetch for one build should not erase a list-level error, and vice
     // versa. Each fetch surfaces its own error.
@@ -129,6 +154,7 @@ export function useMonitorData() {
     paused,
     lastUpdated,
     pollIntervalMs,
+    history,
     refresh,
     selectBuild,
     togglePause
