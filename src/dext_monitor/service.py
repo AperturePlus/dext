@@ -276,49 +276,55 @@ class MonitorService:
                         "partition_key": row["partition_key"],
                     }
                 )
+            # P3-11: build IN-list placeholders for the relationship endpoint filter.
+            placeholders = ",".join("?" for _ in known_keys)
             rel_candidates = [
                 serialize_row(row)
-                for row in connection.execute(
-                    """
-                    SELECT partition_key, row_key, row_kind, label_or_type,
-                           start_graph_key, end_graph_key, payload_json
-                    FROM graph_export_rows
-                    WHERE build_id=? AND row_kind='relationship'
-                    ORDER BY partition_key, row_key
-                    LIMIT ?
-                    """,
-                    (build_id, max(rel_limit * 4, 1)),
+                for row in (
+                    # P3-11: push the endpoint filter into SQL instead of
+                    # over-fetching rel_limit*4 rows and filtering in Python.
+                    # When known_keys is empty there is nothing to match.
+                    connection.execute(
+                        f"""
+                        SELECT partition_key, row_key, row_kind, label_or_type,
+                               start_graph_key, end_graph_key, payload_json
+                        FROM graph_export_rows
+                        WHERE build_id=? AND row_kind='relationship'
+                          AND start_graph_key IN ({placeholders})
+                          AND end_graph_key IN ({placeholders})
+                        ORDER BY partition_key, row_key
+                        LIMIT ?
+                        """,
+                        (build_id, *known_keys, *known_keys, rel_limit),
+                    )
+                    if rel_limit > 0 and known_keys
+                    else []
                 )
             ]
             links: list[dict[str, Any]] = []
-            if rel_limit > 0:
-                for row in rel_candidates:
-                    source = str(row["start_graph_key"] or "")
-                    target = str(row["end_graph_key"] or "")
-                    if source not in known_keys or target not in known_keys:
-                        continue
-                    links.append(
-                        {
-                            "id": f"{row['partition_key']}:{row['row_key']}",
-                            "source": source,
-                            "target": target,
-                            "label": row["label_or_type"],
-                        }
-                    )
-                    if len(links) >= rel_limit:
-                        break
-            total_nodes = int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM graph_export_rows WHERE build_id=? AND row_kind='node'",
-                    (build_id,),
-                ).fetchone()[0]
-            )
-            total_relationships = int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM graph_export_rows WHERE build_id=? AND row_kind='relationship'",
-                    (build_id,),
-                ).fetchone()[0]
-            )
+            for row in rel_candidates:
+                source = str(row["start_graph_key"] or "")
+                target = str(row["end_graph_key"] or "")
+                links.append(
+                    {
+                        "id": f"{row['partition_key']}:{row['row_key']}",
+                        "source": source,
+                        "target": target,
+                        "label": row["label_or_type"],
+                    }
+                )
+            # P3-11: merge the two trailing COUNT queries into one round-trip.
+            totals = connection.execute(
+                """
+                SELECT
+                  SUM(CASE WHEN row_kind='node' THEN 1 ELSE 0 END) AS total_nodes,
+                  SUM(CASE WHEN row_kind='relationship' THEN 1 ELSE 0 END) AS total_relationships
+                FROM graph_export_rows WHERE build_id=?
+                """,
+                (build_id,),
+            ).fetchone()
+            total_nodes = int(totals["total_nodes"] or 0)
+            total_relationships = int(totals["total_relationships"] or 0)
             return {
                 "build_id": build_id,
                 "limit": effective_limit,
