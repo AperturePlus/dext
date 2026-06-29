@@ -73,3 +73,11 @@ export interface MessageReceipt {
   received: true;
   state?: PanelState;
 }
+
+// Named aliases over the CsToSw result variants (amend §4.1, §5.1, §5.3). The CS
+// rpc ledger (shared/rpcLedger.ts) and the Controller import these so a result
+// type is a single name rather than an Extract<...> at every call site. The
+// ACTION_PREPARED variant is added in slice-4 Task 6 if still absent.
+export type CaptureResult = Extract<CsToSw, { op: 'CAPTURE_RESULT' }>;
+export type ActionResult = Extract<CsToSw, { op: 'ACTION_RESULT' }>;
+export type ActionPrepared = Extract<CsToSw, { op: 'ACTION_PREPARED' }>;
