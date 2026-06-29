@@ -70,13 +70,23 @@ class MonitorService:
         limit = max(1, min(int(limit), 100))
         with self.reader.connect() as connection:
             schema_version = self.reader.require_supported_schema(connection)
-            builds = [
-                self._summarize_build(connection, serialize_row(row))
-                for row in connection.execute(
-                    "SELECT * FROM graph_builds ORDER BY started_at DESC LIMIT ?",
-                    (limit,),
-                )
-            ]
+            # P3-9: one aggregated query — graph_builds row + the four
+            # per-build aggregates as correlated subqueries — instead of the
+            # previous 1 + N*4 round-trips.
+            rows = connection.execute(
+                """
+                SELECT b.*,
+                       (SELECT COUNT(*) FROM build_source_tasks WHERE build_id=b.id) AS _source_count,
+                       (SELECT COALESCE(SUM(row_count), 0) FROM graph_export_partitions WHERE build_id=b.id) AS _export_rows,
+                       (SELECT COUNT(*) FROM canonical_professors WHERE build_id=b.id AND active=1) AS _canonical_active,
+                       (SELECT COUNT(*) FROM quality_findings WHERE build_id=b.id AND resolved=0) AS _unresolved
+                FROM graph_builds b
+                ORDER BY b.started_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            builds = [self._summarize_build_row(serialize_row(row)) for row in rows]
             return {
                 "catalog_path": str(Path(self.settings.catalog_path).expanduser().resolve()),
                 "schema_version": schema_version,
@@ -361,33 +371,35 @@ class MonitorService:
         return serialize_row(row)
 
     def _summarize_build(self, connection, build: dict[str, Any]) -> dict[str, Any]:
+        """Summarize a single build with ONE aggregate query (P3-9)."""
         build_id = str(build["id"])
+        row = connection.execute(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM build_source_tasks WHERE build_id=?) AS _source_count,
+              (SELECT COALESCE(SUM(row_count), 0) FROM graph_export_partitions WHERE build_id=?) AS _export_rows,
+              (SELECT COUNT(*) FROM canonical_professors WHERE build_id=? AND active=1) AS _canonical_active,
+              (SELECT COUNT(*) FROM quality_findings WHERE build_id=? AND resolved=0) AS _unresolved
+            """,
+            (build_id, build_id, build_id, build_id),
+        ).fetchone()
+        merged = dict(build)
+        merged["_source_count"] = row["_source_count"]
+        merged["_export_rows"] = row["_export_rows"]
+        merged["_canonical_active"] = row["_canonical_active"]
+        merged["_unresolved"] = row["_unresolved"]
+        return self._summarize_build_row(merged)
+
+    def _summarize_build_row(self, build: dict[str, Any]) -> dict[str, Any]:
+        """Build the summary dict from a row that already carries the four
+        per-build aggregate columns (``_source_count``, ``_export_rows``,
+        ``_canonical_active``, ``_unresolved``). Response shape is identical
+        to the pre-P3-9 ``_summarize_build`` output."""
         summary = build.get("summary_json") or {}
-        source_count = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM build_source_tasks WHERE build_id=?",
-                (build_id,),
-            ).fetchone()[0]
-        )
-        export_rows = int(
-            connection.execute(
-                "SELECT COALESCE(SUM(row_count), 0) FROM graph_export_partitions WHERE build_id=?",
-                (build_id,),
-            ).fetchone()[0]
-            or 0
-        )
-        canonical_active = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM canonical_professors WHERE build_id=? AND active=1",
-                (build_id,),
-            ).fetchone()[0]
-        )
-        unresolved = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM quality_findings WHERE build_id=? AND resolved=0",
-                (build_id,),
-            ).fetchone()[0]
-        )
+        source_count = int(build.get("_source_count") or 0)
+        export_rows = int(build.get("_export_rows") or 0)
+        canonical_active = int(build.get("_canonical_active") or 0)
+        unresolved = int(build.get("_unresolved") or 0)
         return {
             "id": build["id"],
             "status": build["status"],

@@ -302,6 +302,169 @@ def test_monitor_service_lists_build_detail_metrics_and_preview(tmp_path: Path) 
     assert [row["id"] for row in findings["findings"]] == ["f1"]
 
 
+def _write_extra_build(
+    path: Path,
+    build_id: str,
+    *,
+    started_at: str,
+    status: str = "READY",
+    source_count: int,
+    export_rows: int,
+    canonical_active: int,
+    unresolved: int,
+) -> None:
+    """Add a second/third build to an existing catalog (schema already created).
+
+    Each count maps directly to one of the four per-build aggregates that
+    ``MonitorService._summarize_build`` computes, so list_builds correctness
+    can be asserted per build.
+    """
+    import sqlite3 as _sqlite3
+
+    connection = _sqlite3.connect(path)
+    try:
+        connection.execute(
+            """
+            INSERT INTO graph_builds(
+                id,status,curation_version,graph_schema_version,vector_schema_version,
+                settings_json,summary_json,started_at,last_error
+            ) VALUES (?, ?, 'curation-v1', 1, 1, '{}', '{}', ?, NULL)
+            """,
+            (build_id, status, started_at),
+        )
+        for ordinal in range(source_count):
+            connection.execute(
+                """
+                INSERT INTO build_source_tasks(
+                    build_id, university_id, university_name, abbr, source_path, ordinal, status,
+                    rows_read, observations_written, documents_seen, findings, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'COMPLETED', 0, 0, 0, 0, ?)
+                """,
+                (build_id, f"u-{build_id}-{ordinal}", f"U{ordinal}", f"u{ordinal}",
+                 f"u-{build_id}-{ordinal}.db", ordinal, started_at),
+            )
+        # one export partition whose row_count == export_rows
+        connection.execute(
+            "INSERT INTO graph_export_partitions VALUES (?, ?, 'node', 'Build', ?, NULL, NULL, 'c', 'now')",
+            (build_id, f"node:{build_id}", export_rows),
+        )
+        for i in range(canonical_active):
+            connection.execute(
+                """
+                INSERT INTO canonical_professors(
+                    entity_id,build_id,name,title_family,role_status,role_reason_codes,
+                    master_eligibility,phd_eligibility,active,completeness
+                ) VALUES (?, ?, ?, 'professor', 'included', '[]', 'unknown', 'unknown', 1, 0.5)
+                """,
+                (f"{build_id}-e{i}", build_id, f"{build_id}-e{i}"),
+            )
+        for i in range(unresolved):
+            connection.execute(
+                "INSERT INTO quality_findings VALUES (?, ?, 'warning', 'identity_conflict', NULL, NULL, '{}', 0)",
+                (f"{build_id}-f{i}", build_id),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def test_list_builds_aggregates_correctly_across_multiple_builds(tmp_path: Path) -> None:
+    """P3-9: list_builds must return correct per-build aggregates
+    (source_count, graph_export_rows, canonical_active, unresolved_findings)
+    for every build, computed in a single aggregated SQL round-trip rather
+    than 1 + N*4 queries."""
+    catalog = tmp_path / "catalog.db"
+    # build-1 (from _write_catalog): 2 sources, 5 export rows (1+1+1+1+1),
+    # 2 canonical active, 1 unresolved warning.
+    _write_catalog(catalog)
+    # build-2: 3 sources, 7 export rows, 4 canonical active, 2 unresolved.
+    _write_extra_build(catalog, "build-2", started_at="2026-06-30T00:00:00+00:00",
+                      source_count=3, export_rows=7, canonical_active=4, unresolved=2)
+    # build-3: 1 source, 0 export rows, 0 canonical active, 0 unresolved.
+    _write_extra_build(catalog, "build-3", started_at="2026-06-30T01:00:00+00:00",
+                      source_count=1, export_rows=0, canonical_active=0, unresolved=0)
+    service = MonitorService(_settings(catalog))
+
+    builds = service.list_builds(limit=100)["builds"]
+    by_id = {b["id"]: b for b in builds}
+    # ordered by started_at DESC: build-3, build-2, build-1
+    assert [b["id"] for b in builds] == ["build-3", "build-2", "build-1"]
+
+    assert by_id["build-1"]["summary"]["source_count"] == 2
+    assert by_id["build-1"]["summary"]["graph_export_rows"] == 5
+    assert by_id["build-1"]["summary"]["canonical_active"] == 2
+    assert by_id["build-1"]["summary"]["unresolved_findings"] == 1
+
+    assert by_id["build-2"]["summary"]["source_count"] == 3
+    assert by_id["build-2"]["summary"]["graph_export_rows"] == 7
+    assert by_id["build-2"]["summary"]["canonical_active"] == 4
+    assert by_id["build-2"]["summary"]["unresolved_findings"] == 2
+
+    assert by_id["build-3"]["summary"]["source_count"] == 1
+    assert by_id["build-3"]["summary"]["graph_export_rows"] == 0
+    assert by_id["build-3"]["summary"]["canonical_active"] == 0
+    assert by_id["build-3"]["summary"]["unresolved_findings"] == 0
+
+
+def test_list_builds_uses_constant_query_count_not_n_plus_1(tmp_path: Path) -> None:
+    """P3-9: list_builds must issue the per-build aggregates in ONE query, not
+    1 + N*4. We count SELECT statements against the four aggregate tables via
+    a sqlite trace callback; the count must not grow with the number of builds."""
+    import sqlite3 as _sqlite3
+    from dext_monitor import catalog_reader as cr_mod
+
+    catalog = tmp_path / "catalog.db"
+    _write_catalog(catalog)
+    _write_extra_build(catalog, "build-2", started_at="2026-06-30T00:00:00+00:00",
+                      source_count=2, export_rows=3, canonical_active=2, unresolved=1)
+    _write_extra_build(catalog, "build-3", started_at="2026-06-30T01:00:00+00:00",
+                      source_count=1, export_rows=1, canonical_active=1, unresolved=0)
+
+    service = MonitorService(_settings(catalog))
+    agg_signatures = (
+        "FROM BUILD_SOURCE_TASKS",
+        "FROM GRAPH_EXPORT_PARTITIONS",
+        "FROM CANONICAL_PROFESSORS",
+        "FROM QUALITY_FINDINGS",
+    )
+    counts: list[int] = []
+
+    real_connect = cr_mod.CatalogReader.connect
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def counting_connect(self_reader):
+        # open the real read-only connection, then attach a trace callback
+        with real_connect(self_reader) as connection:
+            seen: list[str] = []
+
+            def trace(stmt: str) -> None:
+                upper = stmt.upper().lstrip()
+                if upper.startswith("SELECT") and any(s in upper for s in agg_signatures):
+                    seen.append(stmt)
+
+            connection.set_trace_callback(trace)
+            yield connection
+            counts.append(len(seen))
+
+    cr_mod.CatalogReader.connect = counting_connect  # type: ignore[assignment]
+    try:
+        builds = service.list_builds(limit=100)["builds"]
+    finally:
+        cr_mod.CatalogReader.connect = real_connect  # type: ignore[assignment]
+
+    assert len(builds) == 3
+    # A single aggregated SELECT (subqueries/LEFT JOIN over graph_builds) is
+    # ONE trace event touching all four aggregate tables in its text. The
+    # previous N+1 impl issued 1 + 3*4 = 13 such SELECTs; the collapsed impl
+    # must issue exactly 1. Tolerate <= 4 in case the impl uses a few separate
+    # aggregate statements, but it must NOT scale with build count.
+    assert counts and counts[0] <= 4, f"expected <=4 aggregate SELECTs, got {counts}"
+    assert counts[0] == 1, f"expected a single aggregated SELECT, got {counts[0]}"
+
+
+
 def test_monitor_handles_empty_and_incompatible_catalog(tmp_path: Path) -> None:
     empty_catalog = tmp_path / "empty.db"
     _write_catalog(empty_catalog, with_build=False)
