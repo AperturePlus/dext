@@ -17,6 +17,9 @@ class GraphSettings(BaseSettings):
     )
 
     value_validation_root: Path = Path("data/value-validation")
+    catalog_path: Path = Path("data/catalog/catalog.db")
+    source_data_dir: Path = Path("data/universities")
+    seed_path: Path = Path("entrances.yaml")
     qdrant_url: str = "http://127.0.0.1:6333"
 
     embedding_base_url: str = "https://api.siliconflow.cn/v1"
@@ -37,6 +40,11 @@ class GraphSettings(BaseSettings):
     source_read_batch: int = 100
     qdrant_upsert_batch: int = 64
 
+    build_read_batch: int = 100
+    build_write_queue: int = 2
+    build_max_rss_mb: int = 1024
+    build_min_source_retention_ratio: float = 0.80
+
     @field_validator("embedding_base_url")
     @classmethod
     def base_url_must_end_at_v1(cls, value: str) -> str:
@@ -54,11 +62,21 @@ class GraphSettings(BaseSettings):
         "profile_max_tokens",
         "source_read_batch",
         "qdrant_upsert_batch",
+        "build_read_batch",
+        "build_write_queue",
+        "build_max_rss_mb",
     )
     @classmethod
     def positive_integers(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("configuration value must be positive")
+        return value
+
+    @field_validator("build_min_source_retention_ratio")
+    @classmethod
+    def retention_ratio_is_fraction(cls, value: float) -> float:
+        if not 0 < value <= 1:
+            raise ValueError("DEXT_BUILD_MIN_SOURCE_RETENTION_RATIO must be in (0, 1]")
         return value
 
     def safe_snapshot(self) -> dict[str, object]:

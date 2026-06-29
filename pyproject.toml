@@ -21,6 +21,8 @@ dependencies = [
     "httpx>=0.28.0",
     "qdrant-client>=1.15.0",
     "transformers>=4.46.0",
+    "zstandard>=0.23.0",
+    "psutil>=7.0.0",
 ]
 
 [project.scripts]
@@ -44,3 +46,6 @@ packages = ["src/dext", "src/dext_graph"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+markers = [
+    "slow: resource-intensive acceptance tests excluded from normal runs",
+]

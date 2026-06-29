@@ -10,6 +10,12 @@ from typing import Any, Callable
 import click
 
 from dext_graph.config import GraphSettings
+from dext_graph.catalog.db import CatalogError
+from dext_graph.catalog.workflow import (
+    create_build,
+    get_status,
+    resume_build,
+)
 from dext_graph.models import ValueValidationError
 from dext_graph.profiles import TEMPLATES
 from dext_graph.workflow import (
@@ -40,6 +46,14 @@ def _guard_async(action: Callable[[], Any]) -> None:
         raise click.ClickException(str(exc)) from None
 
 
+def _guard_catalog(action: Callable[[], Any], *, asynchronous: bool = False) -> None:
+    try:
+        result = asyncio.run(action()) if asynchronous else action()
+        _emit(result)
+    except (CatalogError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from None
+
+
 @click.group()
 def main() -> None:
     """Dext curation and recommendation graph tooling."""
@@ -53,6 +67,39 @@ def graph() -> None:
 @graph.group(name="value-validation")
 def value_validation() -> None:
     """Run the temporary stage-0 semantic value experiment."""
+
+
+@graph.command("build")
+@click.option(
+    "--university",
+    "universities",
+    multiple=True,
+    metavar="NAME",
+    help="University name from entrances.yaml. Repeatable; omit for all existing canonical DBs.",
+)
+def build_command(universities: tuple[str, ...]) -> None:
+    """Create a build, snapshot sources, and ingest legacy observations."""
+    settings = GraphSettings()
+    _guard_catalog(
+        lambda: create_build(list(universities), settings),
+        asynchronous=True,
+    )
+
+
+@graph.command("resume")
+@click.argument("build_id")
+def resume_command(build_id: str) -> None:
+    """Resume a failed or interrupted catalog build."""
+    settings = GraphSettings()
+    _guard_catalog(lambda: resume_build(build_id, settings), asynchronous=True)
+
+
+@graph.command("status")
+@click.argument("build_id", required=False)
+def status_command(build_id: str | None) -> None:
+    """Show one build in detail, or list the latest builds."""
+    settings = GraphSettings()
+    _guard_catalog(lambda: get_status(build_id, settings))
 
 
 @value_validation.command("run")

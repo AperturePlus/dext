@@ -110,6 +110,32 @@ uv run dext graph value-validation run \
 `--execute-live` 会使用 `DEXT_EMBEDDING_API_KEY` 和 `DEXT_QDRANT_URL` 创建
 `dext_eval__*` 临时 collection。实验结果位于 `data/value-validation/`，不属于正式 catalog。
 
+## 阶段 1：Catalog foundation
+
+阶段 1 从 `data/universities/<abbr>.db` 创建 WAL 一致的只读快照，并把 legacy `professors`
+宽表导入 `data/catalog/catalog.db`。未指定学校时只处理 `entrances.yaml` 中实际存在的规范 DB；
+显式选择可重复传入学校名称。
+
+```bash
+# 构建全部现有规范学校库，成功后停在 CURATING
+uv run dext graph build
+
+# 只构建指定学校
+uv run dext graph build --university 测试大学 --university 示例大学
+
+# 查看最近构建或单个构建详情
+uv run dext graph status
+uv run dext graph status BUILD_ID
+
+# 从已提交的 snapshot/observation checkpoint 恢复
+uv run dext graph resume BUILD_ID
+```
+
+核心配置为 `DEXT_CATALOG_PATH`、`DEXT_BUILD_READ_BATCH`、
+`DEXT_BUILD_WRITE_QUEUE`、`DEXT_BUILD_MAX_RSS_MB` 和
+`DEXT_BUILD_MIN_SOURCE_RETENTION_RATIO`。catalog 与每次修改前的备份位于
+`data/catalog/`；source snapshot 位于 `data/catalog/source-snapshots/`。API key 不写入 catalog。
+
 涉及 LLM 的测试使用真实 DeepSeek 接口，需先在 `.env` 配置 `DEEPSEEK_API_KEY`。
 
 ## 编译浏览器 userscript
