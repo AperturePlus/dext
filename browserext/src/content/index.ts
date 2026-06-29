@@ -12,7 +12,9 @@ import { isAllowedFetchHost } from '../shared/hostPolicy.js';
 import { detectPage } from './pageDetect.js';
 import { createRpcRouter } from './rpcRouter.js';
 import type { RpcRouterDoc } from './rpcRouter.js';
-import type { CsToSw, SwToCs } from '../shared/rpc.js';
+import type { CsToSw, SwToCs, PanelState } from '../shared/rpc.js';
+import { mountPanel } from './panel.js';
+import { panelStateEqual } from './panelState.js';
 
 declare const EXCLUSIVE_CONTROL_ENABLED: boolean;
 
@@ -30,6 +32,12 @@ export interface ContentDeps {
   /** Called only on allowed fetch hosts, after the marker is set. Slice 1
    *  does nothing here; slices 4–5 hang PAGE_READY/panel/capture off it. */
   onAllowedHost?: () => void;
+  /** Injectable for tests (node tests pass a fake). When omitted, the panel
+   *  block falls back to the global `document`. Slice 5: panel mount + REGISTER
+   *  + TICK + STATE_CHANGED render. */
+  document?: Document;
+  /** Injectable for tests. When omitted, falls back to the global `chrome`. */
+  chrome?: typeof chrome;
 }
 
 /** Build a getter-backed snapshot of the live document so the router reads
@@ -97,6 +105,65 @@ export async function bootstrapContent(deps: ContentDeps): Promise<void> {
         document.addEventListener('DOMContentLoaded', sendReady, { once: true });
       } else {
         sendReady();
+      }
+    }
+    // Slice 5: panel + REGISTER + 2s TICK + STATE_CHANGED render. Runs alongside
+    // the slice-4 work-RPC listener + PAGE_READY emitter above (both coexist).
+    // Resolved against deps first (node tests inject fakes), then the globals;
+    // GUARDED so slice-1/4 node tests that pass NO document/chrome skip this
+    // block without crashing — `doc?.body && chr?.runtime?.sendMessage` is the
+    // gate. The panel reads the live override-URL input via a formData closure
+    // over the shadow root (Task-3 follow-up: override was dead from real
+    // clicks because mountPanel hard-coded `() => null`).
+    const doc = deps.document ?? (typeof document !== 'undefined' ? document : undefined);
+    const chr = deps.chrome ?? (typeof chrome !== 'undefined' ? chrome : undefined);
+    if (doc?.body && chr?.runtime?.sendMessage) {
+      let panel: ReturnType<typeof mountPanel> | null = null;
+      try {
+        const host = doc.createElement('div') as HTMLDivElement & { attachShadow: (i: { mode: 'open' }) => unknown };
+        host.id = 'dext-panel-host';
+        doc.body.appendChild(host);
+        panel = mountPanel({ host: host as never }, (cmd) => {
+          try {
+            void chr.runtime.sendMessage({ op: 'COMMAND', command: cmd } as CsToSw);
+          } catch { /* SW asleep */ }
+        }, (id) => {
+          const sh = (host as unknown as { __dextShadow?: { getElementById?(id: string): { value?: string } | null } }).__dextShadow;
+          const el = sh?.getElementById?.(id);
+          return el?.value ?? null;
+        });
+      } catch { panel = null; }
+      if (panel) {
+        // REGISTER once — the receipt carries the initial PanelState (render it).
+        const url = (typeof location !== 'undefined' ? location.href : '');
+        void chr.runtime.sendMessage({ op: 'REGISTER', url } as CsToSw)
+          .then((receipt: unknown) => {
+            const r = receipt as { state?: PanelState };
+            if (r?.state) {
+              try { panel!.render(r.state); } catch { /* panel unmounted */ }
+            }
+          })
+          .catch(() => {});
+        // 2s TICK — wake/reconcile the SW (MV3 doesn't guarantee the SW stays
+        // alive; the TICK re-establishes intent + lets the SW reconcile state).
+        // `.unref?.()` is a no-op in the browser (where setInterval returns a
+        // number); in Node tests it drops the handle so the test process can exit
+        // instead of hanging on a 2s interval that never fires during the test.
+        const tick = setInterval(() => {
+          try { void chr.runtime.sendMessage({ op: 'TICK' } as CsToSw); }
+          catch { /* SW asleep — non-fatal */ }
+        }, 2000);
+        (tick as unknown as { unref?: () => void }).unref?.();
+        // STATE_CHANGED → re-render (skip no-op re-renders via panelStateEqual).
+        let last: PanelState | undefined;
+        chr.runtime.onMessage.addListener((msg: SwToCs) => {
+          if (msg && msg.op === 'STATE_CHANGED') {
+            if (panelStateEqual(last, msg.state)) return false;
+            last = msg.state;
+            try { panel!.render(msg.state); } catch { /* panel unmounted */ }
+          }
+          return false;
+        });
       }
     }
   }

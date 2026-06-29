@@ -129,3 +129,63 @@ test('mountPanel is idempotent — second mount reuses the same shadow root', as
     void calls;
   } finally { await cleanup(); }
 });
+
+test('mountPanel: override command honors injected formData (Task-7 fix, amend §7)', async () => {
+  // Regression guard: Task-3 mountPanel passed `() => null` to commandFromClick,
+  // which made the override command DEAD from real clicks (the input value was
+  // never read). Task 7 adds an optional `formData` injection point to mountPanel
+  // so the click listener reads the live override-URL input. This test pins that
+  // the injected formData is honored by the click listener — NOT `() => null`.
+  const { mod, cleanup } = await importTsModule('../src/content/panel.ts', 'panel.ts');
+  try {
+    const overrideInput = { value: 'https://x.edu.cn/override-target' };
+    // Custom fake: shadow root records the click listener so we can dispatch it.
+    let clickCb = null;
+    const shadowRoot = {
+      innerHTML: '',
+      querySelector() { return null; }, querySelectorAll() { return []; },
+      getElementById(id) { return id === 'dext-override-url' ? overrideInput : null; },
+      addEventListener(type, cb) { if (type === 'click') clickCb = cb; },
+    };
+    const host = { attachShadowCalls: 0, attachShadow() { host.attachShadowCalls += 1; return shadowRoot; } };
+    const captured = [];
+    const panel = mod.mountPanel({ host }, (cmd) => { captured.push(cmd); }, (id) => {
+      const el = shadowRoot.getElementById(id);
+      return el?.value ?? null;
+    });
+    panel.render({
+      isBoundTab: true, bound: true, connected: true, autoMode: false, paused: false,
+      phase: 'idle', currentJob: null, navigationAttempt: 0, lastError: null, pendingDecision: null,
+    });
+    // Dispatch a click on the override button dataset.
+    assert.equal(typeof clickCb, 'function', 'click listener registered');
+    clickCb({ target: { dataset: { cmd: 'override' } } });
+    assert.equal(captured.length, 1, 'onCommand fired once for override');
+    assert.deepEqual(captured[0], { kind: 'override', url: 'https://x.edu.cn/override-target' });
+  } finally { await cleanup(); }
+});
+
+test('mountPanel: override command returns DEAD when no formData injected (back-compat, Task-7)', async () => {
+  // Back-compat: when no formData is passed, mountPanel falls back to `() => null`
+  // so the override command stays a no-op (matches Task-3 behavior for callers
+  // that don't opt into the formData injection).
+  const { mod, cleanup } = await importTsModule('../src/content/panel.ts', 'panel.ts');
+  try {
+    let clickCb = null;
+    const shadowRoot = {
+      innerHTML: '',
+      querySelector() { return null; }, querySelectorAll() { return []; },
+      getElementById() { return null; },
+      addEventListener(type, cb) { if (type === 'click') clickCb = cb; },
+    };
+    const host = { attachShadowCalls: 0, attachShadow() { host.attachShadowCalls += 1; return shadowRoot; } };
+    const captured = [];
+    const panel = mod.mountPanel({ host }, (cmd) => { captured.push(cmd); });
+    panel.render({
+      isBoundTab: true, bound: true, connected: true, autoMode: false, paused: false,
+      phase: 'idle', currentJob: null, navigationAttempt: 0, lastError: null, pendingDecision: null,
+    });
+    clickCb({ target: { dataset: { cmd: 'override' } } });
+    assert.equal(captured.length, 0, 'override stays dead without formData (back-compat)');
+  } finally { await cleanup(); }
+});

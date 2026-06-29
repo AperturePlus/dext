@@ -80,8 +80,18 @@ export function commandFromClick(
   }
 }
 
-export function mountPanel(dom: PanelDom, onCommand?: (cmd: PanelCommand) => void): MountedPanel {
+export function mountPanel(
+  dom: PanelDom,
+  onCommand?: (cmd: PanelCommand) => void,
+  /** Optional injected reader for live input values (e.g. the override-URL
+   *  input). Task 7: when omitted, the click listener falls back to `() => null`
+   *  (back-compat with Task-3 callers). When provided (the content script wires
+   *  one that reads `shadowRoot.getElementById('dext-override-url')?.value`),
+   *  the override command reads the live input value instead of being dead. */
+  formData?: (id: string) => string | null,
+): MountedPanel {
   let shadow: PanelShadowRoot | null = null;
+  const readForm = formData ?? (() => null);
 
   function ensureShadow(): PanelShadowRoot {
     if (shadow) return shadow;
@@ -99,7 +109,7 @@ export function mountPanel(dom: PanelDom, onCommand?: (cmd: PanelCommand) => voi
     if (onCommand) {
       shadow.addEventListener('click', (e) => {
         const t = e.target as { dataset?: Record<string, string> } | null;
-        const cmd = commandFromClick((t && t.dataset) ? { dataset: t.dataset } : null, () => null);
+        const cmd = commandFromClick((t && t.dataset) ? { dataset: t.dataset } : null, readForm);
         if (cmd) onCommand(cmd);
       });
     }
