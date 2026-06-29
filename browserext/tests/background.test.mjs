@@ -21,7 +21,7 @@ test('wireBackground constructs navMonitor {chrome, controller} + controller, st
     const fakeChrome = {
       onNavCompleted() {}, onNavError() {},
       onBeforeRequest() {}, onBeforeRedirect() {}, onCommitted() {}, onHistoryStateUpdated() {},
-      async updateTabUrl() {}, async findOwnerTab() { return null; },
+      async updateTabUrl() {},
       async getTab() { return null; },
       registerAlarm(name, period, cb) { alarmReg = { name, period, cb }; },
     };
@@ -60,7 +60,7 @@ test('wireBackground registers a chrome.runtime.onMessage listener (slice 5 rout
     };
     const fakeChrome = {
       onNavCompleted() {}, onNavError() {}, onBeforeRequest() {}, onBeforeRedirect() {}, onCommitted() {}, onHistoryStateUpdated() {},
-      async updateTabUrl() {}, async findOwnerTab() { return null; }, async getTab() { return null; }, async sendMessage() { return { received: true }; },
+      async updateTabUrl() {}, async getTab() { return null; }, async sendMessage() { return { received: true }; },
       registerAlarm() {},
     };
     const fakeApi = { async getStatus() { return null; }, async claimNextJob() { return null; }, async failJob() {}, async skipJob() {}, async sendHeartbeat() {}, async getDecision() { return null; }, async resolveDecision() {}, async completeJob() {}, async overrideJobUrl() { return null; } };

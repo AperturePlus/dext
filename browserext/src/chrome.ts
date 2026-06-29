@@ -36,20 +36,12 @@ export interface ChromeRuntime {
   onCommitted(cb: (e: CommittedEvent) => void): void;
   onHistoryStateUpdated(cb: (e: CommittedEvent) => void): void;
   updateTabUrl(tabId: number, url: string): Promise<void>;
-  findOwnerTab(): Promise<number | null>;
   getTab(tabId: number): Promise<{ id: number; url?: string } | null>;
   sendMessage(tabId: number, message: unknown, options?: { documentId?: string; frameId?: number }): Promise<unknown>;
   registerAlarm(name: string, periodMinutes: number, cb: () => void): void;
 }
 
-const ALLOWED_HOST_SUFFIXES = ['edu.cn', 'github.io'];
-
 const registeredAlarms = new Set<string>();
-
-function isAllowedHost(hostname: string): boolean {
-  const h = hostname.toLowerCase();
-  return ALLOWED_HOST_SUFFIXES.some((s) => h === s || h.endsWith(`.${s}`));
-}
 
 export function createRealChromeRuntime(): ChromeRuntime {
   return {
@@ -124,19 +116,6 @@ export function createRealChromeRuntime(): ChromeRuntime {
     },
     async updateTabUrl(tabId, url) {
       await chrome.tabs.update(tabId, { url });
-    },
-    async findOwnerTab() {
-      const tabs = await chrome.tabs.query({});
-      // Prefer a tab on an allowed fetch host; fall back to the active tab.
-      for (const t of tabs) {
-        try {
-          if (t.url && isAllowedHost(new URL(t.url).hostname)) return t.id ?? null;
-        } catch {
-          // ignore non-URL tab URLs (about:blank, chrome-error, etc.)
-        }
-      }
-      const active = await chrome.tabs.query({ active: true, currentWindow: true });
-      return active[0]?.id ?? null;
     },
     async getTab(tabId) {
       try {

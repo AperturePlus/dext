@@ -19,10 +19,6 @@ function fakeRuntime() {
     onCommitted(cb) { committedCbs.push(cb); },
     onHistoryStateUpdated(cb) { historyCbs.push(cb); },
     async updateTabUrl(tabId, url) { lastUpdated = { tabId, url }; },
-    async findOwnerTab() {
-      const t = tabs.find((t) => /edu\.cn$|github\.io$/.test(new URL(t.url).hostname)) ?? tabs[0] ?? null;
-      return t ? t.id : null;
-    },
     async getTab(tabId) { const t = tabs.find((t) => t.id === tabId) ?? null; return t ? { id: t.id, url: t.url } : null; },
     async sendMessage(tabId, message, options) { sentMessages.push({ tabId, message, options }); return { received: true }; },
     registerAlarm(_name, _period, cb) { alarmCb = cb; },
@@ -51,13 +47,17 @@ test('ChromeRuntime interface is satisfiable by a fake and forwards callbacks', 
   }
 });
 
-test('createRealChromeRuntime exposes registerAlarm + getTab (rename from watchdog + new)', async () => {
+test('createRealChromeRuntime exposes the Phase-2 chrome surface (registerAlarm + getTab + sendMessage + nav listeners)', async () => {
   const { mod, cleanup } = await importTsModule('../src/chrome.ts', 'chrome.ts');
   try {
     const rt = mod.createRealChromeRuntime();
     assert.equal(typeof rt.registerAlarm, 'function');
     assert.equal(typeof rt.getTab, 'function');
-    assert.equal(typeof rt.findOwnerTab, 'function');
+    assert.equal(typeof rt.updateTabUrl, 'function');
+    assert.equal(typeof rt.sendMessage, 'function');
+    // Phase-1 findOwnerTab (owner election) was removed in slice 6 — the bound tab
+    // is explicitly bound, never discovered. getTab(boundTabId) is the sole tab lookup.
+    assert.equal(typeof (rt).findOwnerTab, 'undefined', 'findOwnerTab removed (Phase-1 residue)');
   } finally {
     await cleanup();
   }
@@ -67,7 +67,7 @@ test('createRealChromeRuntime exposes nav listeners + widened events (slice 3)',
   const { mod, cleanup } = await importTsModule('../src/chrome.ts', 'chrome.ts');
   try {
     const rt = mod.createRealChromeRuntime();
-    for (const m of ['onBeforeRequest','onBeforeRedirect','onCommitted','onHistoryStateUpdated','onNavCompleted','onNavError','updateTabUrl','findOwnerTab','getTab','sendMessage','registerAlarm']) {
+    for (const m of ['onBeforeRequest','onBeforeRedirect','onCommitted','onHistoryStateUpdated','onNavCompleted','onNavError','updateTabUrl','getTab','sendMessage','registerAlarm']) {
       assert.equal(typeof rt[m], 'function', `${m} is a function`);
     }
   } finally {
