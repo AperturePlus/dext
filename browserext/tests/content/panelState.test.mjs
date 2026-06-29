@@ -44,3 +44,38 @@ test('panelStateEqual: undefined === undefined; differing phase is unequal', asy
     assert.equal(mod.panelStateEqual(a, a), true);
   } finally { await cleanup(); }
 });
+
+test('panelStateEqual: same-kind-different-detail lastError is UNEQUAL (slice-6 fix, slice-5 deferred #1)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/content/panelState.ts', 'panelState.ts');
+  try {
+    const base = { isBoundTab: true, bound: true, connected: true, autoMode: false, paused: false, phase: 'navigating', currentJob: null, navigationAttempt: 0, lastError: null, pendingDecision: null };
+    // nav_error: same kind, different error string → must be unequal (else stale ERR_CONNECTION_RESET stays on screen).
+    assert.equal(mod.panelStateEqual(
+      { ...base, lastError: { kind: 'nav_error', error: 'ERR_CONNECTION_RESET' } },
+      { ...base, lastError: { kind: 'nav_error', error: 'ERR_NAME_NOT_RESOLVED' } },
+    ), false);
+    // unexpected_status: same kind, different statusCode → unequal.
+    assert.equal(mod.panelStateEqual(
+      { ...base, lastError: { kind: 'unexpected_status', statusCode: 401 } },
+      { ...base, lastError: { kind: 'unexpected_status', statusCode: 403 } },
+    ), false);
+    // content_unavailable: same kind, different missing → unequal.
+    assert.equal(mod.panelStateEqual(
+      { ...base, lastError: { kind: 'content_unavailable', missing: 'page_ready', sourceDocumentId: 'D', since: 1, recoveryAttempts: 0, nextRecoveryAt: null, recoveryExhausted: false } },
+      { ...base, lastError: { kind: 'content_unavailable', missing: 'capture_result', sourceDocumentId: 'D', since: 1, recoveryAttempts: 0, nextRecoveryAt: null, recoveryExhausted: false } },
+    ), false);
+    // kind-only errors (gateway_5xx / rate_limited): equal when same kind.
+    assert.equal(mod.panelStateEqual(
+      { ...base, lastError: { kind: 'gateway_5xx' } },
+      { ...base, lastError: { kind: 'gateway_5xx' } },
+    ), true);
+    // same kind AND same detail → equal (regression guard for the deepening).
+    assert.equal(mod.panelStateEqual(
+      { ...base, lastError: { kind: 'nav_error', error: 'ERR_CONNECTION_RESET' } },
+      { ...base, lastError: { kind: 'nav_error', error: 'ERR_CONNECTION_RESET' } },
+    ), true);
+    // null vs null stays equal; null vs non-null stays unequal.
+    assert.equal(mod.panelStateEqual({ ...base, lastError: null }, { ...base, lastError: null }), true);
+    assert.equal(mod.panelStateEqual({ ...base, lastError: null }, { ...base, lastError: { kind: 'rate_limited' } }), false);
+  } finally { await cleanup(); }
+});

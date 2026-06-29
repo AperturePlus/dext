@@ -27,7 +27,11 @@ export function formatError(e: ControllerError | null): string {
 }
 
 /** Shallow structural equality over the PanelState fields the panel renders.
- *  Used to skip re-render when a STATE_CHANGED carries an unchanged state. */
+ *  Used to skip re-render when a STATE_CHANGED carries an unchanged state.
+ *  lastError is compared by kind AND its discriminating detail (slice-6 fix:
+ *  slice-5 compared kind only, so a nav_error whose `error` string changed,
+ *  or an unexpected_status whose statusCode changed, left stale error text on
+ *  screen until the next phase change). */
 export function panelStateEqual(a: PanelState | undefined, b: PanelState | undefined): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
@@ -40,7 +44,22 @@ export function panelStateEqual(a: PanelState | undefined, b: PanelState | undef
     a.phase === b.phase &&
     a.navigationAttempt === b.navigationAttempt &&
     a.currentJob?.id === b.currentJob?.id &&
-    a.lastError?.kind === b.lastError?.kind &&
+    errorEqual(a.lastError, b.lastError) &&
     a.pendingDecision?.id === b.pendingDecision?.id
   );
+}
+
+/** Compare two ControllerError values by kind + the kind's discriminating detail.
+ *  gateway_5xx/rate_limited carry no detail beyond kind. */
+function errorEqual(x: ControllerError | null, y: ControllerError | null): boolean {
+  if (x === y) return true;
+  if (!x || !y) return false;
+  if (x.kind !== y.kind) return false;
+  switch (x.kind) {
+    case 'nav_error': return x.error === (y as Extract<ControllerError, { kind: 'nav_error' }>).error;
+    case 'unexpected_status': return x.statusCode === (y as Extract<ControllerError, { kind: 'unexpected_status' }>).statusCode;
+    case 'content_unavailable': return x.missing === (y as Extract<ControllerError, { kind: 'content_unavailable' }>).missing;
+    case 'gateway_5xx':
+    case 'rate_limited': return true;
+  }
 }
