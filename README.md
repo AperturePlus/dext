@@ -117,7 +117,7 @@ uv run dext graph value-validation run \
 显式选择可重复传入学校名称。
 
 ```bash
-# 构建全部现有规范学校库，成功后停在 CURATING
+# 构建全部现有规范学校库，完成 Catalog 与清洗后停在 EMBEDDING
 uv run dext graph build
 
 # 只构建指定学校
@@ -135,6 +135,16 @@ uv run dext graph resume BUILD_ID
 `DEXT_BUILD_WRITE_QUEUE`、`DEXT_BUILD_MAX_RSS_MB` 和
 `DEXT_BUILD_MIN_SOURCE_RETENTION_RATIO`。catalog 与每次修改前的备份位于
 `data/catalog/`；source snapshot 位于 `data/catalog/source-snapshots/`。API key 不写入 catalog。
+
+## 阶段 2：清洗、资格与身份消歧
+
+阶段 2 自动消费阶段 1 的 active observations，使用版本化 YAML 规则完成文本规范化、保守身份归属、
+字段选择和人员资格判断。单人详情 URL、ORCID 和 Google Scholar user ID 才能形成 strong claim；
+同院姓名、列表页 URL 和 Email 只作为 weak evidence。冲突进入 `review` 并写入 finding，不调用 LLM。
+
+identity、field 和 canonical 三段均使用按学校分区的 checkpoint。`dext graph resume BUILD_ID`
+会从最后提交批次恢复；成功后状态为 `EMBEDDING`。`DEXT_CURATION_QUEUE` 控制有界 curation 队列，
+默认值为 16。真实 gold set 尚未提供时，status 中的 `gold_status` 为 `not_evaluated`。
 
 涉及 LLM 的测试使用真实 DeepSeek 接口，需先在 `.env` 配置 `DEEPSEEK_API_KEY`。
 

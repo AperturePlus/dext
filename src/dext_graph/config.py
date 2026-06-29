@@ -44,6 +44,7 @@ class GraphSettings(BaseSettings):
     build_write_queue: int = 2
     build_max_rss_mb: int = 1024
     build_min_source_retention_ratio: float = 0.80
+    curation_queue: int = 16
 
     @field_validator("embedding_base_url")
     @classmethod
@@ -65,6 +66,7 @@ class GraphSettings(BaseSettings):
         "build_read_batch",
         "build_write_queue",
         "build_max_rss_mb",
+        "curation_queue",
     )
     @classmethod
     def positive_integers(cls, value: int) -> int:

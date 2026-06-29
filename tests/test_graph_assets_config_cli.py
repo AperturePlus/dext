@@ -3,6 +3,7 @@ from click.testing import CliRunner
 from dext_graph.assets import load_queries, load_sentinels
 from dext_graph.cli import main
 from dext_graph.config import GraphSettings
+from dext_graph.catalog.rules import load_curation_rules
 
 
 def test_versioned_assets_have_required_sizes():
@@ -14,6 +15,10 @@ def test_versioned_assets_have_required_sizes():
     assert sentinel_version == "sentinels-v1"
     assert len(sentinels) == 5
     assert len(sentinel_hash) == 64
+    rules = load_curation_rules()
+    assert rules.version == "curation-v1"
+    assert rules.normalization_version == "normalization-v1"
+    assert len(rules.manifest_hash) == 64
 
 
 def test_safe_settings_snapshot_excludes_key():
@@ -26,6 +31,7 @@ def test_safe_settings_snapshot_excludes_key():
     assert settings.build_write_queue == 2
     assert settings.build_max_rss_mb == 1024
     assert settings.build_min_source_retention_ratio == 0.8
+    assert settings.curation_queue == 16
 
 
 def test_cli_exposes_nested_value_validation_commands():

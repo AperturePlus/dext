@@ -1,0 +1,38 @@
+version: curation-v1
+normalization_version: normalization-v1
+
+empty_values:
+  - unknown
+  - 未知
+  - 暂无
+  - 无
+  - null
+  - none
+  - n/a
+  - '-'
+  - '--'
+
+title_families:
+  clinical: [主任医师, 副主任医师, 主治医师]
+  researcher: [副研究员, 研究员]
+  associate: [副教授, 特聘副教授]
+  professor: [教授, 院士]
+  lecturer: [讲师, 助理教授]
+  technical: [高级工程师, 工程师, 实验师, 护师, 技术员]
+
+excluded_context_terms:
+  - 专职行政
+  - 行政人员
+  - 行政团队
+  - 辅导员
+  - 学生工作
+  - 学工队伍
+  - 教辅人员
+  - 教辅岗位
+  - 实验技术队伍
+  - 实验室管理人员
+
+master_positive: [硕士生导师, 硕导, 研究生导师]
+master_negative: [非硕士生导师, 不是硕士生导师, 非硕导]
+phd_positive: [博士生导师, 博导]
+phd_negative: [非博士生导师, 不是博士生导师, 非博导]

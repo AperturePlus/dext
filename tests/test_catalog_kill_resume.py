@@ -18,6 +18,9 @@ from test_catalog_workflow import _settings, _source_db
     [
         ("DEXT_TEST_KILL_AFTER_BACKUP_CHUNKS", 91),
         ("DEXT_TEST_KILL_AFTER_INGEST_COMMITS", 92),
+        ("DEXT_TEST_KILL_AFTER_CURATION_IDENTITY_BATCHES", 93),
+        ("DEXT_TEST_KILL_AFTER_CURATION_FIELD_BATCHES", 94),
+        ("DEXT_TEST_KILL_AFTER_CURATION_CANONICAL_BATCHES", 95),
     ],
 )
 def test_subprocess_kill_and_resume_converges(
@@ -61,7 +64,7 @@ def test_subprocess_kill_and_resume_converges(
     )
     assert resumed.returncode == 0, resumed.stderr
     output = json.loads(resumed.stdout)
-    assert output["build"]["status"] == "CURATING"
+    assert output["build"]["status"] == "EMBEDDING"
     with sqlite3.connect(settings.catalog_path) as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM professor_observations"

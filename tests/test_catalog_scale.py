@@ -33,7 +33,7 @@ async def test_one_million_observations_stay_below_configured_rss(tmp_path):
             ((index, f"教师{index}") for index in range(1, 1_000_001)),
         )
     result = await create_build(["测试大学"], settings)
-    assert result["build"]["status"] == "CURATING"
+    assert result["build"]["status"] == "EMBEDDING"
     assert result["build"]["summary_json"]["observations_written"] == 1_000_000
     assert result["build"]["summary_json"]["peak_observed_rss_bytes"] <= (
         settings.build_max_rss_mb * 1024 * 1024

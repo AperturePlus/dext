@@ -34,6 +34,13 @@ def test_catalog_schema_is_versioned_and_complete(tmp_path):
         "sink_checkpoints",
         "quality_findings",
         "source_snapshot_protections",
+        "curation_runs",
+        "entities",
+        "identity_claims",
+        "entity_observations",
+        "field_claims",
+        "curation_overrides",
+        "canonical_professors",
     }.issubset(tables)
 
 

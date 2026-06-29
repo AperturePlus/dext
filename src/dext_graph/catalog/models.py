@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-CATALOG_SCHEMA_VERSION = 1
+CATALOG_SCHEMA_VERSION = 2
 
 BUILD_STATUSES = (
     "CREATED",
@@ -186,10 +186,132 @@ CREATE INDEX IF NOT EXISTS ix_findings_build_resolved ON quality_findings(build_
 """
 
 
+CURATION_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS curation_runs (
+    id TEXT PRIMARY KEY,
+    build_id TEXT NOT NULL UNIQUE REFERENCES graph_builds(id),
+    status TEXT NOT NULL CHECK (status IN ('PENDING','RUNNING','COMPLETED','FAILED')),
+    curation_version TEXT NOT NULL,
+    normalization_version TEXT NOT NULL,
+    rules_hash TEXT NOT NULL,
+    override_manifest_hash TEXT NOT NULL,
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    started_at TEXT,
+    finished_at TEXT,
+    last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS entities (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind='professor'),
+    status TEXT NOT NULL CHECK (status IN ('active','review','inactive','merged')),
+    merged_into_id TEXT REFERENCES entities(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK (merged_into_id IS NULL OR merged_into_id<>id)
+);
+
+CREATE TABLE IF NOT EXISTS identity_claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id TEXT NOT NULL REFERENCES entities(id),
+    claim_type TEXT NOT NULL CHECK (claim_type IN (
+      'profile_name_url','external_identity','email','listing_name_url','weak_org_name'
+    )),
+    claim_value TEXT NOT NULL,
+    strength TEXT NOT NULL CHECK (strength IN ('strong','weak')),
+    observation_id TEXT NOT NULL REFERENCES professor_observations(id),
+    active INTEGER NOT NULL CHECK (active IN (0,1)),
+    created_at TEXT NOT NULL,
+    UNIQUE(entity_id, claim_type, claim_value, observation_id)
+);
+
+CREATE TABLE IF NOT EXISTS entity_observations (
+    entity_id TEXT NOT NULL REFERENCES entities(id),
+    observation_id TEXT NOT NULL REFERENCES professor_observations(id),
+    match_method TEXT NOT NULL CHECK (match_method IN ('strong','weak','new','review','reused')),
+    match_score REAL,
+    build_id TEXT NOT NULL REFERENCES graph_builds(id),
+    PRIMARY KEY (build_id, observation_id)
+);
+
+CREATE TABLE IF NOT EXISTS field_claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id TEXT NOT NULL REFERENCES entities(id),
+    field_name TEXT NOT NULL,
+    normalized_value TEXT NOT NULL,
+    observation_id TEXT NOT NULL REFERENCES professor_observations(id),
+    confidence REAL NOT NULL,
+    selected INTEGER NOT NULL DEFAULT 0 CHECK (selected IN (0,1)),
+    selection_reason TEXT,
+    build_id TEXT NOT NULL REFERENCES graph_builds(id),
+    UNIQUE(build_id, entity_id, field_name, normalized_value, observation_id)
+);
+
+CREATE TABLE IF NOT EXISTS curation_overrides (
+    id TEXT PRIMARY KEY,
+    entity_id TEXT NOT NULL REFERENCES entities(id),
+    kind TEXT NOT NULL CHECK (kind IN ('field','role','merge')),
+    field_name TEXT,
+    value_json TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    supersedes_id TEXT REFERENCES curation_overrides(id),
+    active INTEGER NOT NULL CHECK (active IN (0,1)),
+    created_at TEXT NOT NULL,
+    UNIQUE(entity_id, kind, field_name, version)
+);
+
+CREATE TABLE IF NOT EXISTS canonical_professors (
+    entity_id TEXT NOT NULL REFERENCES entities(id),
+    build_id TEXT NOT NULL REFERENCES graph_builds(id),
+    name TEXT NOT NULL,
+    title_raw TEXT,
+    title_family TEXT NOT NULL CHECK (title_family IN (
+      'professor','associate','lecturer','researcher','clinical','technical','unknown'
+    )),
+    role_status TEXT NOT NULL CHECK (role_status IN ('included','review','excluded')),
+    role_reason_codes TEXT NOT NULL,
+    master_eligibility TEXT NOT NULL CHECK (master_eligibility IN ('confirmed','unknown','conflict')),
+    phd_eligibility TEXT NOT NULL CHECK (phd_eligibility IN ('confirmed','unknown','conflict')),
+    research_areas_text TEXT,
+    bio TEXT,
+    email TEXT,
+    phone TEXT,
+    profile_url TEXT,
+    external_url TEXT,
+    active INTEGER NOT NULL CHECK (active IN (0,1)),
+    completeness REAL NOT NULL,
+    PRIMARY KEY (entity_id, build_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_identity_active_strong
+ON identity_claims(claim_type, claim_value)
+WHERE active=1 AND strength='strong';
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_field_selected_scalar
+ON field_claims(build_id, entity_id, field_name)
+WHERE selected=1 AND field_name NOT IN ('research_areas','publications');
+
+CREATE INDEX IF NOT EXISTS ix_identity_entity_active
+ON identity_claims(entity_id, active, claim_type);
+
+CREATE INDEX IF NOT EXISTS ix_entity_observations_entity_build
+ON entity_observations(entity_id, build_id, observation_id);
+
+CREATE INDEX IF NOT EXISTS ix_field_claims_entity_build
+ON field_claims(entity_id, build_id, field_name, selected);
+
+CREATE INDEX IF NOT EXISTS ix_canonical_build_active
+ON canonical_professors(build_id, active, entity_id);
+"""
+
+
 __all__ = [
     "BUILD_STATUSES",
     "BuildSource",
     "CATALOG_SCHEMA_VERSION",
+    "CURATION_SCHEMA_SQL",
     "SCHEMA_SQL",
     "SOURCE_TASK_STATUSES",
 ]

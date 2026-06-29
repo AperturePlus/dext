@@ -15,7 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypeVar
 
-from dext_graph.catalog.models import CATALOG_SCHEMA_VERSION, SCHEMA_SQL
+from dext_graph.catalog.models import (
+    CATALOG_SCHEMA_VERSION,
+    CURATION_SCHEMA_SQL,
+    SCHEMA_SQL,
+)
 
 T = TypeVar("T")
 
@@ -131,13 +135,25 @@ def initialize_catalog(path: str | Path) -> Path:
                     "existing catalog has no recognized schema version; refusing to modify it"
                 )
             connection.executescript(SCHEMA_SQL)
+            connection.executescript(CURATION_SCHEMA_SQL)
             connection.execute(
                 "INSERT INTO catalog_meta(key, value) VALUES ('schema_version', ?)",
                 (str(CATALOG_SCHEMA_VERSION),),
             )
             connection.execute(f"PRAGMA user_version={CATALOG_SCHEMA_VERSION}")
+        elif version == 1 and CATALOG_SCHEMA_VERSION == 2:
+            # Public mutating workflows take a verified online backup before
+            # reaching this migration. Keep all schema additions and the
+            # version bump in one SQLite transaction.
+            connection.executescript(
+                "BEGIN IMMEDIATE;\n"
+                + CURATION_SCHEMA_SQL
+                + "\nUPDATE catalog_meta SET value='2' WHERE key='schema_version';\n"
+                + "PRAGMA user_version=2;\nCOMMIT;"
+            )
         elif version == CATALOG_SCHEMA_VERSION:
             connection.executescript(SCHEMA_SQL)
+            connection.executescript(CURATION_SCHEMA_SQL)
             recorded = connection.execute(
                 "SELECT value FROM catalog_meta WHERE key='schema_version'"
             ).fetchone()

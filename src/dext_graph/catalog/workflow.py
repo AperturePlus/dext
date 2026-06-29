@@ -54,6 +54,7 @@ _RESUME_SETTING_KEYS = (
     "build_write_queue",
     "build_max_rss_mb",
     "build_min_source_retention_ratio",
+    "curation_queue",
     "embedding_base_url",
     "embedding_model",
     "embedding_dimension",
@@ -1139,21 +1140,28 @@ async def create_build(
             await writer.execute(
                 lambda connection: _insert_build(connection, build_id, sources, settings)
             )
-            return await _run_build(writer, build_id, settings)
+            result = await _run_build(writer, build_id, settings)
+            if result["build"]["status"] == "CURATING":
+                from dext_graph.catalog.curation import run_curation
+
+                return await run_curation(writer, build_id, settings)
+            return result
 
 
 def _assert_resume_compatible(build: dict[str, Any], settings: GraphSettings) -> None:
     current = _settings_snapshot(settings)
     frozen = build["settings_json"]
     differences = [
-        key for key in _RESUME_SETTING_KEYS if frozen.get(key) != current.get(key)
+        key
+        for key in _RESUME_SETTING_KEYS
+        if key in frozen and frozen.get(key) != current.get(key)
     ]
     if differences:
         raise CatalogError(
             "resume settings are incompatible with the frozen build: "
             + ", ".join(differences)
         )
-    if frozen.get("catalog_schema_version") != CATALOG_SCHEMA_VERSION:
+    if frozen.get("catalog_schema_version") not in {1, CATALOG_SCHEMA_VERSION}:
         raise CatalogError("build catalog schema version is incompatible")
 
 
@@ -1167,13 +1175,31 @@ async def resume_build(
     with closing(connect_catalog_read_only(path)) as connection:
         build = _load_build(connection, build_id)
     _assert_resume_compatible(build, settings)
-    if build["status"] == "CURATING":
+    if build["status"] == "EMBEDDING":
         return build_status(path, build_id)
     with catalog_write_lock(path):
         backup_existing_catalog(path, progress_hook=_backup_progress(settings))
         initialize_catalog(path)
         async with CatalogWriter(path, max_queue=settings.build_write_queue) as writer:
-            return await _run_build(writer, build_id, settings)
+            has_curation_run = await writer.execute(
+                lambda connection: connection.execute(
+                    "SELECT 1 FROM curation_runs WHERE build_id=?", (build_id,)
+                ).fetchone()
+                is not None,
+                transactional=False,
+            )
+            if build["status"] == "CURATING" or (
+                build["status"] == "FAILED" and has_curation_run
+            ):
+                from dext_graph.catalog.curation import run_curation
+
+                return await run_curation(writer, build_id, settings)
+            result = await _run_build(writer, build_id, settings)
+            if result["build"]["status"] == "CURATING":
+                from dext_graph.catalog.curation import run_curation
+
+                return await run_curation(writer, build_id, settings)
+            return result
 
 
 def _serializable_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -1190,7 +1216,7 @@ def _serializable_row(row: sqlite3.Row) -> dict[str, Any]:
 def build_status(catalog_path: str | Path, build_id: str | None = None) -> dict[str, Any]:
     with closing(connect_catalog_read_only(catalog_path)) as connection:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version != CATALOG_SCHEMA_VERSION:
+        if version not in {1, CATALOG_SCHEMA_VERSION}:
             raise CatalogError(
                 f"catalog schema version {version} is incompatible with "
                 f"{CATALOG_SCHEMA_VERSION}"
@@ -1230,12 +1256,23 @@ def build_status(catalog_path: str | Path, build_id: str | None = None) -> dict[
                 (build_id,),
             )
         }
+        curation_run = None
+        has_curation_table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='curation_runs'"
+        ).fetchone()
+        if has_curation_table is not None:
+            row = connection.execute(
+                "SELECT * FROM curation_runs WHERE build_id=?", (build_id,)
+            ).fetchone()
+            if row is not None:
+                curation_run = _serializable_row(row)
         return {
             "catalog_path": str(Path(catalog_path).resolve()),
             "build": _serializable_row(build),
             "sources": tasks,
             "checkpoints": checkpoints,
             "unresolved_findings": finding_counts,
+            "curation": curation_run,
         }
 
 
