@@ -8,8 +8,8 @@ function fakeFetch(routes) {
     const u = new URL(url);
     const method = (init?.method || 'GET').toUpperCase();
     let key = `${method} ${u.pathname}`;
-    // match /jobs/{id}/fail etc.
-    const jobMatch = u.pathname.match(/^\/api\/jobs\/([^/]+)\/(fail|skip)$/);
+    // match /jobs/{id}/fail|skip|override|complete etc.
+    const jobMatch = u.pathname.match(/^\/api\/jobs\/([^/]+)\/(fail|skip|override|complete)$/);
     if (jobMatch) key = `POST /jobs/:id/${jobMatch[2]}`;
     const route = routes[key];
     if (!route) throw new Error(`no fake route for ${key}`);
@@ -293,5 +293,45 @@ test('resolveDecision: POSTs /decision/{id}/resolve with {action}; swallows erro
     // error swallow
     const errApi = mod.createFetchApi('http://x/api', async () => { throw new Error('net'); });
     await errApi.resolveDecision('dec-1', 'accept');   // does not throw
+  } finally { await cleanup(); }
+});
+
+test('overrideJobUrl: POSTs /jobs/{id}/override with {new_url}; returns refreshed FetchJob', async () => {
+  const { mod, cleanup } = await importTsModule('../src/api.ts', 'api.ts');
+  try {
+    let captured = null;
+    const refreshed = {
+      id: 'job-1', url: 'https://x.edu.cn/override', status: 'assigned',
+      context: { university_name: 'X', agent_state: '', intent: '', parent_url: '', depth: 0, org_unit_name: '', hints: [] },
+      created_at: '2026-06-28T00:00:00', timeout_seconds: 60, action: null, identity_url: null,
+    };
+    const fetchFn = async (url, init) => {
+      captured = { url, method: init.method, body: JSON.parse(init.body) };
+      return { status: 200, ok: true, json: async () => refreshed };
+    };
+    const api = mod.createFetchApi('http://127.0.0.1:21520/api', fetchFn);
+    const j = await api.overrideJobUrl('job-1', 'https://x.edu.cn/override');
+    assert.equal(captured.url, 'http://127.0.0.1:21520/api/jobs/job-1/override');
+    assert.equal(captured.method, 'POST');
+    assert.deepEqual(captured.body, { new_url: 'https://x.edu.cn/override' });
+    assert.equal(j.id, 'job-1');
+    assert.equal(j.url, 'https://x.edu.cn/override');
+  } finally { await cleanup(); }
+});
+
+test('overrideJobUrl: 204/non-ok → null; network error → null (swallow)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/api.ts', 'api.ts');
+  try {
+    // 204 → null
+    let status = 204;
+    const fetchFn = async () => ({ status, ok: status < 300, json: async () => null });
+    const api = mod.createFetchApi('http://x/api', fetchFn);
+    assert.equal(await api.overrideJobUrl('job-1', 'u'), null);
+    // non-ok → null
+    status = 500;
+    assert.equal(await api.overrideJobUrl('job-1', 'u'), null);
+    // network error → null (swallow, no throw)
+    const errApi = mod.createFetchApi('http://x/api', async () => { throw new Error('net'); });
+    assert.equal(await errApi.overrideJobUrl('job-1', 'u'), null);
   } finally { await cleanup(); }
 });

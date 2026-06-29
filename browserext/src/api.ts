@@ -37,6 +37,7 @@ export interface ApiClient {
   failJob(jobId: string, message: string): Promise<void>;
   skipJob(jobId: string, reason: string): Promise<void>;
   completeJob(jobId: string, html: string, url: string, title: string, paginationStates?: PaginationState[]): Promise<void>;
+  overrideJobUrl(jobId: string, newUrl: string): Promise<FetchJob | null>;
   sendHeartbeat(payload: HeartbeatPayload): Promise<void>;
   getDecision(): Promise<PendingDecision | null>;
   resolveDecision(id: string, action: string): Promise<void>;
@@ -119,6 +120,21 @@ export function createFetchApi(base: string, fetchFn?: FetchFn): ApiClient {
     }
   }
 
+  async function overrideJobUrl(jobId: string, newUrl: string): Promise<FetchJob | null> {
+    try {
+      const res = await fetch(`${base}/jobs/${jobId}/override`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ new_url: newUrl }),
+      });
+      if (res.status === 204) return null;
+      if (!res.ok) return null;
+      return (await res.json()) as FetchJob;
+    } catch {
+      // swallow — the controller treats a null return as a no-op (keeps the cached job).
+      return null;
+    }
+  }
+
   async function getDecision(): Promise<PendingDecision | null> {
     try {
       const res = await fetch(`${base}/decision`, { method: 'GET' });
@@ -141,5 +157,5 @@ export function createFetchApi(base: string, fetchFn?: FetchFn): ApiClient {
     }
   }
 
-  return { getStatus, claimNextJob, completeJob, failJob, skipJob, sendHeartbeat, getDecision, resolveDecision };
+  return { getStatus, claimNextJob, completeJob, overrideJobUrl, failJob, skipJob, sendHeartbeat, getDecision, resolveDecision };
 }

@@ -5,7 +5,7 @@
  * lastError is a discriminated ControllerError, never a string. Slice 1 only
  * persists the binding skeleton; later slices fill navigation/pendingRpc. */
 
-import type { FetchJob } from './types.js';
+import type { FetchJob, PendingDecision } from './types.js';
 
 export type ControllerPhase =
   | 'idle' | 'assigned' | 'claiming' | 'navigating' | 'landed'
@@ -101,6 +101,7 @@ export interface ControllerState {
   backendFailureCount: number;
   nextBackendRetryAt: number | null;
   lastError: ControllerError | null;
+  pendingDecision: PendingDecision | null;
 }
 
 export function initialControllerState(now: number): ControllerState {
@@ -118,5 +119,6 @@ export function initialControllerState(now: number): ControllerState {
     backendFailureCount: 0,
     nextBackendRetryAt: null,
     lastError: null,
+    pendingDecision: null,
   };
 }

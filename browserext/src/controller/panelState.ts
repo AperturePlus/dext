@@ -5,24 +5,17 @@
  *  over). lastError is the RAW ControllerError — the content panel (panelState.ts
  *  /formatError) renders the human text; the SW never localizes. No chrome, no DOM.
  *
- *  Note: ControllerState.pendingDecision is added in Task 5; until then this
- *  projector reads it via a safe cast rather than mutating shared/state.ts. */
+ *  ControllerState.pendingDecision was added in Task 5 (slice 5); this projector
+ *  now reads it directly off the state object. */
 
 import type { ControllerState } from '../shared/state.js';
 import type { PanelState } from '../shared/rpc.js';
-import type { PendingDecision } from '../shared/types.js';
 
 export interface PanelSender {
   tabId: number | null;
 }
 
-/** ControllerState will gain `pendingDecision` in Task 5; until then access it
- *  through this widened view so the projector compiles under strict tsc without
- *  touching shared/state.ts in this task. */
-type ControllerStateWithDecision = ControllerState & { pendingDecision: PendingDecision | null };
-
 export function buildPanelState(state: ControllerState, sender: PanelSender): PanelState {
-  const s = state as ControllerStateWithDecision;
   return {
     isBoundTab: sender.tabId !== null && sender.tabId === state.boundTabId,
     bound: state.boundTabId !== null,
@@ -33,6 +26,6 @@ export function buildPanelState(state: ControllerState, sender: PanelSender): Pa
     currentJob: state.currentJob,
     navigationAttempt: state.navigation?.attempt ?? 0,
     lastError: state.lastError,
-    pendingDecision: s.pendingDecision,
+    pendingDecision: state.pendingDecision,
   };
 }

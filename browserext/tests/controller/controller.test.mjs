@@ -58,14 +58,29 @@ test('initial state is unbound idle', async () => {
 
 // ---- slice 2: /status reconcile + backoff + heartbeat + tab-validity ----
 
-function fakeApi(statusResponse) {
-  const calls = { getStatus: 0, sendHeartbeat: [] };
-  return {
+// Widen fakeApi to record skip/fail/complete/overrideJobUrl/getDecision/resolveDecision
+// so slice-5 command tests can assert call sites. nextDecision lets a test stage
+// a /decision response (null by default).
+function fakeApi(statusResponse, opts = {}) {
+  const calls = {
+    getStatus: 0, sendHeartbeat: [],
+    skip: [], fail: [], complete: [],
+    overrideJobUrl: [], getDecision: 0, resolveDecision: [],
+  };
+  const api = {
     calls,
+    nextDecision: opts.nextDecision ?? null,
+    nextOverrideJob: opts.nextOverrideJob ?? null,
     async getStatus() { calls.getStatus += 1; return statusResponse; },
-    async failJob() {}, async skipJob() {},
+    async failJob(id, msg) { calls.fail.push({ id, msg }); },
+    async skipJob(id, reason) { calls.skip.push({ id, reason }); },
+    async completeJob(id, html, url, title, ps) { calls.complete.push({ id, html, url, title, ps }); },
+    async overrideJobUrl(id, url) { calls.overrideJobUrl.push({ id, url }); return api.nextOverrideJob; },
+    async getDecision() { calls.getDecision += 1; return api.nextDecision; },
+    async resolveDecision(id, action) { calls.resolveDecision.push({ id, action }); },
     async sendHeartbeat(p) { calls.sendHeartbeat.push(p); },
   };
+  return api;
 }
 
 function fakeChrome(getTabResult) {
@@ -153,6 +168,7 @@ test('tick: after backoff expires, /status is called again and success resets ba
       calls: { getStatus: 0 },
       async getStatus() { return responses[api.calls.getStatus++] ?? responses[responses.length - 1]; },
       async failJob() {}, async skipJob() {}, async sendHeartbeat() {},
+      async getDecision() { return null; },
     };
     const chr = fakeChrome({ id: 42, url: 'https://x.edu.cn/' });
     const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
@@ -258,6 +274,7 @@ function fakeApi3({ statusResponse, nextJob }) {
     },
     async failJob(id, msg) { calls.fail.push({ id, msg }); },
     async skipJob(id, reason) { calls.skip.push({ id, reason }); },
+    async getDecision() { return null; },
     async sendHeartbeat(p) { calls.sendHeartbeat.push(p); },
   };
 }
@@ -637,6 +654,7 @@ function fakeApi4({ statusResponse, completeOk = true }) {
     async completeJob(id, html, url, title, ps) { calls.complete.push({ id, html, url, title, ps }); },
     async failJob(id, msg) { calls.fail.push({ id, msg }); },
     async skipJob(id, reason) { calls.skip.push({ id, reason }); },
+    async getDecision() { return null; },
     async sendHeartbeat(p) { calls.sendHeartbeat.push(p); },
   };
 }
@@ -821,6 +839,7 @@ function fakeApi4b({ statusResponse }) {
     async completeJob(id, html, url, title, ps) { calls.complete.push({ id, html, url, title, ps }); },
     async failJob(id, msg) { calls.fail.push({ id, msg }); },
     async skipJob(id, reason) { calls.skip.push({ id, reason }); },
+    async getDecision() { return null; },
     async sendHeartbeat(p) { calls.sendHeartbeat.push(p); },
   };
 }
@@ -954,5 +973,232 @@ test('PERFORM_ACTION repeat (same rpcId) does NOT generate a new perform rpcId a
     const s = await c.getState();
     assert.equal(s.pendingRpc.id, perfRpcId, 'no new perform rpcId once requestId is bound');
     assert.equal(s.navigation.requestId, 'REQ-PERF');
+  } finally { await cleanup(); }
+});
+
+// ---- slice 5: pendingDecision + command methods + broadcastPanelState ----
+
+test('unbind: drops boundTabId, keeps currentJob cache as assigned (spec §2.5, no fail/skip)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi({ current_job: job('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://x.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.tick(2000);   // picks up job-1 → assigned
+    await c.setAutoMode(true, 3000);
+    await c.tick(4000);   // navigates
+    await c.unbind(5000);
+    const s = await c.getState();
+    assert.equal(s.boundTabId, null);
+    assert.equal(s.boundAt, null);
+    assert.ok(s.currentJob, 'currentJob cache retained');
+    assert.deepEqual(api.calls.skip, [], 'unbind does NOT skip');
+    assert.deepEqual(api.calls.fail, [], 'unbind does NOT fail');
+  } finally { await cleanup(); }
+});
+
+test('setPaused: toggles paused flag + persists (slice 5)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi({ current_job: null, frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://x.edu.cn/' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.setPaused(true, 2000);
+    let s = await c.getState();
+    assert.equal(s.paused, true);
+    assert.equal(s.phaseStartedAt, 2000);
+    await c.setPaused(false, 3000);
+    s = await c.getState();
+    assert.equal(s.paused, false);
+  } finally { await cleanup(); }
+});
+
+test('manualSkip: POSTs /jobs/{id}/skip with reason, clears navigation/pendingRpc, phase assigned (slice 5)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi({ current_job: job('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://x.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.tick(2000);   // caches job-1
+    await c.manualSkip('user-skip', 3000);
+    assert.deepEqual(api.calls.skip, [{ id: 'job-1', reason: 'user-skip' }]);
+    const s = await c.getState();
+    assert.equal(s.navigation, null);
+    assert.equal(s.pendingRpc, null);
+    assert.equal(s.phase, 'assigned', 'job may still be current; reconcile owns clearing');
+  } finally { await cleanup(); }
+});
+
+test('manualFail: POSTs /jobs/{id}/fail with message, clears navigation/pendingRpc, phase error (slice 5)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi({ current_job: job('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://x.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.tick(2000);
+    await c.manualFail('user-fail', 3000);
+    assert.deepEqual(api.calls.fail, [{ id: 'job-1', msg: 'user-fail' }]);
+    const s = await c.getState();
+    assert.equal(s.navigation, null);
+    assert.equal(s.pendingRpc, null);
+    assert.equal(s.phase, 'error');
+    assert.equal(s.lastError.kind, 'nav_error');
+    assert.equal(s.lastError.error, 'user-fail');
+  } finally { await cleanup(); }
+});
+
+test('overrideUrl: POSTs /jobs/{id}/override, caches refreshed job, clears nav/rpc/error, phase assigned (slice 5)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const refreshed = job('job-1', 'https://x.edu.cn/OVERRIDE');
+    const api = fakeApi(
+      { current_job: job('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } },
+      { nextOverrideJob: refreshed },
+    );
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://x.edu.cn/job-1' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.tick(2000);
+    await c.overrideUrl('https://x.edu.cn/OVERRIDE', 3000);
+    assert.deepEqual(api.calls.overrideJobUrl, [{ id: 'job-1', url: 'https://x.edu.cn/OVERRIDE' }]);
+    const s = await c.getState();
+    assert.equal(s.currentJob.url, 'https://x.edu.cn/OVERRIDE', 'refreshed job cached');
+    assert.equal(s.navigation, null);
+    assert.equal(s.pendingRpc, null);
+    assert.equal(s.lastError, null);
+    assert.equal(s.phase, 'assigned', 'next tick navigates the new URL');
+  } finally { await cleanup(); }
+});
+
+test('overrideUrl: unbound controller → no-op (navigation needs a bound tab) (slice 5)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const refreshed = job('job-1', 'https://x.edu.cn/OVERRIDE');
+    const api = fakeApi(
+      { current_job: job('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } },
+      { nextOverrideJob: refreshed },
+    );
+    const chr = fakeChrome3({ tab: null });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.tick(2000);   // never bound; caches job-1 via /status
+    await c.overrideUrl('https://x.edu.cn/OVERRIDE', 3000);
+    assert.deepEqual(api.calls.overrideJobUrl, [], 'no override call when unbound');
+  } finally { await cleanup(); }
+});
+
+test('resolveDecision: POSTs /decision/{id}/resolve, clears pendingDecision (slice 5)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const dec = { id: 'dec-1', kind: 'dedup', org_unit_name: 'X', failure_count: 1, sample_urls: [], suggested_action: 'skip', status: 'pending', action: null, created_at: 't' };
+    const api = fakeApi(
+      { current_job: null, frontend_health: { alive: true, last_seen_seconds_ago: 1 } },
+      { nextDecision: dec },
+    );
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://x.edu.cn/' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.tick(2000);   // polls /decision → caches dec-1
+    let s = await c.getState();
+    assert.equal(s.pendingDecision?.id, 'dec-1', 'decision cached by tick');
+    await c.resolveDecision('dec-1', 'accept', 3000);
+    assert.deepEqual(api.calls.resolveDecision, [{ id: 'dec-1', action: 'accept' }]);
+    s = await c.getState();
+    assert.equal(s.pendingDecision, null, 'pendingDecision cleared after resolve');
+  } finally { await cleanup(); }
+});
+
+test('broadcastPanelState: pushes STATE_CHANGED to the bound tab (slice 5)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi({ current_job: null, frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
+    const sent = [];
+    const chr = {
+      async getTab() { return { id: 42, url: 'https://x.edu.cn/' }; },
+      async sendMessage(tabId, message, options) { sent.push({ tabId, message, options }); return { received: true }; },
+    };
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.broadcastPanelState();
+    assert.ok(sent.length >= 1, 'at least one STATE_CHANGED sent');
+    const toBound = sent.find((m) => m.tabId === 42);
+    assert.ok(toBound, 'STATE_CHANGED pushed to bound tab 42');
+    assert.equal(toBound.message.op, 'STATE_CHANGED');
+    assert.equal(toBound.options.frameId, 0);
+    assert.equal(toBound.message.state.bound, true);
+  } finally { await cleanup(); }
+});
+
+test('broadcastPanelState: sender tab != bound tab → STATE_CHANGED also pushed to sender (slice 5)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi({ current_job: null, frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
+    const sent = [];
+    const chr = {
+      async getTab() { return { id: 42, url: 'https://x.edu.cn/' }; },
+      async sendMessage(tabId, message, options) { sent.push({ tabId, message, options }); return { received: true }; },
+    };
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.broadcastPanelState({ tabId: 99 });
+    const tabIds = sent.map((m) => m.tabId).sort();
+    assert.deepEqual(tabIds, [42, 99], 'pushed to both bound tab and sender tab');
+  } finally { await cleanup(); }
+});
+
+test('tick polls /decision when bound+connected; caches pendingDecision (slice 5)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const dec = { id: 'dec-1', kind: 'dedup', org_unit_name: 'X', failure_count: 1, sample_urls: [], suggested_action: 'skip', status: 'pending', action: null, created_at: 't' };
+    const api = fakeApi(
+      { current_job: null, frontend_health: { alive: true, last_seen_seconds_ago: 1 } },
+      { nextDecision: dec },
+    );
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://x.edu.cn/' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.tick(2000);
+    const s = await c.getState();
+    assert.equal(s.pendingDecision?.id, 'dec-1');
+    assert.ok(api.calls.getDecision >= 1, '/decision polled');
+  } finally { await cleanup(); }
+});
+
+test('tick /decision null → pendingDecision cleared (slice 5)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi(
+      { current_job: null, frontend_health: { alive: true, last_seen_seconds_ago: 1 } },
+      { nextDecision: null },
+    );
+    const chr = fakeChrome3({ tab: { id: 42, url: 'https://x.edu.cn/' } });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.tick(2000);
+    const s = await c.getState();
+    assert.equal(s.pendingDecision, null, 'null decision clears pendingDecision');
+  } finally { await cleanup(); }
+});
+
+test('initialControllerState has pendingDecision null (slice 5)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(fakeArea()) });
+    const s = await c.getState();
+    assert.equal(s.pendingDecision, null);
   } finally { await cleanup(); }
 });

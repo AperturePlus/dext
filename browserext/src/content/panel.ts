@@ -99,7 +99,7 @@ export function mountPanel(dom: PanelDom, onCommand?: (cmd: PanelCommand) => voi
     if (onCommand) {
       shadow.addEventListener('click', (e) => {
         const t = e.target as { dataset?: Record<string, string> } | null;
-        const cmd = commandFromClick((t && t.dataset) ? t : null, () => null);
+        const cmd = commandFromClick((t && t.dataset) ? { dataset: t.dataset } : null, () => null);
         if (cmd) onCommand(cmd);
       });
     }

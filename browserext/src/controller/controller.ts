@@ -22,6 +22,7 @@ import { evaluateLanding } from './landing.js';
 import { funnelDecision } from './funnel.js';
 import { navTimeoutKind } from './deadline.js';
 import { redirectKind, urlMatches } from '../shared/urlGate.js';
+import { buildPanelState } from './panelState.js';
 import type { ApiClient } from '../api.js';
 import type { ChromeRuntime } from '../chrome.js';
 import type { ControllerState, ControllerError, NavOutcome } from '../shared/state.js';
@@ -55,6 +56,14 @@ export interface CrawlController extends NavController {
   tick(now?: number): Promise<void>;
   bind(tabId: number, now?: number): Promise<void>;
   setAutoMode(mode: boolean, now?: number): Promise<void>;
+  setPaused(paused: boolean, now?: number): Promise<void>;
+  unbind(now?: number): Promise<void>;
+  manualSkip(reason: string | undefined, now?: number): Promise<void>;
+  manualFail(message: string | undefined, now?: number): Promise<void>;
+  overrideUrl(url: string, now?: number): Promise<void>;
+  resolveDecision(id: string, action: string, now?: number): Promise<void>;
+  manualComplete(now?: number): Promise<void>;
+  broadcastPanelState(sender?: { tabId: number | null }, reason?: string): Promise<void>;
   getState(): Promise<ControllerState>;
   deliverCaptureResult(result: CaptureResult, sender: { tab?: { id: number }; frameId?: number; documentId?: string }): Promise<void>;
   dispatchPrepareAction(action: FetchAction): Promise<void>;
@@ -693,6 +702,16 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
           await heartbeat.send(s, now);
         }
 
+        // 3.5. /decision poll (slice 5) — bound + connected only. Persist on change
+        //      via the saveIfChanged umbrella (spec §2.2). On null, clear it.
+        if (s.connected && s.boundTabId !== null && deps.api) {
+          const dec = await deps.api.getDecision();
+          const changed = (dec?.id ?? null) !== (s.pendingDecision?.id ?? null);
+          if (changed) {
+            s.pendingDecision = dec;
+          }
+        }
+
         // 4. Claim (slice 3) — idle + bound + auto + !paused + no currentJob.
         //    A bound controller with no job sits in `assigned` (from bind); spec §2.5
         //    holds it there until the user restores auto (setAutoMode(true)
@@ -851,6 +870,124 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
         await persist();
       } finally {
         release();
+      }
+    },
+
+    async setPaused(paused: boolean, now: number = Date.now()): Promise<void> {
+      const release = await mutex.acquire();
+      try {
+        const s = await ensureLoaded();
+        if (!EXCLUSIVE_CONTROL_ENABLED) return;
+        s.paused = paused;
+        s.phaseStartedAt = now;
+        await persist();
+      } finally {
+        release();
+      }
+    },
+
+    async unbind(now: number = Date.now()): Promise<void> {
+      const release = await mutex.acquire();
+      try {
+        const s = await ensureLoaded();
+        if (!EXCLUSIVE_CONTROL_ENABLED) return;
+        s.boundTabId = null;
+        s.boundAt = null;
+        // keep currentJob cache; drop to assigned (spec §2.5). Do NOT fail/skip.
+        s.phase = s.currentJob ? 'assigned' : 'idle';
+        s.phaseStartedAt = now;
+        await persist();
+      } finally {
+        release();
+      }
+    },
+
+    async manualSkip(reason: string | undefined, now: number = Date.now()): Promise<void> {
+      const release = await mutex.acquire();
+      try {
+        const s = await ensureLoaded();
+        if (!EXCLUSIVE_CONTROL_ENABLED) return;
+        if (!s.currentJob) return;
+        if (deps.api) await deps.api.skipJob(s.currentJob.id, reason ?? 'manual');
+        s.navigation = null; s.pendingRpc = null; s.lastError = null;
+        s.phase = 'assigned'; s.phaseStartedAt = now;   // job may still be current; reconcile owns clearing
+        await persist();
+      } finally {
+        release();
+      }
+    },
+
+    async manualFail(message: string | undefined, now: number = Date.now()): Promise<void> {
+      const release = await mutex.acquire();
+      try {
+        const s = await ensureLoaded();
+        if (!EXCLUSIVE_CONTROL_ENABLED) return;
+        if (!s.currentJob) return;
+        if (deps.api) await deps.api.failJob(s.currentJob.id, message ?? 'manual');
+        s.navigation = null; s.pendingRpc = null;
+        s.lastError = { kind: 'nav_error', error: message ?? 'manual' };
+        s.phase = 'error'; s.phaseStartedAt = now;
+        await persist();
+      } finally {
+        release();
+      }
+    },
+
+    async overrideUrl(url: string, now: number = Date.now()): Promise<void> {
+      const release = await mutex.acquire();
+      try {
+        const s = await ensureLoaded();
+        if (!EXCLUSIVE_CONTROL_ENABLED) return;
+        if (!s.currentJob || s.boundTabId === null || !deps.api) return;
+        const refreshed = await deps.api.overrideJobUrl(s.currentJob.id, url);
+        if (refreshed) s.currentJob = refreshed;
+        s.navigation = null; s.pendingRpc = null; s.lastError = null;
+        s.phase = 'assigned'; s.phaseStartedAt = now;   // next tick navigates the new URL
+        await persist();
+      } finally {
+        release();
+      }
+    },
+
+    async resolveDecision(id: string, action: string, now: number = Date.now()): Promise<void> {
+      const release = await mutex.acquire();
+      try {
+        const s = await ensureLoaded();
+        if (!EXCLUSIVE_CONTROL_ENABLED) return;
+        if (deps.api) await deps.api.resolveDecision(id, action);
+        if (s.pendingDecision?.id === id) { s.pendingDecision = null; }
+        await persist();
+      } finally {
+        release();
+      }
+    },
+
+    async manualComplete(now: number = Date.now()): Promise<void> {
+      const release = await mutex.acquire();
+      try {
+        const s = await ensureLoaded();
+        if (!EXCLUSIVE_CONTROL_ENABLED) return;
+        // submit: re-dispatch capture on the current landed/source document.
+        if (s.phase !== 'landed' && !(s.phase === 'capturing' && s.pendingRpc)) return;
+        s.phase = 'submitting'; s.phaseStartedAt = now;
+        await persist();
+        await dispatchCapture(s, now);
+      } finally {
+        release();
+      }
+    },
+
+    async broadcastPanelState(sender?: { tabId: number | null }, _reason?: string): Promise<void> {
+      const s = await ensureLoaded();
+      if (!EXCLUSIVE_CONTROL_ENABLED) return;
+      if (!deps.chrome?.sendMessage) return;
+      if (s.boundTabId !== null) {
+        const state = buildPanelState(s, { tabId: s.boundTabId });
+        try { await deps.chrome.sendMessage(s.boundTabId, { op: 'STATE_CHANGED', state }, { frameId: 0 }); } catch { /* tab gone */ }
+      }
+      if (sender?.tabId != null && sender.tabId !== s.boundTabId) {
+        const state = buildPanelState(s, { tabId: sender.tabId });
+        try { await deps.chrome.sendMessage(sender.tabId, { op: 'STATE_CHANGED', state }, { frameId: 0 }); } catch { /* tab gone */ }
       }
     },
 
