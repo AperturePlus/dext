@@ -12,7 +12,9 @@ import BuildStageTimeline from '../components/charts/BuildStageTimeline.vue'
 import ExportPartitionChart from '../components/charts/ExportPartitionChart.vue'
 import FindingSummaryChart from '../components/charts/FindingSummaryChart.vue'
 import GraphNetworkPreview from '../components/charts/GraphNetworkPreview.vue'
+import RoleDistributionChart from '../components/charts/RoleDistributionChart.vue'
 import SourceTaskChart from '../components/charts/SourceTaskChart.vue'
+import TitleFamilyChart from '../components/charts/TitleFamilyChart.vue'
 import BuildList from '../components/features/BuildList.vue'
 import CheckpointTable from '../components/features/CheckpointTable.vue'
 import FindingSummary from '../components/features/FindingSummary.vue'
@@ -111,6 +113,11 @@ defineEmits<{
               <FindingSummaryChart :counts="detail.unresolved_findings" />
             </div>
           </PanelCard>
+          <PanelCard title="Role distribution" subtitle="Canonical entity roles">
+            <div class="panel-body">
+              <RoleDistributionChart :counts="metrics.role_counts ?? {}" />
+            </div>
+          </PanelCard>
         </aside>
 
         <section class="content">
@@ -137,13 +144,19 @@ defineEmits<{
                 <ExportPartitionChart :partitions="metrics.export_partitions" />
               </div>
             </PanelCard>
-            <PanelCard title="Runs" subtitle="Curation and graph materialization">
-              <div class="run-grid panel-body">
-                <RunSummary label="Curation" :run="detail.curation" />
-                <RunSummary label="Graph" :run="detail.graph" />
+            <PanelCard title="Title families" subtitle="Top normalized title families">
+              <div class="panel-body">
+                <TitleFamilyChart :counts="metrics.title_family_counts ?? {}" />
               </div>
             </PanelCard>
           </section>
+
+          <PanelCard title="Runs" subtitle="Curation and graph materialization">
+            <div class="run-grid panel-body">
+              <RunSummary label="Curation" :run="detail.curation" />
+              <RunSummary label="Graph" :run="detail.graph" />
+            </div>
+          </PanelCard>
 
           <PanelCard title="Checkpoints" subtitle="Read-only sink progress checkpoints">
             <CheckpointTable :checkpoints="detail.checkpoints" />
