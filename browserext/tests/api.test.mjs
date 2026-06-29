@@ -224,3 +224,36 @@ test('claimNextJob returns null on fetch error', async () => {
     await cleanup();
   }
 });
+
+test('completeJob POSTs /complete with html/url/title/pagination_states', async () => {
+  const { mod, cleanup } = await importTsModule('../src/api.ts', 'api.ts');
+  try {
+    let posted = null;
+    const fetchFn = async (url, init) => {
+      posted = { url, init };
+      return { status: 200, ok: true, json: async () => ({}) };
+    };
+    const api = mod.createFetchApi('http://127.0.0.1:21520/api', fetchFn);
+    await api.completeJob('job-1', '<html/>', 'https://x.edu.cn/p', 'Title', [{ kind: 'form_submit', state_id: 's', label: 'l', page_index: 2, form_name: 'f', fields: { p: '2' }, submit: true, synthetic_url: 'syn', url: 'u' }]);
+    assert.equal(posted.url, 'http://127.0.0.1:21520/api/jobs/job-1/complete');
+    assert.equal(posted.init.method, 'POST');
+    const body = JSON.parse(posted.init.body);
+    assert.equal(body.html, '<html/>');
+    assert.equal(body.url, 'https://x.edu.cn/p');
+    assert.equal(body.title, 'Title');
+    assert.equal(body.pagination_states.length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('completeJob swallows errors (late /complete idempotency — CLAUDE.md bug trap)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/api.ts', 'api.ts');
+  try {
+    const fetchFn = async () => { throw new Error('ECONNRESET'); };
+    const api = mod.createFetchApi('http://127.0.0.1:21520/api', fetchFn);
+    await assert.doesNotReject(async () => { await api.completeJob('job-1', 'x', 'u', 't'); });
+  } finally {
+    await cleanup();
+  }
+});

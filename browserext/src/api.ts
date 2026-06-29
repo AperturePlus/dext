@@ -5,7 +5,7 @@
  * and /fail + /skip are idempotent against stale ids anyway; heartbeat failure is reflected
  * by /status reconnect, not the heartbeat POST). */
 
-import type { FetchJob } from './shared/types.js';
+import type { FetchJob, PaginationState } from './shared/types.js';
 
 export interface CurrentJob {
   id: string;
@@ -36,6 +36,7 @@ export interface ApiClient {
   claimNextJob(): Promise<FetchJob | null>;
   failJob(jobId: string, message: string): Promise<void>;
   skipJob(jobId: string, reason: string): Promise<void>;
+  completeJob(jobId: string, html: string, url: string, title: string, paginationStates?: PaginationState[]): Promise<void>;
   sendHeartbeat(payload: HeartbeatPayload): Promise<void>;
 }
 
@@ -93,6 +94,18 @@ export function createFetchApi(base: string, fetchFn?: FetchFn): ApiClient {
     }
   }
 
+  async function completeJob(jobId: string, html: string, url: string, title: string, paginationStates?: PaginationState[]): Promise<void> {
+    try {
+      await fetch(`${base}/jobs/${jobId}/complete`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ html, url, title, pagination_states: paginationStates ?? [] }),
+      });
+    } catch {
+      // late/stale /complete after the 60s job timeout is idempotent (backend no-ops a stale id);
+      // the script's 10s per-request timeout can also surface here. Swallow — never crash.
+    }
+  }
+
   async function sendHeartbeat(payload: HeartbeatPayload): Promise<void> {
     try {
       await fetch(`${base}/heartbeat`, {
@@ -104,5 +117,5 @@ export function createFetchApi(base: string, fetchFn?: FetchFn): ApiClient {
     }
   }
 
-  return { getStatus, claimNextJob, failJob, skipJob, sendHeartbeat };
+  return { getStatus, claimNextJob, completeJob, failJob, skipJob, sendHeartbeat };
 }
