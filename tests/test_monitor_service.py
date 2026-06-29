@@ -342,6 +342,46 @@ async def test_monitor_aiohttp_api(tmp_path: Path) -> None:
         body = await resp.json()
         assert body["error"]["type"] == "MonitorCatalogError"
 
+        # Unknown /api/monitor paths must return a JSON error envelope, not an
+        # HTML 404, so the frontend's response parser never breaks.
+        resp = await client.get("/api/monitor/builds/build-1/no-such-subresource")
+        assert resp.status == 404
+        assert resp.content_type == "application/json"
+        body = await resp.json()
+        assert body["error"]["type"] == "MonitorNotFoundError"
+
+
+@pytest.mark.asyncio
+async def test_monitor_static_dir_resolves_relative_to_repo_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative monitor_static_dir (default 'webui/dist') must resolve against
+    the repository root, not the process CWD — otherwise `dext monitor serve`
+    run from outside the repo can't find the built UI."""
+    catalog = tmp_path / "catalog.db"
+    _write_catalog(catalog)
+    repo_root = Path(__file__).resolve().parents[1]
+    dist = repo_root / "webui" / "dist"
+    created = False
+    if not (dist / "index.html").is_file():
+        dist.mkdir(parents=True, exist_ok=True)
+        (dist / "index.html").write_text("<!doctype html><title>x</title>", encoding="utf-8")
+        (dist / "assets").mkdir(exist_ok=True)
+        (dist / "assets" / "app.js").write_text("console.log(1)", encoding="utf-8")
+        created = True
+    try:
+        # Run from a CWD that has no 'webui/dist' — resolution must still find the
+        # repo-rooted build via the relative default.
+        monkeypatch.chdir(tmp_path)
+        settings = MonitorSettings(catalog_path=catalog)  # default static_dir = webui/dist
+        app = create_app(settings)
+        named = app.router.named_resources()
+        assert "assets" in named, "static /assets route should register when dist exists"
+    finally:
+        if created:
+            import shutil
+            shutil.rmtree(dist, ignore_errors=True)
+
 
 def test_monitor_cli_is_top_level_and_lazy_imports_monitor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Ensure importing the CLI itself does not import the monitor package or server.
