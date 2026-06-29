@@ -464,6 +464,74 @@ def test_list_builds_uses_constant_query_count_not_n_plus_1(tmp_path: Path) -> N
     assert counts[0] == 1, f"expected a single aggregated SELECT, got {counts[0]}"
 
 
+def test_graph_preview_filters_relationships_by_node_set_in_sql(tmp_path: Path) -> None:
+    """P3-11: graph_preview must push the relationship endpoint filter into SQL
+    (WHERE start_graph_key IN (...) AND end_graph_key IN (...)) rather than
+    over-fetching rel_limit*4 rows and filtering in Python.
+
+    The fixture has 3 nodes (build-1, u, org) and 2 relationships:
+      - PART_OF  org -> u      (both endpoints in the full node set)
+      - FROM_UNIVERSITY x -> u  (start 'x' is NOT a node → out-of-set)
+
+    With a limit large enough to load all 3 nodes, only PART_OF survives the
+    filter; FROM_UNIVERSITY is dropped because its start endpoint is not a
+    known node. total_relationships still counts both.
+    """
+    catalog = tmp_path / "catalog.db"
+    build_id = _write_catalog(catalog)
+    assert build_id is not None
+    service = MonitorService(_settings(catalog))
+
+    # limit=10 -> node_limit=5 (all 3 nodes), rel_limit=5.
+    preview = service.graph_preview(build_id, limit=10)
+    node_ids = {n["id"] for n in preview["nodes"]}
+    assert node_ids == {"build-1", "u", "org"}
+    # only PART_OF (org->u) has both endpoints in the node set.
+    assert len(preview["links"]) == 1
+    assert preview["links"][0]["source"] == "org"
+    assert preview["links"][0]["target"] == "u"
+    assert preview["links"][0]["label"] == "PART_OF"
+    # total_relationships counts ALL relationship rows (not just in-set).
+    assert preview["total_nodes"] == 3
+    assert preview["total_relationships"] == 2
+    # truncated reflects totals vs shown: total_relationships (2) > links (1),
+    # so truncated is True even though the drop was a filter, not a limit.
+    assert preview["truncated"] is True
+    # response shape unchanged
+    assert set(preview.keys()) == {
+        "build_id", "limit", "nodes", "links",
+        "total_nodes", "total_relationships", "truncated",
+    }
+
+
+def test_graph_preview_respects_rel_limit_after_sql_filter(tmp_path: Path) -> None:
+    """When more in-set relationships exist than rel_limit, the SQL LIMIT
+    truncates the links list (equivalent to the old Python break)."""
+    import sqlite3 as _sqlite3
+    catalog = tmp_path / "catalog.db"
+    _write_catalog(catalog)
+    # add 3 extra in-set relationships org->u so rel_limit=2 truncates.
+    conn = _sqlite3.connect(catalog)
+    try:
+        for i in range(3):
+            # columns: build_id, partition_key, row_key, row_kind, label_or_type,
+            #          start_graph_key, end_graph_key, payload_json, provenance_ref, row_checksum
+            conn.execute(
+                "INSERT INTO graph_export_rows VALUES (?, ?, ?, ?, ?, ?, ?, '{}', 'p', 'c')",
+                ("build-1", f"rel:EXTRA{i}", f"rel:EXTRA{i}", "relationship", "EXTRA", "org", "u"),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    service = MonitorService(_settings(catalog))
+    # limit=6 -> node_limit=3 (all nodes), rel_limit=3.
+    preview = service.graph_preview("build-1", limit=6)
+    assert len(preview["nodes"]) == 3
+    # PART_OF + 3 EXTRA = 4 in-set relationships, rel_limit=3 -> 3 links.
+    assert len(preview["links"]) == 3
+    assert preview["total_relationships"] == 5  # 2 original + 3 extra
+    assert preview["truncated"] is True
+
 
 def test_monitor_handles_empty_and_incompatible_catalog(tmp_path: Path) -> None:
     empty_catalog = tmp_path / "empty.db"
