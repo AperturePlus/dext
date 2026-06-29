@@ -91,3 +91,88 @@ test('sha256Hex default uses crypto.subtle (real digest, 64 hex chars)', async (
     assert.equal(fp, '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824');
   } finally { await cleanup(); }
 });
+
+// --- amend §5.1 gap coverage (Task 4 reviewer fixes) ---
+
+test('file input: files array difference changes fingerprint (amend §5.1)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/content/fingerprint.ts', 'fingerprint.ts');
+  try {
+    const fakeHash = async (t) => `h(${t})`;
+    const action = { kind: 'form_submit', form_name: 'pageForm', fields: {} };
+    const doc = { location: { href: 'https://x.edu.cn/list' } };
+    const f1 = form({ elements: [elt('upload', 'file', '', { files: [
+      { name: 'cv.pdf', size: 1024, type: 'application/pdf', lastModified: 1700000000 },
+    ] })] });
+    const f2 = form({ elements: [elt('upload', 'file', '', { files: [
+      { name: 'cv.pdf', size: 2048, type: 'application/pdf', lastModified: 1700000000 },
+    ] })] });
+    const a = await mod.sha256Hex(mod.canonicalizeActionSnapshot(f1, action, doc), fakeHash);
+    const b = await mod.sha256Hex(mod.canonicalizeActionSnapshot(f2, action, doc), fakeHash);
+    assert.notEqual(a, b, 'file size change → different fingerprint');
+    // the snapshot must record the file meta (name/size/type/lastModified), NOT contents.
+    // The meta is JSON.stringify'd into the tuple value, so inner quotes are escaped,
+    // but the bare values (cv.pdf, 1024, application/pdf, 1700000000) appear verbatim.
+    const snap = mod.canonicalizeActionSnapshot(f1, action, doc);
+    assert.ok(snap.includes('"upload","file",'), 'file tuple pushed with type "file"');
+    assert.ok(snap.includes('cv.pdf'), 'file name recorded');
+    assert.ok(snap.includes('1024'), 'file size recorded');
+    assert.ok(snap.includes('application/pdf'), 'file type recorded');
+    assert.ok(snap.includes('1700000000'), 'lastModified recorded');
+  } finally { await cleanup(); }
+});
+
+test('file input: empty files array pushes no tuple (amend §5.1)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/content/fingerprint.ts', 'fingerprint.ts');
+  try {
+    const action = { kind: 'form_submit', form_name: 'pageForm', fields: {} };
+    const doc = { location: { href: 'https://x.edu.cn/list' } };
+    const f = form({ elements: [elt('upload', 'file', '', { files: [] })] });
+    const snap = mod.canonicalizeActionSnapshot(f, action, doc);
+    assert.ok(!snap.includes('"upload"'), 'empty file input pushes no tuple');
+  } finally { await cleanup(); }
+});
+
+test('multiple-select: 2nd selected option difference changes fingerprint (amend §5.1)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/content/fingerprint.ts', 'fingerprint.ts');
+  try {
+    const fakeHash = async (t) => `h(${t})`;
+    const action = { kind: 'form_submit', form_name: 'pageForm', fields: {} };
+    const doc = { location: { href: 'https://x.edu.cn/list' } };
+    // Both selects share the SAME el.value ('a') — only the 2nd selected option differs.
+    // Reading el.value alone would yield 'a' for both and miss the change.
+    const f1 = form({ elements: [elt('cats', 'select-multiple', 'a', { multiple: true, selectedOptions: [
+      { value: 'a' }, { value: 'b' },
+    ] })] });
+    const f2 = form({ elements: [elt('cats', 'select-multiple', 'a', { multiple: true, selectedOptions: [
+      { value: 'a' }, { value: 'c' },
+    ] })] });
+    const a = await mod.sha256Hex(mod.canonicalizeActionSnapshot(f1, action, doc), fakeHash);
+    const b = await mod.sha256Hex(mod.canonicalizeActionSnapshot(f2, action, doc), fakeHash);
+    assert.notEqual(a, b, '2nd selected option change → different fingerprint');
+    // the snapshot records one tuple per selected option
+    const snap1 = mod.canonicalizeActionSnapshot(f1, action, doc);
+    assert.ok(snap1.includes('"cats","select-multiple","a"'), 'first option tuple pushed');
+    assert.ok(snap1.includes('"cats","select-multiple","b"'), 'second option tuple pushed');
+  } finally { await cleanup(); }
+});
+
+test('submit button excluded from successful controls (amend §5.1)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/content/fingerprint.ts', 'fingerprint.ts');
+  try {
+    const action = { kind: 'form_submit', form_name: 'pageForm', fields: {} };
+    const doc = { location: { href: 'https://x.edu.cn/list' } };
+    const f = form({ elements: [
+      elt('page', 'text', '1'),
+      elt('go', 'submit', 'Search'),     // named submit button — must be excluded
+      elt('img', 'image', 'x.png'),      // image button — must be excluded
+      elt('btn', 'button', 'Click'),     // plain button — must be excluded
+      elt('rst', 'reset', 'Reset'),      // reset button — must be excluded
+    ] });
+    const snap = mod.canonicalizeActionSnapshot(f, action, doc);
+    assert.ok(snap.includes('"page"'), 'text input kept');
+    assert.ok(!snap.includes('"go"'), 'submit button excluded');
+    assert.ok(!snap.includes('"img"'), 'image button excluded');
+    assert.ok(!snap.includes('"btn"'), 'plain button excluded');
+    assert.ok(!snap.includes('"rst"'), 'reset button excluded');
+  } finally { await cleanup(); }
+});

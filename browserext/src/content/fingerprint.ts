@@ -28,6 +28,9 @@ export interface ActionSnapshotInputElement {
   checked?: boolean;
   // file inputs expose files (a list of {name,size,type,lastModified}); we record meta only
   files?: Array<{ name: string; size: number; type: string; lastModified: number }>;
+  // multiple-select exposes its selected options; we record one tuple per selected option
+  multiple?: boolean;
+  selectedOptions?: Array<{ value: string }>;
   form?: { name: string } | null;
 }
 export interface ActionSnapshotForm {
@@ -72,9 +75,49 @@ function buildSnapshot(form: ActionSnapshotForm, action: FetchAction, doc: Actio
     if (!el || !el.name) continue;
     if (el.disabled) continue;
     const type = (el.type || '').toLowerCase();
+
+    // amend §5.1: submit buttons are NOT successful controls — form.submit() has no
+    // submitter, so a named submit/image/button would never be submitted. Excluding
+    // them keeps prepare-time and perform-time snapshots aligned. (reset is also
+    // excluded — it is never a successful control per HTML §4.10.)
+    if (type === 'submit' || type === 'image' || type === 'button' || type === 'reset') {
+      continue;
+    }
+
     if (type === 'checkbox' || type === 'radio') {
       if (el.checked === false) continue;
     }
+
+    // amend §5.1: file inputs record name/size/type/lastModified only — NOT file
+    // contents. One tuple per file in el.files; an empty file input pushes nothing.
+    // FetchAction.fields override is NOT applied to file inputs (you cannot virtual-
+    // apply a file selection).
+    if (type === 'file') {
+      const files = el.files ?? [];
+      for (const f of files) {
+        const meta = JSON.stringify({
+          name: f.name, size: f.size, type: f.type, lastModified: f.lastModified,
+        });
+        successfulControls.push([el.name, 'file', meta]);
+      }
+      continue;
+    }
+
+    // amend §5.1: multiple-select kept — enumerate el.selectedOptions and push one
+    // tuple per selected option. Reading el.value alone returns only the FIRST
+    // selected option, losing subsequent selections (a real §8.1 #19 sensitivity
+    // hole). FetchAction.fields override does NOT apply per-option (it would replace
+    // the whole selection; the override applies to the select's el.value only, which
+    // for multiple-select is the first option — we treat the live selection as
+    // authoritative to match what the browser actually submits).
+    if (type === 'select-multiple' || (type === 'select-one' && el.multiple === true)) {
+      const opts = el.selectedOptions ?? [];
+      for (const opt of opts) {
+        successfulControls.push([el.name, type, opt.value]);
+      }
+      continue;
+    }
+
     const override = fieldOverrides.get(el.name);
     const value = override !== undefined ? override : el.value;
     successfulControls.push([el.name, type, value]);
