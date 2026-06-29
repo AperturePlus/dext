@@ -42,3 +42,32 @@ test('wireBackground constructs navMonitor {chrome, controller} + controller, st
     await cleanup();
   }
 });
+
+test('wireBackground registers a chrome.runtime.onMessage listener (slice 5 router wired)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/background.ts', 'background.ts');
+  globalThis.chrome = globalThis.chrome ?? {};
+  globalThis.chrome.storage = globalThis.chrome.storage ?? {};
+  globalThis.chrome.runtime = globalThis.chrome.runtime ?? { id: 'ext-123', onMessage: { addListener() {} } };
+  let registered = false;
+  const prevOnMessage = globalThis.chrome.runtime.onMessage;
+  globalThis.chrome.runtime.onMessage = { addListener: () => { registered = true; } };
+  try {
+    const store = new Map();
+    globalThis.chrome.storage.local = {
+      async get(keys) { const arr = keys === null ? [...store.keys()] : (Array.isArray(keys) ? keys : [keys]); const o = {}; for (const k of arr) if (store.has(k)) o[k] = store.get(k); return o; },
+      async set(o) { for (const [k, v] of Object.entries(o)) store.set(k, v); },
+      async remove(keys) { const arr = Array.isArray(keys) ? keys : [keys]; for (const k of arr) store.delete(k); },
+    };
+    const fakeChrome = {
+      onNavCompleted() {}, onNavError() {}, onBeforeRequest() {}, onBeforeRedirect() {}, onCommitted() {}, onHistoryStateUpdated() {},
+      async updateTabUrl() {}, async findOwnerTab() { return null; }, async getTab() { return null; }, async sendMessage() { return { received: true }; },
+      registerAlarm() {},
+    };
+    const fakeApi = { async getStatus() { return null; }, async claimNextJob() { return null; }, async failJob() {}, async skipJob() {}, async sendHeartbeat() {}, async getDecision() { return null; }, async resolveDecision() {}, async completeJob() {}, async overrideJobUrl() { return null; } };
+    mod.wireBackground({ chrome: fakeChrome, api: fakeApi });
+    assert.equal(registered, true, 'messageRouter registered on chrome.runtime.onMessage');
+  } finally {
+    globalThis.chrome.runtime.onMessage = prevOnMessage;
+    await cleanup();
+  }
+});

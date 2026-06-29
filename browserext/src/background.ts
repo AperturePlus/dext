@@ -15,6 +15,8 @@ import { createNavMonitor } from './navMonitor.js';
 import type { NavMonitor } from './navMonitor.js';
 import { createCrawlController, createControllerStorage } from './controller/controller.js';
 import type { CrawlController, StorageArea } from './controller/controller.js';
+import { createMessageRouter } from './controller/messageRouter.js';
+import type { MessageRouterChrome } from './controller/messageRouter.js';
 import {
   RECONCILIATION_ALARM_NAME,
   RECONCILIATION_PERIOD_MINUTES,
@@ -41,6 +43,38 @@ export function wireBackground(deps: WireDeps): {
   deps.chrome.registerAlarm(RECONCILIATION_ALARM_NAME, RECONCILIATION_PERIOD_MINUTES, () => {
     void controller.tick();
   });
+
+  // Slice 5: wire the SW-side chrome.runtime.onMessage router. The router's
+  // `start()` calls `deps.chrome.onMessage(cb)`, but `ChromeRuntime` has no
+  // `onMessage` method — it ships `sendMessage` (shared with the controller).
+  // Build a MessageRouterChrome adapter here: `sendMessage` delegates to the
+  // injected chrome, `onMessage` adapts the real chrome.runtime.onMessage's
+  // 3-arg (msg, sender, sendResponse) chrome signature into the router's
+  // 2-arg cb(msg, sender) => reply, wiring the async reply into sendResponse
+  // and returning `true` (keep the channel open for the async reply). The
+  // `false → undefined` conversion lives in start() (one place, not here).
+  // Guarded so the existing background.test.mjs fake (no chrome.runtime)
+  // no-ops harmlessly.
+  const routerChrome: MessageRouterChrome = {
+    sendMessage: (tabId, message, options) => deps.chrome.sendMessage(tabId, message, options),
+    onMessage: (cb) => {
+      if (typeof chrome === 'undefined' || !chrome.runtime?.onMessage) return;
+      chrome.runtime.onMessage.addListener(
+        (msg: unknown, sender: unknown, sendResponse: (r: unknown) => void) => {
+          void Promise.resolve(cb(msg as never, sender as never))
+            .then((reply) => { try { sendResponse(reply); } catch { /* channel closed */ } });
+          return true;   // keep the channel open for the async sendResponse
+        },
+      );
+    },
+  };
+  const router = createMessageRouter({
+    controller,
+    chrome: routerChrome,
+    api: deps.api,
+    extensionId: (typeof chrome !== 'undefined' && chrome.runtime?.id) ? chrome.runtime.id : 'dext',
+  });
+  router.start();
   return { navMonitor, controller };
 }
 
