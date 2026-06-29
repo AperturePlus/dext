@@ -1,0 +1,38 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background:
+    radial-gradient(circle at 15% 0%, rgba(62, 230, 181, 0.16), transparent 32rem),
+    radial-gradient(circle at 82% 8%, rgba(112, 167, 255, 0.2), transparent 30rem),
+    linear-gradient(135deg, var(--bg-strong), var(--bg));
+  color: var(--text);
+  font-family: var(--font-ui);
+  line-height: 1.5;
+}
+
+button,
+select,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+a {
+  color: inherit;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
