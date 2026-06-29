@@ -1031,6 +1031,7 @@ test('manualSkip: POSTs /jobs/{id}/skip with reason, clears navigation/pendingRp
     const s = await c.getState();
     assert.equal(s.navigation, null);
     assert.equal(s.pendingRpc, null);
+    assert.equal(s.lastError, null, 'manualSkip clears lastError (slice-6, slice-5 deferred #3)');
     assert.equal(s.phase, 'assigned', 'job may still be current; reconcile owns clearing');
   } finally { await cleanup(); }
 });
@@ -1052,6 +1053,52 @@ test('manualFail: POSTs /jobs/{id}/fail with message, clears navigation/pendingR
     assert.equal(s.phase, 'error');
     assert.equal(s.lastError.kind, 'nav_error');
     assert.equal(s.lastError.error, 'user-fail');
+  } finally { await cleanup(); }
+});
+
+test('manualComplete: from capturing+pendingRpc (the submit command) → re-dispatches CAPTURE, no throw (slice-6, slice-5 deferred #2)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const { c, chr, ready } = landedController(mod, area);
+    await ready();
+    // Land the controller on DOC-1 (the slice-4 landing-signal sequence). The auto
+    // dispatch lands the controller in phase 'capturing' with a pendingRpc (op:capture).
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverCommitted({ tabId: 42, frameId: 0, documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', timeStamp: 5200 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 200, frameId: 0, requestId: 'REQ-1', documentId: 'DOC-1', timeStamp: 5300 }, 'ok');
+    await c.deliverPageReady({ documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', detection: { errorPage: false, terminalReason: null }, timeStamp: 5400 });
+    const afterLand = await c.getState();
+    assert.equal(afterLand.phase, 'capturing', 'landed → capturing (auto CAPTURE dispatched)');
+    assert.ok(afterLand.pendingRpc, 'auto-dispatched CAPTURE pendingRpc present');
+    // manualComplete is the `submit` command. The guard accepts phase 'capturing' with
+    // a pendingRpc, so it must not throw and must leave the controller in a capturing/
+    // submitting state (it re-dispatches CAPTURE to the source document).
+    const sentBefore = chr.calls.sent.length;
+    await c.manualComplete(5500);
+    const s = await c.getState();
+    assert.ok(s.phase === 'capturing' || s.phase === 'submitting', `manualComplete left phase=${s.phase}`);
+    // The submit path must NOT drop the in-flight CAPTURE (sent count never decreases).
+    assert.ok(chr.calls.sent.length >= sentBefore, 'manualComplete did not drop the in-flight CAPTURE');
+  } finally { await cleanup(); }
+});
+
+test('manualComplete: from a non-landed phase (assigned) → no-op (slice-6, slice-5 deferred #2)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi({ current_job: job('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } });
+    // NOTE: use fakeChrome4 (not fakeChrome3) — fakeChrome3 has no sendMessage/calls.sent,
+    // but this test asserts chr.calls.sent.length. fakeChrome4 exposes calls.sent + sendMessage.
+    const chr = fakeChrome4();
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.tick(2000);   // caches job-1 → assigned (auto off, so no navigate)
+    const sentBefore = chr.calls.sent.length;
+    await c.manualComplete(3000);
+    const s = await c.getState();
+    assert.equal(s.phase, 'assigned', 'manualComplete no-op on non-landed phase');
+    assert.equal(chr.calls.sent.length, sentBefore, 'no CAPTURE dispatched from a non-landed phase');
   } finally { await cleanup(); }
 });
 
