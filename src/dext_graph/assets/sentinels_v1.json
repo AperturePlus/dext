@@ -1,0 +1,10 @@
+{
+  "version": "sentinels-v1",
+  "texts": [
+    {"id":"s001","text":"图神经网络用于复杂关系数据的表示学习。"},
+    {"id":"s002","text":"Cancer immunotherapy and the tumor microenvironment."},
+    {"id":"s003","text":"新能源材料、储能器件与电化学界面研究。"},
+    {"id":"s004","text":"跨语言自然语言处理与 multilingual representation learning。"},
+    {"id":"s005","text":"量子计算、拓扑物态和凝聚态物理。"}
+  ]
+}

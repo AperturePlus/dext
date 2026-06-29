@@ -18,10 +18,14 @@ dependencies = [
     "pypdf>=6.12.2",
     "python-docx>=1.2.0",
     "pyyaml>=6.0.2",
+    "httpx>=0.28.0",
+    "qdrant-client>=1.15.0",
+    "transformers>=4.46.0",
 ]
 
 [project.scripts]
 crawl = "dext.cli:main"
+dext = "dext_graph.cli:main"
 
 [dependency-groups]
 dev = [
@@ -32,6 +36,9 @@ dev = [
 [build-system]
 requires = ["hatchling>=1.25.0"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dext", "src/dext_graph"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
