@@ -94,6 +94,22 @@ uv run pytest tests/test_<area>.py -v
 uv run pytest tests/test_x.py::test_name -v
 ```
 
+## 阶段 0：教师语义召回价值验证
+
+建图代码位于独立顶层包 `src/dext_graph`。先将一所已停止写入、由人工确认覆盖率可接受的学校 DB
+放入 `data/value-validation/input/`，然后执行。显式选择允许 `crawl_status=failed`；该状态会进入
+manifest 警告，但不会因复杂站点未达到爬虫的严格 completed 条件而拒绝实验。
+
+```bash
+uv run dext graph value-validation run \
+  --source-db data/value-validation/input/example.db \
+  --template baseline-v1 \
+  --dry-run
+```
+
+`--execute-live` 会使用 `DEXT_EMBEDDING_API_KEY` 和 `DEXT_QDRANT_URL` 创建
+`dext_eval__*` 临时 collection。实验结果位于 `data/value-validation/`，不属于正式 catalog。
+
 涉及 LLM 的测试使用真实 DeepSeek 接口，需先在 `.env` 配置 `DEEPSEEK_API_KEY`。
 
 ## 编译浏览器 userscript
