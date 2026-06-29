@@ -1,6 +1,8 @@
 import { build } from 'esbuild';
 
-const GATE = process.env.DEXTC_EXCLUSIVE_CONTROL === '1' ? 'true' : 'false';
+// Slice 6: official build is now gate-ON (spec §6.1/§6.2). DEXTC_EXCLUSIVE_CONTROL=0
+// opts back out to a no-op build (e.g. to run alongside an active userscript).
+const GATE = process.env.DEXTC_EXCLUSIVE_CONTROL === '0' ? 'false' : 'true';
 
 const shared = {
   bundle: true,

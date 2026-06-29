@@ -44,7 +44,7 @@ work has since progressed onto `tcN` (touch-up) and `sp7rcN` (release-candidate)
 | SP5 LLM | `llm/` (DeepSeek client, decider, extractor, sanitizer, retry) | ✅ done |
 | SP6 Graph engine | `engine/` (driver, handlers, workers, names, priorities, retry, seeds) | ✅ done |
 | SP7 CLI | `cli.py` (`crawl -u`, fresh/`--resume`/`-oid`/`--reset`) | ✅ done |
-| browserext | `browserext/` — MV3 extension, Phase 1 background probe | ✅ Phase 1 done (Phase 2 TBD) |
+| browserext | `browserext/` — MV3 extension, sole official frontend (Phase 2 GA) | ✅ Phase 2 done (slice 6) |
 
 Specs: `docs/superpowers/specs/` (SP0 overview is authoritative for cross-cutting decisions;
 browserext has its own `2026-06-27-browserext-background-probe-{design,}.md`). Plans:
@@ -59,15 +59,19 @@ Source of truth: `userscripts/src/api.ts` + `userscripts/src/types.ts`. Base
 (`FetchAction`, `PaginationState`, `FetchResult`); `JobContext`/`FetchJob`/`PendingDecision`
 live in `dext.bridge`.
 
-**`browserext/`** is a second browser-side consumer of the same contract: it reads
-`GET /status` (`current_job`, `frontend_health`) and posts `POST /jobs/{id}/fail|skip`. It
-never calls `/jobs/next` and never constructs jobs — the backend `/status.current_job` is the
-sole scheduling truth for it too. It recovers the owner tab when it lands on a browser-native
-error page (`about:neterror` / `ERR_CONNECTION_*`) where the userscript cannot inject: 3× 5xx
-→ `fail gateway_5xx`; 3× net-error → `fail nav_error:ERR_…` (below threshold it self-redirects
-the tab); stale heartbeat >15 s → watchdog re-redirects to `current_job.url`. Build:
-`cd browserext && npm install && npm run build`; load `browserext/` unpacked at
-`chrome://extensions`. Run **alongside** the userscript (it does not replace it).
+**`browserext/`** is the **sole official browser frontend** (Phase 2, slice 6 GA): a
+single `CrawlController` in the MV3 background SW owns all client orchestration —
+claim/navigate/capture/complete against `/status.current_job` (the sole scheduling
+truth for it too). The user explicitly binds one tab (`boundTabId`); only that tab is
+driven. It runs the full amend §2–§5 protocol (landing recognition, retry funnel,
+form-action prepare→persist→perform→confirm, RPC `documentId`/`rpcId` validation).
+Build: `cd browserext && npm install && npm run build` (gate ON by default since
+slice 6; `DEXTC_EXCLUSIVE_CONTROL=0` opts out to a no-op build); load `browserext/`
+unpacked at `chrome://extensions`. The **userscript is an emergency-recovery
+fallback, disabled in normal operation** — its bootstrap checks the
+`data-dext-extension-controller="v1"` marker and stands down when the extension
+owns the tab (spec §5.1). Run ONLY the extension in normal operation; running both
+is unsupported.
 
 ## Testing policy
 

@@ -25,18 +25,20 @@ test('build emits dist/background.js and dist/content.js', () => {
   }
 });
 
-test('default build has EXCLUSIVE_CONTROL_ENABLED = false (gate off)', () => {
+test('default build has EXCLUSIVE_CONTROL_ENABLED = true (gate on, slice 6)', () => {
   rmSync(join(root, 'dist'), { recursive: true, force: true });
   try {
     build();
     const bg = readFileSync(distBg, 'utf8');
-    // Controller guard `if (!GATE) return` folds to `if (true) return` — early return.
-    assert.match(bg, /if \(true\) return/, 'controller must early-return when gate off');
+    // Controller guard `if (!GATE) return` with GATE=true folds to `if (false) return` —
+    // the early-return is NOT taken, so the body runs (spec §6.1 gate ON).
+    assert.match(bg, /if \(false\) return/, 'controller body runs when gate on');
+    assert.doesNotMatch(bg, /if \(true\) return/, 'no gate-off early-return should remain in default build');
     const content = readFileSync(distContent, 'utf8');
-    // Content guard `if (GATE) {...}` folds to `if (false) {...}` — body skipped,
-    // so the marker setAttribute is never reached (spec §6.1 true no-op).
-    assert.match(content, /if \(false\) \{/, 'content body must be skipped when gate off');
-    assert.doesNotMatch(content, /if \(true\)/, 'no gate-on branch should remain in default build');
+    // Content guard `if (GATE) {...}` with GATE=true folds to `if (true) {...}` —
+    // the body runs (marker set, panel mounted, RPC wired).
+    assert.match(content, /if \(true\) \{/, 'content body runs when gate on');
+    assert.doesNotMatch(content, /if \(false\) \{/, 'no gate-off skipped branch should remain in default build');
   } finally {
   }
 });

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "dext crawl controller",
-  "version": "0.1.0",
-  "description": "Exclusive-control crawl orchestrator (Phase 2). Gated off by default in slice 1; runs alongside the dext userscript.",
+  "version": "0.2.0",
+  "description": "Exclusive-control crawl orchestrator (Phase 2). Sole official browser frontend — binds one tab and drives claim→navigate→capture→complete. The dext userscript is an emergency-recovery fallback, disabled in normal operation.",
   "background": {
     "service_worker": "dist/background.js",
     "type": "module"

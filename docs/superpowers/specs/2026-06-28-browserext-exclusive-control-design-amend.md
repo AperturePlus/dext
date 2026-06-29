@@ -1,8 +1,8 @@
 # Browser-extension exclusive control — Phase 2 规范性修订
 
-> **状态：** 本 amendment 是
+> **状态：** ✅ 本 amendment 已并入 LANDED 的 Phase 2（slice 6, 2026-06-29）。它是
 > [2026-06-28-browserext-exclusive-control-design.md](./2026-06-28-browserext-exclusive-control-design.md)
-> 的规范性组成部分。两者冲突时以本文为准；未被本文点名修订的内容继续有效。
+> 的规范性组成部分；两者冲突时以本文为准，未被本文点名修订的内容继续有效。
 >
 > **范围：** 修订原 spec §2.1–§2.6、§3.2–§3.6、§4.2–§4.8、§5.5 和
 > §6.2 中与导航/RPC 关联、表单动作、错误恢复及多标签面板同步有关的条款。

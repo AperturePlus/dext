@@ -1,68 +1,75 @@
-# dext background probe (Phase 1)
+# dext crawl controller
 
-An MV3 Chrome extension that runs alongside the dext userscript and recovers the
-owner tab when it lands on a browser-native error page (`about:neterror` /
-`ERR_CONNECTION_*`) where the userscript cannot inject.
+The **sole official browser frontend** for the dext graph-driven crawler. An MV3
+Chrome/Edge extension (≥110) that owns all client-side crawl orchestration: it
+binds **one** tab the user explicitly chooses, then drives the full
+claim → navigate → capture → complete cycle against the dext backend
+(`http://127.0.0.1:21520/api`), with landing recognition, retry funneling, and
+form-action support. The backend `/status.current_job` is the sole scheduling
+truth; the extension never constructs jobs and never calls `/jobs/next` until it
+has a bound tab.
 
-It does **two things** the userscript can't:
-
-1. **navMonitor** — watches `webRequest` for the real HTTP status code / network
-   error of the owner's navigation, and reports to the backend:
-   - `404`/`410` → `POST /jobs/{id}/skip` `{"reason":"not_found"}`
-   - `502`/`503`/`504` → after 3 consecutive abnormal navigations → `POST /jobs/{id}/fail` `{"message":"gateway_5xx"}`
-   - network error (`ERR_*`) → after 3 → `POST /jobs/{id}/fail` `{"message":"nav_error:ERR_..."}`; below threshold it re-redirects the tab itself (the userscript can't — it doesn't inject on `about:neterror`)
-2. **watchdog** — every alarm tick, reads `/status`; if the owner heartbeat is stale
-   (>15 s) AND a `current_job` exists, re-redirects the owner tab to the job URL.
-
-The backend `/status.current_job` is the sole scheduling truth. This extension
-never calls `/jobs/next` and never constructs jobs.
+The dext **userscript** (`userscripts/`) is now an **emergency-recovery fallback**
+— disabled in normal operation. See [Emergency recovery](#emergency-recovery).
 
 ## Build
 
 ```bash
 cd browserext
 npm install
-npm run build      # → dist/background.js
-npm test           # unit tests
+npm run build      # → dist/background.js + dist/content.js (gate ON by default)
+npm test           # node:test unit tests (gate injected ON by the harness)
+npm run typecheck  # tsc --noEmit on both tsconfigs
 ```
+
+The build injects `EXCLUSIVE_CONTROL_ENABLED = true` by default (slice 6). Set
+`DEXTC_EXCLUSIVE_CONTROL=0` to produce a no-op build (e.g. to run alongside an
+active userscript during transition).
 
 ## Load (Chrome / Edge)
 
-1. `chrome://extensions` → enable Developer mode.
-2. "Load unpacked" → select `browserext/` (the folder with `manifest.json`).
-3. The background service worker starts; check it at `chrome://extensions` →
-   "service worker" → "Inspect".
+1. Start the dext backend (`uv run crawl -u <university> …`) so the bridge
+   listens on `http://127.0.0.1:21520`.
+2. `chrome://extensions` → enable Developer mode → "Load unpacked" → select
+   `browserext/` (the folder with `manifest.json`).
+3. **Disable the userscript** in Tampermonkey (see Emergency recovery).
+4. Open the target university page; click **绑定并开始** in the dext panel.
+   Only that tab is driven; other tabs are never navigated.
 
-## Run alongside dext
+## How it works (one-liner per phase)
 
-1. Start the dext backend (`uv run crawl -u <university> ...`) so the bridge is
-   listening on `http://127.0.0.1:21520`.
-2. Keep the userscript installed and active (Phase 1 does not replace it).
-3. Open the target university site in a tab; the userscript becomes owner.
+- **bind** — user binds one tab; `boundTabId` persisted to `chrome.storage.local`.
+- **claim** — `/status.current_job` is the truth; on `idle` the controller claims
+  via `/jobs/next` only when bound + auto + not paused.
+- **navigate** — the controller is the **sole** `chrome.tabs.update` caller;
+  navigation intent is persisted *before* the call.
+- **land** — four signals (main-frame commit + acceptable HTTP outcome +
+  same-crawl-site URL + `PAGE_READY` from the same documentId) must all hold.
+- **capture / form-action** — the content script runs DOM operations via RPC;
+  it never navigates, never calls the backend, never holds job state.
+- **complete** — `POST /jobs/{id}/complete`; late/stale ids are idempotent no-ops.
 
-## Manual verification (spec §5.3)
+## Emergency recovery (the userscript)
 
-Run each scenario with the backend + userscript + extension all active. Watch
-the backend logs for the `/fail` or `/skip` resolution.
+The dext userscript (`userscripts/yanclaw-assistant.user.js`) is the fallback for
+when the extension cannot run (extension disabled, or a hard extension crash).
+In normal operation it **must be disabled** in Tampermonkey — both frontends
+running at once is unsupported.
 
-1. **502 page**: navigate the owner to a URL returning 502 (or throttle to 5xx).
-   - Expect: after 3 consecutive 5xx navigations, the backend logs a `fail`
-     with `block_reason=gateway_5xx`; the in-flight slot releases; the
-     userscript polls `/jobs/next` and picks up the next job.
-2. **about:neterror**: navigate the owner to a dead host (e.g. disconnect network,
-     or visit `https://nonexistent.invalid/`).
-   - Expect: the extension re-redirects the tab to the job URL (counts 1 & 2);
-     after 3 attempts, the backend logs a `fail` with
-     `block_reason=nav_error:ERR_...`.
-3. **Stalled owner**: freeze the owner tab (e.g. pause the userscript, or navigate
-     to a page and stop heartbeats) for >15 s.
-   - Expect: the watchdog re-redirects the tab to `current_job.url`; the userscript
-     resumes capture.
-4. **No regression**: browse a normal edu.cn page; capture/submit proceeds
-     unchanged; no spurious `/fail` or `/skip` in the backend logs.
+To fall back:
 
-## Phase 2 (not in this plan)
+1. Disable the extension at `chrome://extensions`.
+2. Enable the userscript in Tampermonkey.
+3. Refresh the target page. The userscript detects the absence of the
+   `data-dext-extension-controller="v1"` marker on `<html>` and takes full
+   control (its `instanceLock` and all original duties intact).
 
-Phase 2 migrates the userscript content layer from GM APIs to `chrome.*` APIs and
-ships it as the extension's content script, retiring `yanclaw-assistant.user.js`.
-That is a separate spec.
+The userscript's bootstrap checks for the extension marker first (spec §5.1) and
+stands down if the extension owns the tab. The marker is page-priority, **not**
+an automatic failover signal — recovery requires the explicit disable+refresh
+above.
+
+## Architecture reference
+
+Design: `docs/superpowers/specs/2026-06-28-browserext-exclusive-control-design.md`
+(+ its amendment). Slice-by-slice plans: `docs/superpowers/plans/`.

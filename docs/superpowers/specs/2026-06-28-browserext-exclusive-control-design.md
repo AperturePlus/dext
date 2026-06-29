@@ -1,7 +1,6 @@
 # Browser-extension exclusive control — Phase 2 设计
 
-> **规范性修订：** 本设计受 [2026-06-28-browserext-exclusive-control-design-amend.md](./2026-06-28-browserext-exclusive-control-design-amend.md) 修订；两者冲突时以 amendment 为准。
-> **状态：** 本 spec 是 Phase 2 的正式设计，**取代** [2026-06-28-browserext-content-migration-design.md](./2026-06-28-browserext-content-migration-design.md)（per-slice 共存 + localStorage 仲裁模型）。该旧 spec 被标记为 superseded 并指向本文件。
+> **状态：** ✅ **Phase 2 LANDED (slice 6, 2026-06-29)。** 扩展独占控制已通过真实浏览器验收（spec §5.6 六项），gate 默认开启，扩展是唯一正式前端；userscript 降级为应急产物（spec §5.1）。本设计受 [2026-06-28-browserext-exclusive-control-design-amend.md](./2026-06-28-browserext-exclusive-control-design-amend.md) 修订；两者冲突时以 amendment 为准。本 spec 取代 [2026-06-28-browserext-content-migration-design.md](./2026-06-28-browserext-content-migration-design.md)（per-slice 共存 + localStorage 仲裁模型，superseded）。
 > **依赖：** Phase 1 扩展（`browserext/` background probe 已就位）、SP4（HTTP 契约 FIXED）、SP6（driver/retry 已就位）。
 > **范围：** 仅扩展独占控制（half A）。后端响应性加固（`to_thread` for `build_snapshot`/html2text/tiktoken、有界队列）是 half B，属后续独立 spec，不在本 spec 展开但 **不修改任何 HTTP 请求/响应结构和数据库 schema**。
 
