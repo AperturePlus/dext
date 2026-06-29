@@ -287,10 +287,11 @@ def test_monitor_service_lists_build_detail_metrics_and_preview(tmp_path: Path) 
     metrics = service.metrics(build_id)
     assert metrics["source_status_counts"] == {"COMPLETED": 1, "FAILED": 1}
     assert metrics["export_partitions"][0]["row_count"] == 1
-    # role_counts/title_family_counts were computed every poll but never rendered;
-    # they were dropped to avoid per-poll waste. Re-adding them requires a consumer.
-    assert "role_counts" not in metrics
-    assert "title_family_counts" not in metrics
+    # P2-15: role_counts / title_family_counts are grouped over
+    # canonical_professors WHERE build_id=? AND active=1. The fixture inserts
+    # e1/included/professor and e2/review/lecturer, both active=1.
+    assert metrics["role_counts"] == {"included": 1, "review": 1}
+    assert metrics["title_family_counts"] == {"professor": 1, "lecturer": 1}
 
     preview = service.graph_preview(build_id, limit=4)
     assert len(preview["nodes"]) == 2

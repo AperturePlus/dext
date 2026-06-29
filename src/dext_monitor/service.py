@@ -194,6 +194,22 @@ class MonitorService:
                     (build_id,),
                 )
             ]
+            role_counts = {
+                row["role_status"]: int(row["count"])
+                for row in connection.execute(
+                    "SELECT role_status, COUNT(*) AS count FROM canonical_professors "
+                    "WHERE build_id=? AND active=1 GROUP BY role_status",
+                    (build_id,),
+                )
+            }
+            title_family_counts = {
+                row["title_family"]: int(row["count"])
+                for row in connection.execute(
+                    "SELECT title_family, COUNT(*) AS count FROM canonical_professors "
+                    "WHERE build_id=? AND active=1 GROUP BY title_family",
+                    (build_id,),
+                )
+            }
             return {
                 "build_id": build_id,
                 "stage": self._stage_state(str(build["status"])),
@@ -201,6 +217,8 @@ class MonitorService:
                 "finding_counts": finding_counts,
                 "export_partitions": export_partitions,
                 "observations_by_source": observations_by_source,
+                "role_counts": role_counts,
+                "title_family_counts": title_family_counts,
             }
 
     def graph_preview(self, build_id: str, limit: int | None = None) -> dict[str, Any]:
