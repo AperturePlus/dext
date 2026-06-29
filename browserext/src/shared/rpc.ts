@@ -28,6 +28,14 @@ export type CsToSw =
       detection: { errorPage: boolean; terminalReason: TerminalUnavailableReason | null };
     }
   | {
+      op: 'ACTION_PREPARED';
+      rpcId: string; jobId: string; ok: boolean;
+      targetUrl?: string; method?: string;
+      expectedEffect?: 'new_document' | 'same_document' | 'unknown';
+      preparationFingerprint?: string;
+      error?: string;
+    }
+  | {
       op: 'CAPTURE_RESULT';
       rpcId: string; jobId: string; ok: boolean; url: string;
       html?: string; title?: string; paginationStates?: PaginationState[];
