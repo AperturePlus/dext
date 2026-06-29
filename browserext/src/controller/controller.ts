@@ -25,7 +25,8 @@ import { redirectKind, urlMatches } from '../shared/urlGate.js';
 import type { ApiClient } from '../api.js';
 import type { ChromeRuntime } from '../chrome.js';
 import type { ControllerState, ControllerError, NavOutcome } from '../shared/state.js';
-import type { CaptureResult } from '../shared/rpc.js';
+import type { ActionPrepared, ActionResult, CaptureResult } from '../shared/rpc.js';
+import type { FetchAction } from '../shared/types.js';
 import type {
   BeforeRequestEvent, BeforeRedirectEvent, CommittedEvent,
   NavCompletedEvent, NavErrorEvent, NavController, NavScope, PageReadyEvent,
@@ -56,6 +57,9 @@ export interface CrawlController extends NavController {
   setAutoMode(mode: boolean, now?: number): Promise<void>;
   getState(): Promise<ControllerState>;
   deliverCaptureResult(result: CaptureResult, sender: { tab?: { id: number }; frameId?: number; documentId?: string }): Promise<void>;
+  dispatchPrepareAction(action: FetchAction): Promise<void>;
+  deliverActionPrepared(prepared: ActionPrepared, sender: { tab?: { id: number }; frameId?: number; documentId?: string }): Promise<void>;
+  deliverActionResult(result: ActionResult, sender: { tab?: { id: number }; frameId?: number; documentId?: string }): Promise<void>;
 }
 
 export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlController {
@@ -109,7 +113,17 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
       s.navigation!.acceptedUrl = verdict.acceptedUrl;
       s.phase = 'landed';
       s.phaseStartedAt = now;
-      await dispatchCapture(s, now);
+      // Slice-4 form-action path (amend §5.1–§5.6): only the INITIAL list-page
+      // navigation (kind:'navigate') with a form_submit job action dispatches
+      // PREPARE_ACTION; a form_action result-document landing falls through to
+      // dispatchCapture (amend §5.4 — never re-prepare on the result document).
+      if (s.navigation?.kind === 'navigate'
+          && s.currentJob?.action
+          && s.currentJob.action.kind === 'form_submit') {
+        await prepareFormActionDispatch(s, now, s.currentJob.action);
+      } else {
+        await dispatchCapture(s, now);
+      }
       return;
     }
     if (verdict.kind === 'terminal_skip') {
@@ -168,14 +182,21 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
   /** Dispatch CAPTURE on a landed page (amend §1.1, §4.1). Persist pendingRpc
    *  delivery='prepared' BEFORE sendMessage; promote to 'received' on transport
    *  receipt. Runs UNDER the mutex (called from applyLandingVerdict's landed
-   *  branch) — do NOT re-acquire. */
+   *  branch or from deliverActionResult's same-document branch) — do NOT
+   *  re-acquire. */
   async function dispatchCapture(s: ControllerState, now: number): Promise<void> {
     if (!s.currentJob || s.boundTabId === null || !deps.chrome?.sendMessage) return;
-    if (!s.navigation?.commit) return;
+    // sourceDocumentId: prefer commit.documentId (navigate landing); fall back to
+    // navigation.action's sourceDocumentId (same-document form_action effect — the
+    // form_action navigation has no commit because it never re-navigated, but its
+    // source document is the list page that hosted the form).
+    const sourceDocumentId =
+      s.navigation?.commit?.documentId
+      ?? (s.navigation?.kind === 'form_action' ? s.navigation.sourceDocumentId : undefined);
+    if (!sourceDocumentId) return;
     const rpcId = (typeof crypto !== 'undefined' && crypto.randomUUID)
       ? crypto.randomUUID()
       : `cap-${now}-${Math.random().toString(36).slice(2)}`;
-    const sourceDocumentId = s.navigation.commit.documentId;
     const deadline = now + 30_000;
     s.pendingRpc = {
       id: rpcId, jobId: s.currentJob.id, op: 'capture',
@@ -206,6 +227,221 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
       s.pendingRpc = null;
       await persist();
     }
+  }
+
+  /** Dispatch PREPARE_ACTION for a form_submit job (amend §5.1–§5.2). The prepare
+   *  is side-effect-free; on ACTION_PREPARED ok:true we persist a NEW form_action
+   *  NavigationState then dispatch PERFORM_ACTION. delivery: prepared→received.
+   *  Runs UNDER the mutex (called from applyLandingVerdict's landed branch or the
+   *  gated public dispatchPrepareAction wrapper) — do NOT re-acquire. */
+  async function prepareFormActionDispatch(s: ControllerState, now: number, action: FetchAction): Promise<void> {
+    if (!s.currentJob || s.boundTabId === null || !deps.chrome?.sendMessage) return;
+    if (!s.navigation?.commit) return;
+    const sourceDocumentId = s.navigation.commit.documentId;
+    const rpcId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `prep-${now}-${Math.random().toString(36).slice(2)}`;
+    s.pendingRpc = {
+      id: rpcId, jobId: s.currentJob.id, op: 'prepare_action',
+      sourceDocumentId, delivery: 'prepared', issuedAt: now, resultDeadlineAt: now + 30_000,
+      recoveryAttempts: 0, nextRecoveryAt: null,
+    };
+    s.phase = 'acting';
+    s.phaseStartedAt = now;
+    await persist();   // persist-before-send (delivery='prepared')
+    try {
+      const receipt = await deps.chrome.sendMessage(
+        s.boundTabId,
+        { op: 'PREPARE_ACTION', rpcId, jobId: s.currentJob.id, action },
+        { documentId: sourceDocumentId },
+      );
+      if (receipt && (receipt as { received?: boolean }).received) {
+        s.pendingRpc.delivery = 'received';
+        await persist();
+      }
+    } catch {
+      // amend §4.2: prepare reject with no receipt → content_unavailable/action_prepare
+      s.phase = 'error';
+      s.phaseStartedAt = now;
+      s.lastError = {
+        kind: 'content_unavailable', missing: 'action_prepare', sourceDocumentId,
+        since: now, recoveryAttempts: 0, nextRecoveryAt: null, recoveryExhausted: true,
+      };
+      s.pendingRpc = null;
+      await persist();
+    }
+  }
+
+  /** Handle ACTION_PREPARED from the content script (amend §5.1–§5.2, §4.1).
+   *  Re-acquires the mutex like the other deliver* handlers. */
+  async function deliverActionPrepared(
+    prepared: ActionPrepared,
+    sender: { tab?: { id: number }; frameId?: number; documentId?: string },
+  ): Promise<void> {
+    const release = await mutex.acquire();
+    try {
+      const s = await ensureLoaded();
+      if (!EXCLUSIVE_CONTROL_ENABLED) return;
+      const rpc = s.pendingRpc;
+      if (!rpc || rpc.op !== 'prepare_action') return;
+      // amend §4.1 validation — any mismatch is a late/stale result, no-op.
+      if (sender.tab?.id !== s.boundTabId) return;
+      if (sender.frameId !== 0) return;
+      if (sender.documentId !== rpc.sourceDocumentId) return;
+      if (prepared.rpcId !== rpc.id || prepared.jobId !== s.currentJob?.id) return;
+
+      if (!prepared.ok) {
+        // retry prepare within budget (amend §6.1), else fail form_action_prepare_failed (amend §5.1).
+        if (rpc.recoveryAttempts < 3 && (rpc.nextRecoveryAt === null || Date.now() >= rpc.nextRecoveryAt)) {
+          rpc.recoveryAttempts += 1;
+          rpc.nextRecoveryAt = Date.now() + 5_000;
+          rpc.resultDeadlineAt = Date.now() + 30_000;
+          rpc.delivery = 'prepared';
+          rpc.issuedAt = Date.now();
+          await persist();
+          if (s.boundTabId !== null && deps.chrome?.sendMessage && s.currentJob?.action) {
+            try {
+              const receipt = await deps.chrome.sendMessage(
+                s.boundTabId,
+                { op: 'PREPARE_ACTION', rpcId: rpc.id, jobId: rpc.jobId, action: s.currentJob.action },
+                { documentId: rpc.sourceDocumentId },
+              );
+              if (receipt && (receipt as { received?: boolean }).received) {
+                rpc.delivery = 'received';
+                await persist();
+              }
+            } catch { /* leave for next tick */ }
+          }
+          return;
+        }
+        // budget exhausted → fail (no tabs.update, no re-submit)
+        const jobId = s.currentJob!.id;
+        const msg = `form_action_prepare_failed:${prepared.error ?? 'unknown'}`;
+        s.phase = 'error';
+        s.phaseStartedAt = Date.now();
+        s.lastError = { kind: 'nav_error', error: msg };
+        s.navigation = null;
+        s.pendingRpc = null;
+        if (deps.api) await deps.api.failJob(jobId, msg);
+        await persist();
+        return;
+      }
+
+      // amend §5.2: persist a NEW form_action NavigationState (source doc copied,
+      // requestId/commit/http/pageReady/acceptedUrl ALL absent). This REPLACES the
+      // old navigate-kind navigation (full assignment, not merge).
+      const sourceDocumentId = rpc.sourceDocumentId;
+      const performRpcId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `perf-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const issuedAt = rpc.issuedAt;   // carry the prepare's issuedAt so the tick's test-clock `now` drives the 30s deadline
+      s.navigation = {
+        jobId: s.currentJob!.id,
+        requestedUrl: prepared.targetUrl ?? s.currentJob!.url,
+        issuedAt,
+        attempt: 1,
+        kind: 'form_action',
+        sourceDocumentId,
+        action: {
+          expectedEffect: prepared.expectedEffect ?? 'unknown',
+          method: prepared.method ?? 'GET',
+          preparationFingerprint: prepared.preparationFingerprint ?? '',
+          invocationReported: false,
+          effectConfirmed: false,
+        },
+      };
+      s.pendingRpc = {
+        id: performRpcId, jobId: s.currentJob!.id, op: 'perform_action',
+        sourceDocumentId, delivery: 'prepared', issuedAt: Date.now(), resultDeadlineAt: Date.now() + 30_000,
+        recoveryAttempts: 0, nextRecoveryAt: null,
+      };
+      s.phase = 'acting';
+      s.phaseStartedAt = Date.now();
+      await persist();   // persist-before-perform
+      if (s.boundTabId !== null && deps.chrome?.sendMessage) {
+        try {
+          const receipt = await deps.chrome.sendMessage(
+            s.boundTabId,
+            { op: 'PERFORM_ACTION', rpcId: performRpcId, jobId: s.currentJob!.id, action: s.currentJob!.action!, preparationFingerprint: prepared.preparationFingerprint ?? '' },
+            { documentId: sourceDocumentId },
+          );
+          if (receipt && (receipt as { received?: boolean }).received) {
+            s.pendingRpc!.delivery = 'received';
+            await persist();
+          }
+        } catch {
+          // amend §4.2: perform reject with no receipt/requestId/commit → content_unavailable/action_result
+          s.phase = 'error';
+          s.phaseStartedAt = Date.now();
+          s.lastError = {
+            kind: 'content_unavailable', missing: 'action_result', sourceDocumentId,
+            since: Date.now(), recoveryAttempts: 0, nextRecoveryAt: null, recoveryExhausted: true,
+          };
+          s.pendingRpc = null;
+          await persist();
+        }
+      }
+    } finally { release(); }
+  }
+
+  /** Handle ACTION_RESULT from the content script (amend §5.3–§5.5, §4.1).
+   *  Re-acquires the mutex like the other deliver* handlers. */
+  async function deliverActionResult(
+    result: ActionResult,
+    sender: { tab?: { id: number }; frameId?: number; documentId?: string },
+  ): Promise<void> {
+    const release = await mutex.acquire();
+    try {
+      const s = await ensureLoaded();
+      if (!EXCLUSIVE_CONTROL_ENABLED) return;
+      const rpc = s.pendingRpc;
+      if (!rpc || rpc.op !== 'perform_action') return;
+      // amend §4.1 validation — any mismatch is a late/stale result, no-op.
+      if (sender.tab?.id !== s.boundTabId) return;
+      if (sender.frameId !== 0) return;
+      if (sender.documentId !== rpc.sourceDocumentId) return;
+      if (result.rpcId !== rpc.id || result.jobId !== s.currentJob?.id) return;
+      const nav = s.navigation;
+      if (!nav?.action) return;
+
+      if (!result.ok || !result.invoked) {
+        // amend §5.3: fingerprint mismatch or invoke failed → fail (never nav funnel, NO tabs.update).
+        const jobId = s.currentJob!.id;
+        const detail = result.error ?? (result.invoked ? 'invoke_failed' : 'not_invoked');
+        const msg = result.error === 'form_action_prepare_changed'
+          ? 'form_action_prepare_changed'
+          : `form_action_invoke_failed:${detail}`;
+        s.phase = 'error';
+        s.phaseStartedAt = Date.now();
+        s.lastError = { kind: 'nav_error', error: msg };
+        s.navigation = null;
+        s.pendingRpc = null;
+        if (deps.api) await deps.api.failJob(jobId, msg);
+        await persist();
+        return;
+      }
+
+      nav.action.invocationReported = true;
+      if (result.navigationExpected) {
+        // Wait the §2.3 five conditions (the new main-frame onBeforeRequest binds
+        // a fresh requestId in phase==='acting' — already handled by slice-3
+        // deliverBeforeRequest's acting guard). amend §5.4: NEVER create a new
+        // perform rpcId once a correlated requestId appears — KEEP pendingRpc so
+        // the tick's perform-recovery path does NOT mint a fresh rpcId.
+        await persist();
+        return;
+      }
+      if (result.effectApplied) {
+        // same-document effect confirmed (amend §5.5) → landed → capture the source document.
+        nav.action.effectConfirmed = true;
+        s.pendingRpc = null;
+        await persist();
+        await dispatchCapture(s, Date.now());
+        return;
+      }
+      // neither navigation nor effect — keep acting; recovery budget handles a timeout (amend §5.6)
+      await persist();
+    } finally { release(); }
   }
 
   // ---- NavController deliver* handlers (each re-acquires the mutex) ----
@@ -404,6 +640,18 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
     deliverError,
     deliverPageReady,
     deliverCaptureResult,
+    deliverActionPrepared,
+    deliverActionResult,
+
+    async dispatchPrepareAction(action: FetchAction): Promise<void> {
+      const release = await mutex.acquire();
+      try {
+        const s = await ensureLoaded();
+        if (!EXCLUSIVE_CONTROL_ENABLED) return;
+        if (s.phase !== 'landed') return;   // only a landed page can host a form prepare
+        await prepareFormActionDispatch(s, Date.now(), action);
+      } finally { release(); }
+    },
 
     async tick(now: number = Date.now()): Promise<void> {
       const release = await mutex.acquire();
@@ -547,6 +795,23 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
               recoveryExhausted: true,
             };
             s.pendingRpc = null;
+          }
+        }
+
+        // 6.6. Form-action failure deadline (amend §5.6): acting + form_action
+        //      navigation + no correlated requestId/commit/effectConfirmed, and
+        //      30s elapsed since the form_action navigation was issued → fail
+        //      form_action_navigation_failed:timeout. NO tabs.update, NO re-submit.
+        if (s.phase === 'acting' && s.navigation?.kind === 'form_action' && s.navigation.action) {
+          const hasSignal =
+            !!s.navigation.requestId || !!s.navigation.commit || s.navigation.action.effectConfirmed;
+          if (!hasSignal && now >= s.navigation.issuedAt + 30_000) {
+            const jobId = s.currentJob!.id;
+            s.phase = 'error'; s.phaseStartedAt = now;
+            s.lastError = { kind: 'nav_error', error: 'form_action_navigation_failed:timeout' };
+            s.navigation = null;
+            s.pendingRpc = null;
+            if (deps.api) await deps.api.failJob(jobId, 'form_action_navigation_failed:timeout');
           }
         }
 

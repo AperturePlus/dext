@@ -793,3 +793,166 @@ test('capture RPC recovery exhausted (3 re-sends) → content_unavailable/captur
     assert.equal(s.lastError.recoveryExhausted, true);
   } finally { await cleanup(); }
 });
+
+// ---- slice 4: form-action prepare→persist→perform→confirm + failure routing ----
+
+async function landOnList(mod, area, api, chr) {
+  const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+  await c.bind(42, 1000);
+  await c.setAutoMode(true);
+  await c.tick(5000);
+  await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/list', requestId: 'REQ-1', timeStamp: 5100 });
+  await c.deliverCommitted({ tabId: 42, frameId: 0, documentId: 'DOC-LIST', url: 'https://xjtu.edu.cn/list', timeStamp: 5200 });
+  await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/list', statusCode: 200, frameId: 0, requestId: 'REQ-1', documentId: 'DOC-LIST', timeStamp: 5300 }, 'ok');
+  await c.deliverPageReady({ documentId: 'DOC-LIST', url: 'https://xjtu.edu.cn/list', detection: { errorPage: false, terminalReason: null }, timeStamp: 5400 });
+  return c;
+}
+function formActionJob(id = 'job-1') {
+  const j = fullJob(id, 'https://xjtu.edu.cn/list');
+  j.action = { kind: 'form_submit', form_name: 'pageForm', fields: { PAGENUM: '3' }, submit: true };
+  return j;
+}
+function fakeApi4b({ statusResponse }) {
+  const calls = { getStatus: 0, complete: [], fail: [], skip: [], sendHeartbeat: [] };
+  return {
+    calls,
+    async getStatus() { calls.getStatus += 1; return statusResponse; },
+    async claimNextJob() { return null; },
+    async completeJob(id, html, url, title, ps) { calls.complete.push({ id, html, url, title, ps }); },
+    async failJob(id, msg) { calls.fail.push({ id, msg }); },
+    async skipJob(id, reason) { calls.skip.push({ id, reason }); },
+    async sendHeartbeat(p) { calls.sendHeartbeat.push(p); },
+  };
+}
+
+test('ACTION_PREPARED ok:true → persists NEW form_action NavigationState (sourceDoc copied, slots absent) + PERFORM_ACTION dispatched (amend §5.2, §8.1 #15)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi4b({ statusResponse: { current_job: formActionJob(), frontend_health: { alive: true, last_seen_seconds_ago: 1 } } });
+    const chr = fakeChrome4();
+    const c = await landOnList(mod, area, api, chr);
+    // dispatch PREPARE_ACTION (Controller-initiated on landed? — for test we drive via a helper)
+    await c.dispatchPrepareAction({ kind: 'form_submit', form_name: 'pageForm', fields: { PAGENUM: '3' }, submit: true });
+    const s0 = await c.getState();
+    const prepRpc = s0.pendingRpc;
+    assert.equal(prepRpc.op, 'prepare_action');
+    assert.equal(prepRpc.sourceDocumentId, 'DOC-LIST');
+    // CS returns ACTION_PREPARED ok:true
+    await c.deliverActionPrepared({ op: 'ACTION_PREPARED', rpcId: prepRpc.id, jobId: 'job-1', ok: true, targetUrl: 'https://xjtu.edu.cn/list?PAGENUM=3', method: 'GET', expectedEffect: 'same_document', preparationFingerprint: 'FP1' }, { tab: { id: 42 }, frameId: 0, documentId: 'DOC-LIST' });
+    const s = await c.getState();
+    assert.equal(s.phase, 'acting');
+    assert.equal(s.navigation.kind, 'form_action');
+    assert.equal(s.navigation.requestedUrl, 'https://xjtu.edu.cn/list?PAGENUM=3');
+    assert.equal(s.navigation.sourceDocumentId, 'DOC-LIST');
+    assert.equal(s.navigation.requestId, undefined, 'requestId absent (new navigation)');
+    assert.equal(s.navigation.commit, undefined, 'commit absent');
+    assert.equal(s.navigation.http, undefined, 'http absent');
+    assert.equal(s.navigation.action.preparationFingerprint, 'FP1');
+    assert.equal(s.pendingRpc.op, 'perform_action');
+    assert.equal(chr.calls.sent.at(-1).message.op, 'PERFORM_ACTION');
+    assert.equal(chr.calls.sent.at(-1).options.documentId, 'DOC-LIST');
+  } finally { await cleanup(); }
+});
+
+test('ACTION_PREPARED ok:false → retries prepare (same rpcId) then fails form_action_prepare_failed (no tabs.update) (amend §5.1, §6.1)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi4b({ statusResponse: { current_job: formActionJob(), frontend_health: { alive: true, last_seen_seconds_ago: 1 } } });
+    const chr = fakeChrome4();
+    const c = await landOnList(mod, area, api, chr);
+    await c.dispatchPrepareAction({ kind: 'form_submit', form_name: 'pageForm', fields: { PAGENUM: '3' }, submit: true });
+    const prepRpc = (await c.getState()).pendingRpc;
+    for (let i = 0; i < 3; i++) {
+      await c.deliverActionPrepared({ op: 'ACTION_PREPARED', rpcId: prepRpc.id, jobId: 'job-1', ok: false, error: 'form_not_found' }, { tab: { id: 42 }, frameId: 0, documentId: 'DOC-LIST' });
+      // advance past the 5s recovery gap between retries
+      await c.tick(60000 + i * 10000);
+    }
+    const s = await c.getState();
+    assert.equal(s.phase, 'error');
+    assert.deepEqual(api.calls.fail, [{ id: 'job-1', msg: 'form_action_prepare_failed:form_not_found' }]);
+    assert.equal(chr.calls.updates.length, 1, 'only the initial list navigate; no tabs.update for form failure');
+  } finally { await cleanup(); }
+});
+
+test('same-document effect: ACTION_RESULT effectApplied+!navigationExpected → landed → capture (amend §5.5, §8.1 #5)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi4b({ statusResponse: { current_job: formActionJob(), frontend_health: { alive: true, last_seen_seconds_ago: 1 } } });
+    const chr = fakeChrome4();
+    const c = await landOnList(mod, area, api, chr);
+    await c.dispatchPrepareAction({ kind: 'form_submit', form_name: 'pageForm', fields: { PAGENUM: '3' }, submit: true });
+    const prepRpc = (await c.getState()).pendingRpc;
+    await c.deliverActionPrepared({ op: 'ACTION_PREPARED', rpcId: prepRpc.id, jobId: 'job-1', ok: true, targetUrl: 'https://xjtu.edu.cn/list?PAGENUM=3', method: 'GET', expectedEffect: 'same_document', preparationFingerprint: 'FP1' }, { tab: { id: 42 }, frameId: 0, documentId: 'DOC-LIST' });
+    const perfRpc = (await c.getState()).pendingRpc;
+    await c.deliverActionResult({ op: 'ACTION_RESULT', rpcId: perfRpc.id, jobId: 'job-1', ok: true, invoked: true, navigationExpected: false, effectApplied: true }, { tab: { id: 42 }, frameId: 0, documentId: 'DOC-LIST' });
+    const s = await c.getState();
+    assert.equal(s.phase, 'capturing', 'same-document effect confirmed → landed → capturing');
+    assert.equal(s.navigation.action.effectConfirmed, true);
+    assert.equal(s.pendingRpc.op, 'capture');
+  } finally { await cleanup(); }
+});
+
+test('navigationExpected:true ACTION_RESULT does NOT capture (waits new-document landing) (amend §5.4, §8.1 #4)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi4b({ statusResponse: { current_job: formActionJob(), frontend_health: { alive: true, last_seen_seconds_ago: 1 } } });
+    const chr = fakeChrome4();
+    const c = await landOnList(mod, area, api, chr);
+    await c.dispatchPrepareAction({ kind: 'form_submit', form_name: 'pageForm', fields: { PAGENUM: '3' }, submit: true });
+    const prepRpc = (await c.getState()).pendingRpc;
+    await c.deliverActionPrepared({ op: 'ACTION_PREPARED', rpcId: prepRpc.id, jobId: 'job-1', ok: true, targetUrl: 'https://xjtu.edu.cn/list', method: 'POST', expectedEffect: 'new_document', preparationFingerprint: 'FP1' }, { tab: { id: 42 }, frameId: 0, documentId: 'DOC-LIST' });
+    const perfRpc = (await c.getState()).pendingRpc;
+    await c.deliverActionResult({ op: 'ACTION_RESULT', rpcId: perfRpc.id, jobId: 'job-1', ok: true, invoked: true, navigationExpected: true, effectApplied: false }, { tab: { id: 42 }, frameId: 0, documentId: 'DOC-LIST' });
+    const s = await c.getState();
+    assert.equal(s.phase, 'acting', 'still acting, not capturing');
+    assert.equal(s.navigation.action.invocationReported, true);
+  } finally { await cleanup(); }
+});
+
+test('form-action 30s no commit/effect → fail form_action_navigation_failed (NO tabs.update, NO re-submit) (amend §5.6, §8.1 #11)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi4b({ statusResponse: { current_job: formActionJob(), frontend_health: { alive: true, last_seen_seconds_ago: 1 } } });
+    const chr = fakeChrome4();
+    const c = await landOnList(mod, area, api, chr);
+    await c.dispatchPrepareAction({ kind: 'form_submit', form_name: 'pageForm', fields: { PAGENUM: '3' }, submit: true });
+    const prepRpc = (await c.getState()).pendingRpc;
+    await c.deliverActionPrepared({ op: 'ACTION_PREPARED', rpcId: prepRpc.id, jobId: 'job-1', ok: true, targetUrl: 'https://xjtu.edu.cn/list', method: 'POST', expectedEffect: 'new_document', preparationFingerprint: 'FP1' }, { tab: { id: 42 }, frameId: 0, documentId: 'DOC-LIST' });
+    const updatesBefore = chr.calls.updates.length;
+    const sentBefore = chr.calls.sent.length;
+    await c.tick(65000);   // issuedAt≈5500 +30s=35500 well past; no commit/effect
+    const s = await c.getState();
+    assert.equal(s.phase, 'error');
+    assert.equal(s.lastError.kind, 'nav_error');
+    assert.ok(String(s.lastError.error).startsWith('form_action_navigation_failed'));
+    assert.deepEqual(api.calls.fail.map((f) => f.msg), [s.lastError.error]);
+    assert.equal(chr.calls.updates.length, updatesBefore, 'NO tabs.update on form-action failure');
+    assert.equal(chr.calls.sent.length, sentBefore, 'NO re-submit');
+  } finally { await cleanup(); }
+});
+
+test('PERFORM_ACTION repeat (same rpcId) does NOT generate a new perform rpcId after a correlated requestId appears (amend §5.4)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const api = fakeApi4b({ statusResponse: { current_job: formActionJob(), frontend_health: { alive: true, last_seen_seconds_ago: 1 } } });
+    const chr = fakeChrome4();
+    const c = await landOnList(mod, area, api, chr);
+    await c.dispatchPrepareAction({ kind: 'form_submit', form_name: 'pageForm', fields: { PAGENUM: '3' }, submit: true });
+    const prepRpc = (await c.getState()).pendingRpc;
+    await c.deliverActionPrepared({ op: 'ACTION_PREPARED', rpcId: prepRpc.id, jobId: 'job-1', ok: true, targetUrl: 'https://xjtu.edu.cn/list', method: 'POST', expectedEffect: 'new_document', preparationFingerprint: 'FP1' }, { tab: { id: 42 }, frameId: 0, documentId: 'DOC-LIST' });
+    const perfRpcId = (await c.getState()).pendingRpc.id;
+    // a correlated main-frame request arrives (binds requestId in acting phase)
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/list', requestId: 'REQ-PERF', timeStamp: 5600 });
+    // the perform-recovery tick must NOT create a new rpcId
+    await c.tick(60000);
+    const s = await c.getState();
+    assert.equal(s.pendingRpc.id, perfRpcId, 'no new perform rpcId once requestId is bound');
+    assert.equal(s.navigation.requestId, 'REQ-PERF');
+  } finally { await cleanup(); }
+});
