@@ -5,7 +5,7 @@
  * and /fail + /skip are idempotent against stale ids anyway; heartbeat failure is reflected
  * by /status reconnect, not the heartbeat POST). */
 
-import type { FetchJob, PaginationState } from './shared/types.js';
+import type { FetchJob, PaginationState, PendingDecision } from './shared/types.js';
 
 export interface CurrentJob {
   id: string;
@@ -38,6 +38,8 @@ export interface ApiClient {
   skipJob(jobId: string, reason: string): Promise<void>;
   completeJob(jobId: string, html: string, url: string, title: string, paginationStates?: PaginationState[]): Promise<void>;
   sendHeartbeat(payload: HeartbeatPayload): Promise<void>;
+  getDecision(): Promise<PendingDecision | null>;
+  resolveDecision(id: string, action: string): Promise<void>;
 }
 
 type FetchFn = (url: string, init?: { method?: string; headers?: Record<string,string>; body?: string }) => Promise<{
@@ -117,5 +119,27 @@ export function createFetchApi(base: string, fetchFn?: FetchFn): ApiClient {
     }
   }
 
-  return { getStatus, claimNextJob, completeJob, failJob, skipJob, sendHeartbeat };
+  async function getDecision(): Promise<PendingDecision | null> {
+    try {
+      const res = await fetch(`${base}/decision`, { method: 'GET' });
+      if (res.status === 204) return null;
+      if (!res.ok) return null;
+      return (await res.json()) as PendingDecision;
+    } catch {
+      return null;
+    }
+  }
+
+  async function resolveDecision(id: string, action: string): Promise<void> {
+    try {
+      await fetch(`${base}/decision/${encodeURIComponent(id)}/resolve`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ action }),
+      });
+    } catch {
+      // late resolve against a backend-released decision is a no-op; swallow.
+    }
+  }
+
+  return { getStatus, claimNextJob, completeJob, failJob, skipJob, sendHeartbeat, getDecision, resolveDecision };
 }

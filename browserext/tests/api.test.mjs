@@ -257,3 +257,41 @@ test('completeJob swallows errors (late /complete idempotency — CLAUDE.md bug 
     await cleanup();
   }
 });
+
+test('getDecision: 200 → PendingDecision; 204 → null', async () => {
+  const { mod, cleanup } = await importTsModule('../src/api.ts', 'api.ts');
+  try {
+    let status = 204, body = null;
+    const fetchFn = async () => ({ status, ok: status < 400, json: async () => body });
+    const api = mod.createFetchApi('http://x/api', fetchFn);
+    assert.equal(await api.getDecision(), null);
+    status = 200; body = { id: 'dec-1', kind: 'dedup', org_unit_name: 'X', failure_count: 1, sample_urls: [], suggested_action: 'skip', status: 'pending', action: null, created_at: 't' };
+    const dec = await api.getDecision();
+    assert.equal(dec?.id, 'dec-1');
+  } finally { await cleanup(); }
+});
+
+test('getDecision: network error → null (swallow)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/api.ts', 'api.ts');
+  try {
+    const fetchFn = async () => { throw new Error('net'); };
+    const api = mod.createFetchApi('http://x/api', fetchFn);
+    assert.equal(await api.getDecision(), null);
+  } finally { await cleanup(); }
+});
+
+test('resolveDecision: POSTs /decision/{id}/resolve with {action}; swallows errors', async () => {
+  const { mod, cleanup } = await importTsModule('../src/api.ts', 'api.ts');
+  try {
+    const calls = [];
+    const fetchFn = async (url, init) => { calls.push({ url, init }); return { ok: true }; };
+    const api = mod.createFetchApi('http://x/api', fetchFn);
+    await api.resolveDecision('dec-1', 'accept');
+    assert.equal(calls[0].url, 'http://x/api/decision/dec-1/resolve');
+    assert.equal(calls[0].init.method, 'POST');
+    assert.deepEqual(JSON.parse(calls[0].init.body), { action: 'accept' });
+    // error swallow
+    const errApi = mod.createFetchApi('http://x/api', async () => { throw new Error('net'); });
+    await errApi.resolveDecision('dec-1', 'accept');   // does not throw
+  } finally { await cleanup(); }
+});
