@@ -25,6 +25,7 @@ import { redirectKind, urlMatches } from '../shared/urlGate.js';
 import type { ApiClient } from '../api.js';
 import type { ChromeRuntime } from '../chrome.js';
 import type { ControllerState, ControllerError, NavOutcome } from '../shared/state.js';
+import type { CaptureResult } from '../shared/rpc.js';
 import type {
   BeforeRequestEvent, BeforeRedirectEvent, CommittedEvent,
   NavCompletedEvent, NavErrorEvent, NavController, NavScope, PageReadyEvent,
@@ -46,7 +47,7 @@ export interface CrawlControllerDeps {
   storage?: ControllerStorage;
   area?: StorageArea;
   api?: ApiClient;
-  chrome?: Pick<ChromeRuntime, 'getTab' | 'updateTabUrl'>;
+  chrome?: Pick<ChromeRuntime, 'getTab' | 'updateTabUrl' | 'sendMessage'>;
 }
 
 export interface CrawlController extends NavController {
@@ -54,6 +55,7 @@ export interface CrawlController extends NavController {
   bind(tabId: number, now?: number): Promise<void>;
   setAutoMode(mode: boolean, now?: number): Promise<void>;
   getState(): Promise<ControllerState>;
+  deliverCaptureResult(result: CaptureResult, sender: { tab?: { id: number }; frameId?: number; documentId?: string }): Promise<void>;
 }
 
 export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlController {
@@ -107,7 +109,8 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
       s.navigation!.acceptedUrl = verdict.acceptedUrl;
       s.phase = 'landed';
       s.phaseStartedAt = now;
-      return;   // slice 4 dispatches capture here
+      await dispatchCapture(s, now);
+      return;
     }
     if (verdict.kind === 'terminal_skip') {
       const jobId = s.currentJob!.id;
@@ -160,6 +163,49 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
     s.phaseStartedAt = now;
     await persist();                                  // persist-before-navigate
     await deps.chrome.updateTabUrl(s.boundTabId, s.currentJob.url);
+  }
+
+  /** Dispatch CAPTURE on a landed page (amend §1.1, §4.1). Persist pendingRpc
+   *  delivery='prepared' BEFORE sendMessage; promote to 'received' on transport
+   *  receipt. Runs UNDER the mutex (called from applyLandingVerdict's landed
+   *  branch) — do NOT re-acquire. */
+  async function dispatchCapture(s: ControllerState, now: number): Promise<void> {
+    if (!s.currentJob || s.boundTabId === null || !deps.chrome?.sendMessage) return;
+    if (!s.navigation?.commit) return;
+    const rpcId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `cap-${now}-${Math.random().toString(36).slice(2)}`;
+    const sourceDocumentId = s.navigation.commit.documentId;
+    const deadline = now + 30_000;
+    s.pendingRpc = {
+      id: rpcId, jobId: s.currentJob.id, op: 'capture',
+      sourceDocumentId, delivery: 'prepared', issuedAt: now, resultDeadlineAt: deadline,
+      recoveryAttempts: 0, nextRecoveryAt: null,
+    };
+    s.phase = 'capturing';
+    s.phaseStartedAt = now;
+    await persist();   // persist-before-send (delivery='prepared')
+    try {
+      const receipt = await deps.chrome.sendMessage(
+        s.boundTabId,
+        { op: 'CAPTURE', rpcId, jobId: s.currentJob.id },
+        { documentId: sourceDocumentId },
+      );
+      if (receipt && (receipt as { received?: boolean }).received) {
+        s.pendingRpc.delivery = 'received';
+        await persist();
+      }
+    } catch {
+      // sendMessage reject → amend §4.2: capture target doc gone → content_unavailable.
+      s.phase = 'error';
+      s.phaseStartedAt = now;
+      s.lastError = {
+        kind: 'content_unavailable', missing: 'capture_result', sourceDocumentId,
+        since: now, recoveryAttempts: 0, nextRecoveryAt: null, recoveryExhausted: true,
+      };
+      s.pendingRpc = null;
+      await persist();
+    }
   }
 
   // ---- NavController deliver* handlers (each re-acquires the mutex) ----
@@ -282,6 +328,73 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
     } finally { release(); }
   }
 
+  /** Handle a CAPTURE_RESULT from the content script (amend §2.3, §4.1, §6.1).
+   *  Re-acquires the mutex like the other deliver* handlers. Validates the
+   *  sender per amend §4.1; on mismatch → log + no-op (late/stale). On a
+   *  second-detection failure routes per amend §2.3; on success completes the
+   *  job and returns to idle for the next reconcile to clear currentJob. */
+  async function deliverCaptureResult(
+    result: CaptureResult,
+    sender: { tab?: { id: number }; frameId?: number; documentId?: string },
+  ): Promise<void> {
+    const release = await mutex.acquire();
+    try {
+      const s = await ensureLoaded();
+      if (!EXCLUSIVE_CONTROL_ENABLED) return;
+      const rpc = s.pendingRpc;
+      if (!rpc || rpc.op !== 'capture') return;
+      // amend §4.1 validation — any mismatch is a late/stale result, no-op.
+      if (sender.tab?.id !== s.boundTabId) return;
+      if (sender.frameId !== 0) return;
+      if (sender.documentId !== rpc.sourceDocumentId) return;
+      if (result.rpcId !== rpc.id || result.jobId !== s.currentJob?.id) return;
+      // second-detection failure → amend §2.3 routing (clear rpc, exit capturing)
+      if (!result.ok) {
+        s.pendingRpc = null;
+        const detection = result.detection;
+        if (detection?.terminalReason === 'not_found'
+            || detection?.terminalReason === 'content_removed'
+            || detection?.terminalReason === 'empty_page') {
+          // terminal skip from capturing (amend §8.1 #18)
+          const reason = detection.terminalReason;
+          const jobId = s.currentJob!.id;
+          s.phase = 'error'; s.phaseStartedAt = Date.now(); s.lastError = null; s.navigation = null;
+          if (deps.api) await deps.api.skipJob(jobId, reason);
+        } else if (detection?.errorPage && s.navigation?.kind === 'navigate') {
+          // gateway funnel: clear signals, bump attempt, re-navigate
+          const nav = s.navigation!;
+          clearAttemptSignals(nav);
+          nav.attempt += 1;
+          nav.issuedAt = Date.now();
+          await navigateNow(s, Date.now());
+        } else {
+          // form_action soft-error or unknown → fail form_action_navigation_failed (amend §5.6)
+          const jobId = s.currentJob!.id;
+          const msg = `form_action_navigation_failed:${result.error ?? 'soft_error'}`;
+          s.phase = 'error'; s.phaseStartedAt = Date.now();
+          s.lastError = { kind: 'nav_error', error: msg };
+          s.navigation = null;
+          if (deps.api) await deps.api.failJob(jobId, msg);
+        }
+        await persist();
+        return;
+      }
+      // success → complete
+      const jobId = s.currentJob!.id;
+      if (deps.api) {
+        await deps.api.completeJob(
+          jobId, result.html ?? '', result.url, result.title ?? '', result.paginationStates,
+        );
+      }
+      s.pendingRpc = null;
+      s.navigation = null;
+      s.phase = 'idle';            // reconcile clears currentJob if backend released it
+      s.phaseStartedAt = Date.now();
+      s.lastError = null;
+      await persist();
+    } finally { release(); }
+  }
+
   return {
     getNavScope,
     deliverBeforeRequest,
@@ -290,6 +403,7 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
     deliverHttpEvent,
     deliverError,
     deliverPageReady,
+    deliverCaptureResult,
 
     async tick(now: number = Date.now()): Promise<void> {
       const release = await mutex.acquire();
@@ -376,6 +490,63 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
               };
               // keep navigation (landing page retained); do NOT clear.
             }
+          }
+        }
+
+        // 6.5. Capture RPC recovery (amend §6.1) — re-send same rpcId past
+        //      result deadline OR recovery gap, ≤3 re-sends, ≥5s apart.
+        //      NOTE: the recovery condition fires on EITHER the result-deadline
+        //      expiring (the FIRST re-send, before nextRecoveryAt is set) OR the
+        //      ≥5s recovery gap elapsing (subsequent re-sends, where the deadline
+        //      was reset to now+30s on the previous send). The brief's verbatim
+        //      `now >= resultDeadlineAt && ...` would block re-sends #2/#3
+        //      because each re-send resets resultDeadlineAt=now+30000; the
+        //      exhaust test (ticks 40k/45k/50k/55k) drives 10s apart and needs
+        //      a re-send on each of the first three ticks.
+        if (s.phase === 'capturing' && s.pendingRpc && s.pendingRpc.op === 'capture') {
+          const rpc = s.pendingRpc;
+          const deadlineExpired = now >= rpc.resultDeadlineAt;
+          const gapElapsed = rpc.nextRecoveryAt !== null && now >= rpc.nextRecoveryAt;
+          if ((deadlineExpired || gapElapsed) && rpc.recoveryAttempts < 3) {
+            rpc.recoveryAttempts += 1;
+            rpc.nextRecoveryAt = now + 5_000;
+            rpc.resultDeadlineAt = now + 30_000;
+            rpc.delivery = 'prepared';
+            rpc.issuedAt = now;
+            await persist();
+            if (s.boundTabId !== null && deps.chrome?.sendMessage) {
+              try {
+                const receipt = await deps.chrome.sendMessage(
+                  s.boundTabId,
+                  { op: 'CAPTURE', rpcId: rpc.id, jobId: rpc.jobId },
+                  { documentId: rpc.sourceDocumentId },
+                );
+                if (receipt && (receipt as { received?: boolean }).received) {
+                  rpc.delivery = 'received';
+                  await persist();
+                }
+              } catch {
+                // target doc gone → content_unavailable
+                s.phase = 'error'; s.phaseStartedAt = now;
+                s.lastError = {
+                  kind: 'content_unavailable', missing: 'capture_result',
+                  sourceDocumentId: rpc.sourceDocumentId, since: rpc.issuedAt,
+                  recoveryAttempts: rpc.recoveryAttempts, nextRecoveryAt: null,
+                  recoveryExhausted: true,
+                };
+                s.pendingRpc = null;
+              }
+            }
+          } else if (rpc.recoveryAttempts >= 3 && now >= (rpc.nextRecoveryAt ?? 0)) {
+            // budget exhausted → content_unavailable/capture_result
+            s.phase = 'error'; s.phaseStartedAt = now;
+            s.lastError = {
+              kind: 'content_unavailable', missing: 'capture_result',
+              sourceDocumentId: rpc.sourceDocumentId, since: rpc.issuedAt,
+              recoveryAttempts: rpc.recoveryAttempts, nextRecoveryAt: null,
+              recoveryExhausted: true,
+            };
+            s.pendingRpc = null;
           }
         }
 

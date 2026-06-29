@@ -615,3 +615,181 @@ test('deliver* does not throw on an unbound controller (no navigation to correla
     assert.deepEqual(api.calls.skip, []);
   } finally { await cleanup(); }
 });
+
+// ---- slice 4: capture dispatch + CAPTURE_RESULT + recovery + complete ----
+
+function fakeChrome4() {
+  const updates = [];
+  const sent = [];
+  return {
+    calls: { updates, sent },
+    async getTab() { return { id: 42, url: 'https://xjtu.edu.cn/job-1' }; },
+    async updateTabUrl(t, url) { updates.push({ tabId: t, url }); },
+    async sendMessage(tabId, message, options) { sent.push({ tabId, message, options }); return { received: true }; },
+  };
+}
+function fakeApi4({ statusResponse, completeOk = true }) {
+  const calls = { getStatus: 0, claimNextJob: 0, complete: [], fail: [], skip: [], sendHeartbeat: [] };
+  return {
+    calls,
+    async getStatus() { calls.getStatus += 1; return statusResponse; },
+    async claimNextJob() { return null; },
+    async completeJob(id, html, url, title, ps) { calls.complete.push({ id, html, url, title, ps }); },
+    async failJob(id, msg) { calls.fail.push({ id, msg }); },
+    async skipJob(id, reason) { calls.skip.push({ id, reason }); },
+    async sendHeartbeat(p) { calls.sendHeartbeat.push(p); },
+  };
+}
+function landedController(mod, area) {
+  // build a controller already navigated to landed on job-1, doc DOC-1.
+  // NOTE: the brief's helper omits setAutoMode(true), but navigateNow (step 5)
+  // and the claim gate both require autoMode — without it the controller stays
+  // 'assigned' and never navigates. Mirror the slice-3 landing-test pattern.
+  const api = fakeApi4({ statusResponse: { current_job: fullJob('job-1'), frontend_health: { alive: true, last_seen_seconds_ago: 1 } } });
+  const chr = fakeChrome4();
+  const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+  return { c, api, chr, area, async ready() { await c.bind(42, 1000); await c.setAutoMode(true); await c.tick(5000); } };
+}
+
+test('landed → dispatches CAPTURE to commit.documentId with a stable rpcId; pendingRpc.delivery=prepared BEFORE send, received AFTER (amend §1.1, §4.1)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const { c, chr, ready } = landedController(mod, area);
+    await ready();
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverCommitted({ tabId: 42, frameId: 0, documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', timeStamp: 5200 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 200, frameId: 0, requestId: 'REQ-1', documentId: 'DOC-1', timeStamp: 5300 }, 'ok');
+    await c.deliverPageReady({ documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', detection: { errorPage: false, terminalReason: null }, timeStamp: 5400 });
+    const s = await c.getState();
+    assert.equal(s.phase, 'capturing', 'landed → capturing');
+    assert.ok(s.pendingRpc, 'pendingRpc persisted');
+    assert.equal(s.pendingRpc.op, 'capture');
+    assert.equal(s.pendingRpc.sourceDocumentId, 'DOC-1');
+    assert.equal(s.pendingRpc.delivery, 'received', 'delivery promoted to received after send resolves');
+    assert.equal(chr.calls.sent.length, 1);
+    assert.equal(chr.calls.sent[0].options.documentId, 'DOC-1', 'delivered to precise documentId');
+    assert.equal(chr.calls.sent[0].message.op, 'CAPTURE');
+  } finally { await cleanup(); }
+});
+
+test('CAPTURE_RESULT ok:true → complete + clear pendingRpc → idle (capture success)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const { c, api, ready } = landedController(mod, area);
+    await ready();
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverCommitted({ tabId: 42, frameId: 0, documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', timeStamp: 5200 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 200, frameId: 0, requestId: 'REQ-1', documentId: 'DOC-1', timeStamp: 5300 }, 'ok');
+    await c.deliverPageReady({ documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', detection: { errorPage: false, terminalReason: null }, timeStamp: 5400 });
+    const rpc = (await c.getState()).pendingRpc;
+    await c.deliverCaptureResult({ op: 'CAPTURE_RESULT', rpcId: rpc.id, jobId: 'job-1', ok: true, url: 'https://xjtu.edu.cn/job-1', html: '<html/>', title: 'T', paginationStates: [], detection: { errorPage: false, terminalReason: null } }, { tab: { id: 42 }, frameId: 0, documentId: 'DOC-1' });
+    assert.deepEqual(api.calls.complete, [{ id: 'job-1', html: '<html/>', url: 'https://xjtu.edu.cn/job-1', title: 'T', ps: [] }]);
+    const s = await c.getState();
+    assert.equal(s.pendingRpc, null);
+    assert.equal(s.navigation, null);
+    assert.equal(s.phase, 'idle');
+  } finally { await cleanup(); }
+});
+
+test('CAPTURE_RESULT second-detection fail (errorPage, navigate kind) → gateway funnel re-navigate (amend §2.3, §8.1 #18)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const { c, chr, ready } = landedController(mod, area);
+    await ready();
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverCommitted({ tabId: 42, frameId: 0, documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', timeStamp: 5200 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 200, frameId: 0, requestId: 'REQ-1', documentId: 'DOC-1', timeStamp: 5300 }, 'ok');
+    await c.deliverPageReady({ documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', detection: { errorPage: false, terminalReason: null }, timeStamp: 5400 });
+    const rpc = (await c.getState()).pendingRpc;
+    await c.deliverCaptureResult({ op: 'CAPTURE_RESULT', rpcId: rpc.id, jobId: 'job-1', ok: false, url: 'u', detection: { errorPage: true, terminalReason: null }, error: 'error_page' }, { tab: { id: 42 }, frameId: 0, documentId: 'DOC-1' });
+    const s = await c.getState();
+    assert.equal(s.pendingRpc, null, 'rpc cleared');
+    assert.equal(s.phase, 'navigating', 'exited capturing → gateway funnel re-navigate');
+    assert.equal(s.navigation.attempt, 2);
+  } finally { await cleanup(); }
+});
+
+test('CAPTURE_RESULT second-detection terminal not_found → skip not_found (amend §8.1 #18)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const { c, api, ready } = landedController(mod, area);
+    await ready();
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverCommitted({ tabId: 42, frameId: 0, documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', timeStamp: 5200 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 200, frameId: 0, requestId: 'REQ-1', documentId: 'DOC-1', timeStamp: 5300 }, 'ok');
+    await c.deliverPageReady({ documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', detection: { errorPage: false, terminalReason: null }, timeStamp: 5400 });
+    const rpc = (await c.getState()).pendingRpc;
+    await c.deliverCaptureResult({ op: 'CAPTURE_RESULT', rpcId: rpc.id, jobId: 'job-1', ok: false, url: 'u', detection: { errorPage: false, terminalReason: 'not_found' }, error: 'not_found' }, { tab: { id: 42 }, frameId: 0, documentId: 'DOC-1' });
+    assert.deepEqual(api.calls.skip, [{ id: 'job-1', reason: 'not_found' }]);
+    const s = await c.getState();
+    assert.equal(s.phase, 'error');
+  } finally { await cleanup(); }
+});
+
+test('CAPTURE_RESULT with mismatched documentId → discarded (late/stale RPC, no complete) (amend §4.1, §8.1 #10)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const { c, api, ready } = landedController(mod, area);
+    await ready();
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverCommitted({ tabId: 42, frameId: 0, documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', timeStamp: 5200 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 200, frameId: 0, requestId: 'REQ-1', documentId: 'DOC-1', timeStamp: 5300 }, 'ok');
+    await c.deliverPageReady({ documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', detection: { errorPage: false, terminalReason: null }, timeStamp: 5400 });
+    const rpc = (await c.getState()).pendingRpc;
+    // wrong documentId (a new document's stale result)
+    await c.deliverCaptureResult({ op: 'CAPTURE_RESULT', rpcId: rpc.id, jobId: 'job-1', ok: true, url: 'u', html: 'x', title: 't', detection: { errorPage: false, terminalReason: null } }, { tab: { id: 42 }, frameId: 0, documentId: 'DOC-OTHER' });
+    assert.deepEqual(api.calls.complete, [], 'mismatched documentId result discarded, no complete');
+    assert.equal((await c.getState()).phase, 'capturing', 'still capturing');
+  } finally { await cleanup(); }
+});
+
+test('capture RPC recovery: result deadline expired + source doc still matches → re-send SAME rpcId (amend §6.1)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const { c, chr, ready } = landedController(mod, area);
+    await ready();
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverCommitted({ tabId: 42, frameId: 0, documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', timeStamp: 5200 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 200, frameId: 0, requestId: 'REQ-1', documentId: 'DOC-1', timeStamp: 5300 }, 'ok');
+    await c.deliverPageReady({ documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', detection: { errorPage: false, terminalReason: null }, timeStamp: 5400 });
+    const rpcBefore = (await c.getState()).pendingRpc;
+    assert.equal(chr.calls.sent.length, 1);
+    // advance past resultDeadlineAt (issuedAt≈5400, +30s = 35400) and past 5s recovery gap
+    await c.tick(40000);
+    const s = await c.getState();
+    assert.equal(chr.calls.sent.length, 2, 're-sent CAPTURE');
+    assert.equal(s.pendingRpc.id, rpcBefore.id, 'SAME rpcId re-used');
+    assert.equal(s.pendingRpc.recoveryAttempts, 1);
+  } finally { await cleanup(); }
+});
+
+test('capture RPC recovery exhausted (3 re-sends) → content_unavailable/capture_result, no more auto RPC (amend §6.1)', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const { c, chr, ready } = landedController(mod, area);
+    await ready();
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverCommitted({ tabId: 42, frameId: 0, documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', timeStamp: 5200 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 200, frameId: 0, requestId: 'REQ-1', documentId: 'DOC-1', timeStamp: 5300 }, 'ok');
+    await c.deliverPageReady({ documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', detection: { errorPage: false, terminalReason: null }, timeStamp: 5400 });
+    const sentBefore = chr.calls.sent.length;
+    // three recovery windows (each must clear the 5s gap): issueAt≈5400+30s=35400; gaps at 35400+5, then +35, then +65
+    await c.tick(40000);  // re-send #1
+    await c.tick(45000);  // re-send #2
+    await c.tick(50000);  // re-send #3 (now recoveryAttempts==3, exhausted)
+    await c.tick(55000);  // NO further send
+    const s = await c.getState();
+    assert.equal(chr.calls.sent.length, sentBefore + 3, 'exactly 3 re-sends');
+    assert.equal(s.phase, 'error');
+    assert.equal(s.lastError.kind, 'content_unavailable');
+    assert.equal(s.lastError.missing, 'capture_result');
+    assert.equal(s.lastError.recoveryExhausted, true);
+  } finally { await cleanup(); }
+});

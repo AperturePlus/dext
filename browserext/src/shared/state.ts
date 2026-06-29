@@ -21,6 +21,8 @@ export interface PendingRpc {
   delivery: 'prepared' | 'received';
   issuedAt: number;
   resultDeadlineAt: number;
+  recoveryAttempts: number;       // amend §6.1 — only incremented on actual re-send
+  nextRecoveryAt: number | null;   // amend §6.1 — ≥5s gap between re-sends
 }
 
 export type TerminalUnavailableReason = 'not_found' | 'content_removed' | 'empty_page' | string;

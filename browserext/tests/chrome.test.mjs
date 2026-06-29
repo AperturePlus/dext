@@ -9,6 +9,7 @@ function fakeRuntime() {
   const completedCbs = [], errorCbs = [], beforeReqCbs = [], beforeRedirectCbs = [], committedCbs = [], historyCbs = [];
   let alarmCb = null;
   let lastUpdated = null;
+  const sentMessages = [];
   let tabs = [{ id: 1, url: 'https://www.x.edu.cn/faculty' }];
   return {
     onNavCompleted(cb) { completedCbs.push(cb); },
@@ -23,6 +24,7 @@ function fakeRuntime() {
       return t ? t.id : null;
     },
     async getTab(tabId) { const t = tabs.find((t) => t.id === tabId) ?? null; return t ? { id: t.id, url: t.url } : null; },
+    async sendMessage(tabId, message, options) { sentMessages.push({ tabId, message, options }); return { received: true }; },
     registerAlarm(_name, _period, cb) { alarmCb = cb; },
     // test helpers
     fireCompleted(e) { for (const cb of completedCbs) cb(e); },
@@ -33,6 +35,7 @@ function fakeRuntime() {
     fireHistory(e) { for (const cb of historyCbs) cb(e); },
     fireAlarm() { if (alarmCb) alarmCb(); },
     lastUpdated,
+    sentMessages,
     _tabs: tabs,
   };
 }
@@ -64,7 +67,7 @@ test('createRealChromeRuntime exposes nav listeners + widened events (slice 3)',
   const { mod, cleanup } = await importTsModule('../src/chrome.ts', 'chrome.ts');
   try {
     const rt = mod.createRealChromeRuntime();
-    for (const m of ['onBeforeRequest','onBeforeRedirect','onCommitted','onHistoryStateUpdated','onNavCompleted','onNavError','updateTabUrl','findOwnerTab','getTab','registerAlarm']) {
+    for (const m of ['onBeforeRequest','onBeforeRedirect','onCommitted','onHistoryStateUpdated','onNavCompleted','onNavError','updateTabUrl','findOwnerTab','getTab','sendMessage','registerAlarm']) {
       assert.equal(typeof rt[m], 'function', `${m} is a function`);
     }
   } finally {

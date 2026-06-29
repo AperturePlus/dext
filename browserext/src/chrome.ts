@@ -38,6 +38,7 @@ export interface ChromeRuntime {
   updateTabUrl(tabId: number, url: string): Promise<void>;
   findOwnerTab(): Promise<number | null>;
   getTab(tabId: number): Promise<{ id: number; url?: string } | null>;
+  sendMessage(tabId: number, message: unknown, options?: { documentId?: string; frameId?: number }): Promise<unknown>;
   registerAlarm(name: string, periodMinutes: number, cb: () => void): void;
 }
 
@@ -145,6 +146,9 @@ export function createRealChromeRuntime(): ChromeRuntime {
       } catch {
         return null;   // tab gone (e.g. TypeError "No tab with id") → invalid bound tab
       }
+    },
+    async sendMessage(tabId, message, options) {
+      return await chrome.tabs.sendMessage(tabId, message, options ?? {});
     },
     registerAlarm(name, periodMinutes, cb) {
       if (registeredAlarms.has(name)) return;
