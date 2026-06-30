@@ -42,7 +42,7 @@ requires = ["hatchling>=1.25.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/dext", "src/dext_graph", "src/dext_monitor"]
+packages = ["src/dext", "src/dext_graph", "src/dext_monitor", "src/dext_grounded"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
