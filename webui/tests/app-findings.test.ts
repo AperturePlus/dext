@@ -16,6 +16,7 @@ vi.mock('../src/services/api', () => ({
 }))
 
 import App from '../src/App.vue'
+import router from '../src/router'
 
 function buildRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -44,8 +45,10 @@ function detailWith(unresolved: Record<string, number> = {}) {
 }
 
 describe('App findings fetch (P1-7)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useFakeTimers()
+    router.push('/')
+    await router.isReady()
     apiMocks.health.mockResolvedValue({ catalog_path: 'p', server_time: 0, readable: true, schema_version: 3 })
     apiMocks.builds.mockResolvedValue({
       catalog_path: 'p', schema_version: 3, builds: [buildRow()], latest_build_id: 'build-1'
@@ -67,7 +70,7 @@ describe('App findings fetch (P1-7)', () => {
   })
 
   it('fetches findings once on build load, not on every detail refresh', async () => {
-    const wrapper = mount(App, { global: { stubs: { DashboardPage: { template: '<div />' } } } })
+    const wrapper = mount(App, { global: { plugins: [router], stubs: { DashboardPage: { template: '<div />' } } } })
     await vi.advanceTimersByTimeAsync(0)
     await flushPromises()
     await nextTick()
