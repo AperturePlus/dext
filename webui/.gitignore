@@ -1,0 +1,3 @@
+# This project uses bun.lock as its lockfile; npm's package-lock.json is
+# regenerated locally and must not be tracked alongside bun.lock.
+package-lock.json
