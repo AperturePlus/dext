@@ -33,6 +33,7 @@ def test_dext_grounded_submodules_do_not_import_dext_family():
     importlib.import_module("dext_grounded.source_ref")
     importlib.import_module("dext_grounded.student_context")
     importlib.import_module("dext_grounded.fact_bundle")
+    importlib.import_module("dext_grounded.claims")
     for forbidden in ("dext", "dext_graph", "dext_monitor", "dext_recommend", "dext_competition"):
         assert forbidden not in sys.modules, (
             f"dext_grounded submodules must not import peer module {forbidden!r}"
