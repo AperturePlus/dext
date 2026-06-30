@@ -16,6 +16,7 @@ from dext_grounded.content import ContentClass
 from dext_grounded.fact_bundle import FactBundle, FactItem
 from dext_grounded.ports import FakeLLMGenerationPort, LLMGenerationPort
 from dext_grounded.profile import GenerationProfile, ProfileRegistry
+from dext_grounded.safety import SafetyGuard
 from dext_grounded.source_ref import QUOTE_MAX_LEN, SourceRef, UserContextRef
 from dext_grounded.student_context import StudentContext
 
@@ -32,6 +33,7 @@ __all__ = [
     "LLMGenerationPort",
     "ProfileRegistry",
     "QUOTE_MAX_LEN",
+    "SafetyGuard",
     "SourceRef",
     "StudentContext",
     "UserContextRef",
