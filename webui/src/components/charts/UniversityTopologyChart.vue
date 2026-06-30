@@ -120,11 +120,26 @@ function onSelect(event: Event) {
 <style scoped>
 .uni-select {
   margin-bottom: 0.6rem;
-  padding: 0.35rem 0.5rem;
-  background: rgba(62, 230, 181, 0.06);
-  color: var(--text, #e8f0ff);
-  border: 1px solid rgba(146, 164, 189, 0.35);
-  border-radius: 6px;
-  font-size: 0.84rem;
+  padding: 0.5rem 0.82rem;
+  background: var(--surface-strong);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.uni-select:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(62, 230, 181, 0.4);
+  border-color: rgba(62, 230, 181, 0.42);
+}
+
+.uni-select option {
+  background: var(--surface-strong);
+  color: var(--text);
 }
 </style>
