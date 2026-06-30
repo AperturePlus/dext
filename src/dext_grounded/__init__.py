@@ -11,5 +11,6 @@ Both consumer modules import this package but never import each other.
 __version__ = "0.1.0"
 
 from dext_grounded.content import ContentClass
+from dext_grounded.student_context import StudentContext
 
-__all__ = ["ContentClass"]
+__all__ = ["ContentClass", "StudentContext"]
