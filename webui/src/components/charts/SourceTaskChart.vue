@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import type { SourceMetric } from '../../types/monitor'
 import ChartFrame from './ChartFrame.vue'
+import { chartTheme, palette } from './options'
 import type { ChartOption } from './options'
 
 const props = defineProps<{
@@ -12,33 +13,33 @@ const option = computed<ChartOption>(() => ({
   backgroundColor: 'transparent',
   tooltip: { trigger: 'axis' },
   legend: {
-    textStyle: { color: '#92a4bd' },
+    textStyle: { color: chartTheme.text },
     top: 0
   },
   grid: { left: 24, right: 16, top: 44, bottom: 42, containLabel: true },
   xAxis: {
     type: 'category',
     data: props.sources.map((source) => source.abbr || source.university_name),
-    axisLabel: { color: '#92a4bd' },
-    axisLine: { lineStyle: { color: 'rgba(136,162,199,0.28)' } }
+    axisLabel: { color: chartTheme.text },
+    axisLine: { lineStyle: { color: chartTheme.axisLine } }
   },
   yAxis: {
     type: 'value',
-    axisLabel: { color: '#92a4bd' },
-    splitLine: { lineStyle: { color: 'rgba(136,162,199,0.12)' } }
+    axisLabel: { color: chartTheme.text },
+    splitLine: { lineStyle: { color: chartTheme.splitLine } }
   },
   series: [
     {
       name: 'Rows',
       type: 'bar',
       data: props.sources.map((source) => source.rows_read),
-      itemStyle: { color: '#70a7ff', borderRadius: [6, 6, 0, 0] }
+      itemStyle: { color: palette[0], borderRadius: [6, 6, 0, 0] }
     },
     {
       name: 'Observations',
       type: 'bar',
       data: props.sources.map((source) => source.observations_written),
-      itemStyle: { color: '#3ee6b5', borderRadius: [6, 6, 0, 0] }
+      itemStyle: { color: palette[1], borderRadius: [6, 6, 0, 0] }
     }
   ]
 }))

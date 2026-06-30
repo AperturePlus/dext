@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import ChartFrame from './ChartFrame.vue'
 import EmptyState from '../primitives/EmptyState.vue'
+import { chartTheme, palette } from './options'
 import type { ChartOption } from './options'
 
 const props = defineProps<{
@@ -16,7 +17,7 @@ const option = computed<ChartOption>(() => ({
   tooltip: { trigger: 'item' },
   legend: {
     bottom: 0,
-    textStyle: { color: '#92a4bd' }
+    textStyle: { color: chartTheme.text }
   },
   series: [
     {
@@ -24,8 +25,8 @@ const option = computed<ChartOption>(() => ({
       radius: ['48%', '70%'],
       center: ['50%', '44%'],
       data: entries.value.map(([name, value]) => ({ name, value })),
-      color: ['#3ee6b5', '#70a7ff', '#f6c85f', '#ff6b7a', '#48d99a', '#a78bfa'],
-      label: { color: '#e8f0ff' }
+      color: palette,
+      label: { color: chartTheme.label }
     }
   ]
 }))

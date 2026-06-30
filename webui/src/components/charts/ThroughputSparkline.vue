@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import ChartFrame from './ChartFrame.vue'
 import EmptyState from '../primitives/EmptyState.vue'
 import type { ThroughputSample } from '../../composables/useMonitorData'
+import { chartTheme, palette } from './options'
 import type { ChartOption } from './options'
 
 const props = defineProps<{
@@ -16,7 +17,7 @@ const option = computed<ChartOption>(() => ({
   backgroundColor: 'transparent',
   tooltip: { trigger: 'axis' },
   legend: {
-    textStyle: { color: '#92a4bd' },
+    textStyle: { color: chartTheme.text },
     top: 0
   },
   grid: { left: 24, right: 16, top: 36, bottom: 28, containLabel: true },
@@ -24,13 +25,13 @@ const option = computed<ChartOption>(() => ({
     type: 'category',
     boundaryGap: false,
     data: labels.value,
-    axisLabel: { color: '#92a4bd', fontSize: 10 },
-    axisLine: { lineStyle: { color: 'rgba(136,162,199,0.28)' } }
+    axisLabel: { color: chartTheme.text, fontSize: 10 },
+    axisLine: { lineStyle: { color: chartTheme.axisLine } }
   },
   yAxis: {
     type: 'value',
-    axisLabel: { color: '#92a4bd' },
-    splitLine: { lineStyle: { color: 'rgba(136,162,199,0.12)' } }
+    axisLabel: { color: chartTheme.text },
+    splitLine: { lineStyle: { color: chartTheme.splitLine } }
   },
   series: [
     {
@@ -41,8 +42,8 @@ const option = computed<ChartOption>(() => ({
       symbol: 'circle',
       symbolSize: 5,
       showSymbol: false,
-      lineStyle: { color: '#70a7ff', width: 2 },
-      itemStyle: { color: '#70a7ff' }
+      lineStyle: { color: palette[0], width: 2 },
+      itemStyle: { color: palette[0] }
     },
     {
       name: 'Observations',
@@ -52,8 +53,8 @@ const option = computed<ChartOption>(() => ({
       symbol: 'circle',
       symbolSize: 5,
       showSymbol: false,
-      lineStyle: { color: '#3ee6b5', width: 2 },
-      itemStyle: { color: '#3ee6b5' }
+      lineStyle: { color: palette[1], width: 2 },
+      itemStyle: { color: palette[1] }
     }
   ]
 }))

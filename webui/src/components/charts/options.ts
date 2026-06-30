@@ -17,3 +17,16 @@ export type ChartOption = ComposeOption<
   | TooltipComponentOption
   | TitleComponentOption
 >
+
+/** Shared light-theme ECharts colors. Read these instead of hardcoding hex. */
+export const palette = [
+  '#2f6bff', '#3ee6b5', '#f6c85f', '#ff6b7a', '#9b8cff', '#4dd0e1', '#f59e6c'
+]
+
+export const chartTheme = {
+  text: '#5b6b82',
+  axisLine: 'rgba(30,58,110,0.22)',
+  splitLine: 'rgba(30,58,110,0.08)',
+  label: '#1a2333',
+  edge: 'rgba(30,58,110,0.30)'
+}

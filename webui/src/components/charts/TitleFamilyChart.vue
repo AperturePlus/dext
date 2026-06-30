@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import ChartFrame from './ChartFrame.vue'
 import EmptyState from '../primitives/EmptyState.vue'
+import { chartTheme, palette } from './options'
 import type { ChartOption } from './options'
 
 const props = defineProps<{
@@ -22,14 +23,14 @@ const option = computed<ChartOption>(() => ({
   grid: { left: 24, right: 16, top: 18, bottom: 20, containLabel: true },
   xAxis: {
     type: 'value',
-    axisLabel: { color: '#92a4bd' },
-    splitLine: { lineStyle: { color: 'rgba(136,162,199,0.12)' } }
+    axisLabel: { color: chartTheme.text },
+    splitLine: { lineStyle: { color: chartTheme.splitLine } }
   },
   yAxis: {
     type: 'category',
     data: entries.value.map(([name]) => name),
-    axisLabel: { color: '#92a4bd' },
-    axisLine: { lineStyle: { color: 'rgba(136,162,199,0.28)' } }
+    axisLabel: { color: chartTheme.text },
+    axisLine: { lineStyle: { color: chartTheme.axisLine } }
   },
   series: [
     {
@@ -37,7 +38,7 @@ const option = computed<ChartOption>(() => ({
       type: 'bar',
       data: entries.value.map(([, value]) => value),
       itemStyle: {
-        color: '#70a7ff',
+        color: palette[0],
         borderRadius: [0, 7, 7, 0]
       }
     }

@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import type { ExportPartition } from '../../types/monitor'
 import ChartFrame from './ChartFrame.vue'
+import { chartTheme, palette } from './options'
 import type { ChartOption } from './options'
 
 const props = defineProps<{
@@ -18,14 +19,14 @@ const option = computed<ChartOption>(() => ({
   grid: { left: 24, right: 16, top: 18, bottom: 20, containLabel: true },
   xAxis: {
     type: 'value',
-    axisLabel: { color: '#92a4bd' },
-    splitLine: { lineStyle: { color: 'rgba(136,162,199,0.12)' } }
+    axisLabel: { color: chartTheme.text },
+    splitLine: { lineStyle: { color: chartTheme.splitLine } }
   },
   yAxis: {
     type: 'category',
     data: sorted.value.map((item) => item.partition_key),
-    axisLabel: { color: '#92a4bd' },
-    axisLine: { lineStyle: { color: 'rgba(136,162,199,0.28)' } }
+    axisLabel: { color: chartTheme.text },
+    axisLine: { lineStyle: { color: chartTheme.axisLine } }
   },
   series: [
     {
@@ -34,7 +35,7 @@ const option = computed<ChartOption>(() => ({
       data: sorted.value.map((item) => item.row_count),
       itemStyle: {
         color: (params: { dataIndex: number }) =>
-          sorted.value[params.dataIndex]?.row_kind === 'node' ? '#3ee6b5' : '#70a7ff',
+          sorted.value[params.dataIndex]?.row_kind === 'node' ? palette[1] : palette[0],
         borderRadius: [0, 7, 7, 0]
       }
     }

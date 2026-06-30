@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import type { UniversityTopologyResponse } from '../../types/monitor'
 import ChartFrame from './ChartFrame.vue'
 import EmptyState from '../primitives/EmptyState.vue'
+import { chartTheme, palette } from './options'
 import type { ChartOption } from './options'
 
 const props = defineProps<{
@@ -48,7 +49,7 @@ function nodeName(node: { category: string; label: string; professor_count: numb
 const option = computed<ChartOption>(() => ({
   backgroundColor: 'transparent',
   tooltip: {},
-  legend: { top: 0, textStyle: { color: '#92a4bd' } },
+  legend: { top: 0, textStyle: { color: chartTheme.text } },
   series: [
     {
       type: 'graph',
@@ -70,13 +71,16 @@ const option = computed<ChartOption>(() => ({
       force: { repulsion: 120, edgeLength: 60, gravity: 0.1 },
       label: {
         show: true,
-        color: '#e8f0ff',
+        color: chartTheme.label,
         fontSize: 10,
         formatter: (params: { name: string }) =>
           params.name.length > 14 ? `${params.name.slice(0, 14)}…` : params.name
       },
-      lineStyle: { color: 'rgba(146,164,189,0.55)', curveness: 0.18 },
-      itemStyle: { color: '#3ee6b5' }
+      lineStyle: { color: chartTheme.edge, curveness: 0.18 },
+      itemStyle: {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        color: (params: any) => palette[(Number(params.category) || 0) % palette.length]
+      }
     }
   ]
 }))
@@ -134,8 +138,8 @@ function onSelect(event: Event) {
 
 .uni-select:focus {
   outline: none;
-  box-shadow: 0 0 0 2px rgba(62, 230, 181, 0.4);
-  border-color: rgba(62, 230, 181, 0.42);
+  box-shadow: 0 0 0 2px rgba(47, 107, 255, 0.35);
+  border-color: var(--accent);
 }
 
 .uni-select option {

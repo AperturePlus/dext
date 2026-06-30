@@ -37,7 +37,7 @@ function resize() {
 
 onMounted(() => {
   if (!container.value) return
-  instance = echarts.init(container.value, 'dark')
+  instance = echarts.init(container.value)
   instance.setOption(props.option)
   window.addEventListener('resize', resize)
 })
