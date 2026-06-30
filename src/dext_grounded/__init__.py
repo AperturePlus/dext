@@ -13,6 +13,7 @@ __version__ = "0.1.0"
 from dext_grounded.claims import Claim, GenerationResult, GenerationWarning
 from dext_grounded.content import ContentClass
 from dext_grounded.fact_bundle import FactBundle, FactItem
+from dext_grounded.ports import FakeLLMGenerationPort, LLMGenerationPort
 from dext_grounded.profile import GenerationProfile, ProfileRegistry
 from dext_grounded.source_ref import QUOTE_MAX_LEN, SourceRef, UserContextRef
 from dext_grounded.student_context import StudentContext
@@ -22,9 +23,11 @@ __all__ = [
     "ContentClass",
     "FactBundle",
     "FactItem",
+    "FakeLLMGenerationPort",
     "GenerationProfile",
     "GenerationResult",
     "GenerationWarning",
+    "LLMGenerationPort",
     "ProfileRegistry",
     "QUOTE_MAX_LEN",
     "SourceRef",
