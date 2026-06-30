@@ -370,6 +370,131 @@ class MonitorService:
             ]
             return {"findings": rows, "limit": limit}
 
+    def graph_tree(self, build_id: str) -> dict[str, Any]:
+        """Complete University→OrgUnit tree with professor counts (no truncation).
+
+        Unlike ``graph_preview`` (a truncated topology sample whose node-limit
+        cut drops relationship endpoints), this returns every University and
+        OrgUnit node plus their ``PART_OF`` edges, so the frontend can render a
+        connected per-university subgraph. Node ``id`` is ``payload.graph_key``
+        — the same key ``rel:PART_OF`` rows carry in ``start_graph_key`` /
+        ``end_graph_key`` — so ECharts resolves every link endpoint.
+        """
+        with self.reader.connect() as connection:
+            self.reader.require_supported_schema(connection)
+            self._get_build(connection, build_id)
+            university_rows = list(
+                connection.execute(
+                    "SELECT payload_json FROM graph_export_rows "
+                    "WHERE build_id=? AND partition_key='node:University' "
+                    "ORDER BY row_key",
+                    (build_id,),
+                )
+            )
+            orgunit_rows = list(
+                connection.execute(
+                    "SELECT payload_json FROM graph_export_rows "
+                    "WHERE build_id=? AND partition_key='node:OrgUnit' "
+                    "ORDER BY row_key",
+                    (build_id,),
+                )
+            )
+            part_of_rows = list(
+                connection.execute(
+                    "SELECT start_graph_key, end_graph_key FROM graph_export_rows "
+                    "WHERE build_id=? AND partition_key='rel:PART_OF'",
+                    (build_id,),
+                )
+            )
+            affiliated_rows = list(
+                connection.execute(
+                    "SELECT end_graph_key FROM graph_export_rows "
+                    "WHERE build_id=? AND partition_key='rel:AFFILIATED_WITH'",
+                    (build_id,),
+                )
+            )
+
+        # Professor count per OrgUnit (end_graph_key is the org).
+        prof_count_by_org: dict[str, int] = {}
+        for row in affiliated_rows:
+            prof_count_by_org[row["end_graph_key"]] = (
+                prof_count_by_org.get(row["end_graph_key"], 0) + 1
+            )
+
+        # org_key -> univ_key from PART_OF edges; also build links.
+        org_to_univ: dict[str, str] = {}
+        links: list[dict[str, Any]] = []
+        for row in part_of_rows:
+            org_key = str(row["start_graph_key"])
+            univ_key = str(row["end_graph_key"])
+            org_to_univ[org_key] = univ_key
+            links.append(
+                {"source": org_key, "target": univ_key, "label": "PART_OF"}
+            )
+
+        nodes: list[dict[str, Any]] = []
+        universities: list[dict[str, Any]] = []
+        prof_count_by_univ: dict[str, int] = {}
+        org_count_by_univ: dict[str, int] = {}
+        for row in university_rows:
+            payload = json_loads(row["payload_json"], {})
+            graph_key = str(payload.get("graph_key") or payload.get("id") or "")
+            nodes.append(
+                {
+                    "id": graph_key,
+                    "label": str(payload.get("name") or graph_key),
+                    "category": "University",
+                    "professor_count": 0,
+                    "orgunit_count": 0,
+                }
+            )
+            universities.append(
+                {
+                    "graph_key": graph_key,
+                    "name": str(payload.get("name") or graph_key),
+                    "logical_id": str(payload.get("logical_id") or ""),
+                    "orgunit_count": 0,
+                    "professor_count": 0,
+                }
+            )
+            prof_count_by_univ[graph_key] = 0
+            org_count_by_univ[graph_key] = 0
+
+        for row in orgunit_rows:
+            payload = json_loads(row["payload_json"], {})
+            graph_key = str(payload.get("graph_key") or payload.get("id") or "")
+            univ_key = org_to_univ.get(graph_key, "")
+            profs = prof_count_by_org.get(graph_key, 0)
+            nodes.append(
+                {
+                    "id": graph_key,
+                    "label": str(payload.get("name") or graph_key),
+                    "category": "OrgUnit",
+                    "kind": str(payload.get("kind") or ""),
+                    "professor_count": profs,
+                    "university": univ_key,
+                }
+            )
+            if univ_key in prof_count_by_univ:
+                prof_count_by_univ[univ_key] += profs
+                org_count_by_univ[univ_key] += 1
+
+        # Fold per-university aggregates back onto the node + summary entries.
+        for node in nodes:
+            if node["category"] == "University":
+                node["professor_count"] = prof_count_by_univ.get(node["id"], 0)
+                node["orgunit_count"] = org_count_by_univ.get(node["id"], 0)
+        for uni in universities:
+            uni["professor_count"] = prof_count_by_univ.get(uni["graph_key"], 0)
+            uni["orgunit_count"] = org_count_by_univ.get(uni["graph_key"], 0)
+
+        return {
+            "build_id": build_id,
+            "universities": universities,
+            "nodes": nodes,
+            "links": links,
+        }
+
     def _get_build(self, connection, build_id: str) -> dict[str, Any]:
         row = connection.execute("SELECT * FROM graph_builds WHERE id=?", (build_id,)).fetchone()
         if row is None:

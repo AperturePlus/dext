@@ -262,6 +262,196 @@ def _write_catalog(path: Path, *, version: int = 3, with_build: bool = True) -> 
         connection.close()
 
 
+def _write_tree_catalog(path: Path) -> str:
+    """Same schema as ``_write_catalog`` but with a richer topology:
+    2 universities, 2 orgunits, and ``AFFILIATED_WITH`` rows so professor
+    counts are non-zero. Used by the ``graph_tree`` service test."""
+    connection = sqlite3.connect(path)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE graph_builds(
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                source_manifest_hash TEXT,
+                curation_version TEXT NOT NULL,
+                taxonomy_version TEXT,
+                graph_schema_version INTEGER NOT NULL,
+                vector_schema_version INTEGER NOT NULL,
+                embedding_provider TEXT,
+                embedding_base_url TEXT,
+                embedding_model TEXT,
+                embedding_fingerprint TEXT,
+                embedding_dimension INTEGER,
+                settings_json TEXT NOT NULL,
+                summary_json TEXT NOT NULL DEFAULT '{}',
+                started_at TEXT,
+                finished_at TEXT,
+                last_error TEXT
+            );
+            CREATE TABLE build_source_tasks(
+                build_id TEXT NOT NULL,
+                university_id TEXT NOT NULL,
+                university_name TEXT NOT NULL,
+                abbr TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                source_snapshot_id TEXT,
+                snapshot_reused INTEGER NOT NULL DEFAULT 0,
+                rows_read INTEGER NOT NULL DEFAULT 0,
+                observations_written INTEGER NOT NULL DEFAULT 0,
+                observations_inserted INTEGER NOT NULL DEFAULT 0,
+                observations_reused INTEGER NOT NULL DEFAULT 0,
+                documents_seen INTEGER NOT NULL DEFAULT 0,
+                documents_inserted INTEGER NOT NULL DEFAULT 0,
+                findings INTEGER NOT NULL DEFAULT 0,
+                rejected_rows INTEGER NOT NULL DEFAULT 0,
+                deactivation_eligible INTEGER NOT NULL DEFAULT 0,
+                observations_inactivated INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE sink_checkpoints(
+                build_id TEXT NOT NULL,
+                sink TEXT NOT NULL,
+                partition_key TEXT NOT NULL,
+                last_key TEXT,
+                last_batch_id TEXT,
+                rows_written INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE quality_findings(
+                id TEXT PRIMARY KEY,
+                build_id TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                code TEXT NOT NULL,
+                entity_id TEXT,
+                observation_id TEXT,
+                details_json TEXT NOT NULL,
+                resolved INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE curation_runs(
+                id TEXT PRIMARY KEY,
+                build_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                curation_version TEXT NOT NULL,
+                normalization_version TEXT NOT NULL,
+                rules_hash TEXT NOT NULL,
+                override_manifest_hash TEXT NOT NULL,
+                summary_json TEXT NOT NULL DEFAULT '{}',
+                started_at TEXT,
+                finished_at TEXT,
+                last_error TEXT
+            );
+            CREATE TABLE canonical_professors(
+                entity_id TEXT NOT NULL,
+                build_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                title_raw TEXT,
+                title_family TEXT NOT NULL,
+                role_status TEXT NOT NULL,
+                role_reason_codes TEXT NOT NULL,
+                master_eligibility TEXT NOT NULL,
+                phd_eligibility TEXT NOT NULL,
+                research_areas_text TEXT,
+                bio TEXT,
+                email TEXT,
+                phone TEXT,
+                profile_url TEXT,
+                external_url TEXT,
+                active INTEGER NOT NULL,
+                completeness REAL NOT NULL
+            );
+            CREATE TABLE graph_runs(
+                id TEXT PRIMARY KEY,
+                build_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                evidence_version TEXT NOT NULL,
+                export_version TEXT NOT NULL,
+                summary_json TEXT NOT NULL DEFAULT '{}',
+                started_at TEXT,
+                finished_at TEXT,
+                last_error TEXT
+            );
+            CREATE TABLE graph_export_rows(
+                build_id TEXT NOT NULL,
+                partition_key TEXT NOT NULL,
+                row_key TEXT NOT NULL,
+                row_kind TEXT NOT NULL,
+                label_or_type TEXT NOT NULL,
+                start_graph_key TEXT,
+                end_graph_key TEXT,
+                payload_json TEXT NOT NULL,
+                provenance_ref TEXT NOT NULL,
+                row_checksum TEXT NOT NULL
+            );
+            CREATE TABLE graph_export_partitions(
+                build_id TEXT NOT NULL,
+                partition_key TEXT NOT NULL,
+                row_kind TEXT NOT NULL,
+                label_or_type TEXT NOT NULL,
+                row_count INTEGER NOT NULL,
+                min_key TEXT,
+                max_key TEXT,
+                checksum TEXT NOT NULL,
+                generated_at TEXT NOT NULL
+            );
+            """
+        )
+        connection.execute("PRAGMA user_version=3")
+        build_id = "build-1"
+        connection.execute(
+            """
+            INSERT INTO graph_builds(
+                id,status,curation_version,graph_schema_version,vector_schema_version,
+                embedding_provider,embedding_base_url,embedding_model,embedding_dimension,
+                settings_json,summary_json,started_at,last_error
+            ) VALUES (
+                ?, 'WRITING_VECTOR', 'curation-v1', 1, 1,
+                'siliconflow', 'https://example/v1', 'bge-m3', 1024,
+                '{}', '{"rows_read":15,"observations_written":12,"documents_seen":7}',
+                '2026-06-29T00:00:00+00:00', NULL
+            )
+            """,
+            (build_id,),
+        )
+        rows = [
+            ("node:Build", "build", "node", "Build", None, None, '{"id":"build-1","graph_key":"build-1"}'),
+            ("node:University", "u", "node", "University", None, None, '{"graph_key":"u","name":"大学A","logical_id":"univ:a"}'),
+            ("node:University", "u2", "node", "University", None, None, '{"graph_key":"u2","name":"大学B","logical_id":"univ:b"}'),
+            ("node:OrgUnit", "org", "node", "OrgUnit", None, None, '{"graph_key":"org","name":"学院A1","kind":"college"}'),
+            ("node:OrgUnit", "org2", "node", "OrgUnit", None, None, '{"graph_key":"org2","name":"研究所B1","kind":"institute"}'),
+            ("rel:PART_OF", "org|u", "relationship", "PART_OF", "org", "u", '{"graph_key":"r1"}'),
+            ("rel:PART_OF", "org2|u2", "relationship", "PART_OF", "org2", "u2", '{"graph_key":"r1b"}'),
+            ("rel:AFFILIATED_WITH", "p1|org", "relationship", "AFFILIATED_WITH", "p1", "org", '{"graph_key":"a1"}'),
+            ("rel:AFFILIATED_WITH", "p2|org", "relationship", "AFFILIATED_WITH", "p2", "org", '{"graph_key":"a2"}'),
+            ("rel:AFFILIATED_WITH", "p3|org2", "relationship", "AFFILIATED_WITH", "p3", "org2", '{"graph_key":"a3"}'),
+            ("rel:FROM_UNIVERSITY", "x|u", "relationship", "FROM_UNIVERSITY", "x", "u", '{"graph_key":"r2"}'),
+        ]
+        for row in rows:
+            connection.execute(
+                "INSERT INTO graph_export_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'p', 'c')",
+                (build_id, *row),
+            )
+        for partition, kind, label, count in [
+            ("node:Build", "node", "Build", 1),
+            ("node:University", "node", "University", 2),
+            ("node:OrgUnit", "node", "OrgUnit", 2),
+            ("rel:PART_OF", "relationship", "PART_OF", 2),
+            ("rel:AFFILIATED_WITH", "relationship", "AFFILIATED_WITH", 3),
+            ("rel:FROM_UNIVERSITY", "relationship", "FROM_UNIVERSITY", 1),
+        ]:
+            connection.execute(
+                "INSERT INTO graph_export_partitions VALUES (?, ?, ?, ?, ?, NULL, NULL, 'checksum', 'now')",
+                (build_id, partition, kind, label, count),
+            )
+        connection.commit()
+        return build_id
+    finally:
+        connection.close()
+
+
 def _settings(path: Path) -> MonitorSettings:
     return MonitorSettings(catalog_path=path, monitor_static_dir=path.parent / "dist")
 
@@ -531,6 +721,60 @@ def test_graph_preview_respects_rel_limit_after_sql_filter(tmp_path: Path) -> No
     assert len(preview["links"]) == 3
     assert preview["total_relationships"] == 5  # 2 original + 3 extra
     assert preview["truncated"] is True
+
+
+def test_graph_tree_returns_complete_university_orgunit_tree(tmp_path: Path) -> None:
+    """graph_tree returns the full University→OrgUnit tree with professor
+    counts — no truncation. Every PART_OF link endpoint is present in the node
+    set, so the frontend can render connected edges (the bug the topology view
+    fixes: graph_preview's truncated sample dropped endpoints)."""
+    catalog = tmp_path / "catalog.db"
+    build_id = _write_tree_catalog(catalog)
+    assert build_id is not None
+    service = MonitorService(_settings(catalog))
+
+    tree = service.graph_tree(build_id)
+    assert set(tree.keys()) == {"build_id", "universities", "nodes", "links"}
+    assert tree["build_id"] == build_id
+
+    # 2 universities + 2 orgunits -> 4 nodes total (Build node excluded:
+    # it is the graph-build root, not part of the University→学院 structure,
+    # and would render as an isolated point with no PART_OF edges).
+    assert len(tree["nodes"]) == 4
+    universities = [n for n in tree["nodes"] if n["category"] == "University"]
+    orgunits = [n for n in tree["nodes"] if n["category"] == "OrgUnit"]
+    assert len(universities) == 2
+    assert len(orgunits) == 2
+
+    # University summary list mirrors the node set.
+    by_key = {u["graph_key"]: u for u in tree["universities"]}
+    assert by_key["u"]["name"] == "大学A"
+    assert by_key["u"]["logical_id"] == "univ:a"
+    assert by_key["u"]["orgunit_count"] == 1
+    assert by_key["u"]["professor_count"] == 2  # 2 AFFILIATED_WITH -> org
+    assert by_key["u2"]["name"] == "大学B"
+    assert by_key["u2"]["orgunit_count"] == 1
+    assert by_key["u2"]["professor_count"] == 1  # 1 AFFILIATED_WITH -> org2
+
+    # OrgUnit nodes carry kind + parent university + professor_count.
+    org_node = next(n for n in orgunits if n["label"] == "学院A1")
+    assert org_node["kind"] == "college"
+    assert org_node["university"] == "u"
+    assert org_node["professor_count"] == 2
+    org2_node = next(n for n in orgunits if n["label"] == "研究所B1")
+    assert org2_node["kind"] == "institute"
+    assert org2_node["university"] == "u2"
+    assert org2_node["professor_count"] == 1
+
+    # Every PART_OF link endpoint is a node id in the set (no drops).
+    node_ids = {n["id"] for n in tree["nodes"]}
+    assert len(tree["links"]) == 2
+    for link in tree["links"]:
+        assert link["label"] == "PART_OF"
+        assert link["source"] in node_ids
+        assert link["target"] in node_ids
+    targets = {link["target"] for link in tree["links"]}
+    assert targets == {"u", "u2"}
 
 
 def test_monitor_handles_empty_and_incompatible_catalog(tmp_path: Path) -> None:
