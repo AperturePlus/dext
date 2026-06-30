@@ -54,7 +54,6 @@ class CitationValidator:
         kept_claims: list[Claim] = []
 
         for claim in result.claims:
-            warnings.extend(claim.validate())
             new_claim, claim_warnings = self._validate_claim(
                 claim, valid_keys, present_fields,
             )

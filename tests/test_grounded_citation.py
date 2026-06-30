@@ -98,3 +98,23 @@ def test_all_claims_dropped_returns_no_grounded_output_marker():
     )
     assert result.claims == []
     assert any(w.code == "no_grounded_output" for w in result.warnings)
+
+
+def test_no_duplicate_fact_ref_missing_warning():
+    bundle = _bundle([_ref("catalog://e/p1")])
+    claim = Claim(text="t", content_class=ContentClass.FACT, fact_refs=[])
+    result = CitationValidator().validate(
+        GenerationResult(output="x", claims=[claim]), bundle, StudentContext(),
+    )
+    count = sum(1 for w in result.warnings if w.code == "fact_ref_missing")
+    assert count == 1, f"expected exactly one fact_ref_missing, got {count}"
+
+
+def test_no_duplicate_uncertain_claim_with_refs_warning():
+    bundle = _bundle([_ref("catalog://e/p1")])
+    claim = Claim(text="t", content_class=ContentClass.UNCERTAIN, fact_refs=[_ref("catalog://e/p1")])
+    result = CitationValidator().validate(
+        GenerationResult(output="x", claims=[claim]), bundle, StudentContext(),
+    )
+    count = sum(1 for w in result.warnings if w.code == "uncertain_claim_with_refs")
+    assert count == 1, f"expected exactly one uncertain_claim_with_refs, got {count}"
