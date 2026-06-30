@@ -27,7 +27,8 @@ defineEmits<{
 
     <nav class="nav">
       <router-link to="/" class="nav-link">概览</router-link>
-      <router-link to="/data" class="nav-link">数据与质量</router-link>
+      <router-link to="/data" class="nav-link">数据</router-link>
+      <router-link to="/quality" class="nav-link">质量</router-link>
       <router-link to="/topology" class="nav-link">拓扑图</router-link>
     </nav>
 

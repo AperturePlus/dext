@@ -8,16 +8,11 @@ import type {
   UniversityTopologyResponse
 } from '../types/monitor'
 import type { ThroughputSample } from '../composables/useMonitorData'
-import ExportPartitionChart from '../components/charts/ExportPartitionChart.vue'
 import FindingSummaryChart from '../components/charts/FindingSummaryChart.vue'
 import RoleDistributionChart from '../components/charts/RoleDistributionChart.vue'
-import SourceTaskChart from '../components/charts/SourceTaskChart.vue'
 import TitleFamilyChart from '../components/charts/TitleFamilyChart.vue'
-import BuildList from '../components/features/BuildList.vue'
-import CheckpointTable from '../components/features/CheckpointTable.vue'
 import FindingSummary from '../components/features/FindingSummary.vue'
 import PanelCard from '../components/features/PanelCard.vue'
-import SourceTaskTable from '../components/features/SourceTaskTable.vue'
 import EmptyState from '../components/primitives/EmptyState.vue'
 import ErrorPanel from '../components/primitives/ErrorPanel.vue'
 
@@ -47,8 +42,8 @@ defineEmits<{
     <header class="hero">
       <div>
         <div class="brand-row"><span class="brand-mark">dx</span><span>dext monitor</span></div>
-        <h1>Data &amp; quality</h1>
-        <p>Source ingestion, findings, entity roles, export partitions and checkpoints.</p>
+        <h1>Quality</h1>
+        <p>Unresolved findings, entity roles and normalized title families.</p>
       </div>
     </header>
 
@@ -63,15 +58,6 @@ defineEmits<{
     <template v-if="detail && metrics">
       <section class="layout">
         <aside class="sidebar">
-          <PanelCard title="Builds" subtitle="Recent catalog builds">
-            <div class="panel-body">
-              <BuildList
-                :builds="builds?.builds ?? []"
-                :selected-build-id="selectedBuildId"
-                @select="$emit('selectBuild', $event)"
-              />
-            </div>
-          </PanelCard>
           <PanelCard title="Findings" subtitle="Unresolved quality signals">
             <FindingSummary :counts="detail.unresolved_findings" :findings="findings" />
           </PanelCard>
@@ -80,34 +66,19 @@ defineEmits<{
               <FindingSummaryChart :counts="detail.unresolved_findings" />
             </div>
           </PanelCard>
+        </aside>
+
+        <section class="content">
           <PanelCard title="Role distribution" subtitle="Canonical entity roles">
             <div class="panel-body">
               <RoleDistributionChart :counts="metrics.role_counts ?? {}" />
             </div>
           </PanelCard>
-        </aside>
 
-        <section class="content">
-          <PanelCard title="Source ingestion" subtitle="Rows and observation throughput by university">
-            <SourceTaskChart :sources="metrics.observations_by_source" />
-            <SourceTaskTable :sources="detail.sources" />
-          </PanelCard>
-
-          <section class="split">
-            <PanelCard title="Export partitions" subtitle="Largest node/relationship partitions">
-              <div class="panel-body">
-                <ExportPartitionChart :partitions="metrics.export_partitions" />
-              </div>
-            </PanelCard>
-            <PanelCard title="Title families" subtitle="Top normalized title families">
-              <div class="panel-body">
-                <TitleFamilyChart :counts="metrics.title_family_counts ?? {}" />
-              </div>
-            </PanelCard>
-          </section>
-
-          <PanelCard title="Checkpoints" subtitle="Read-only sink progress checkpoints">
-            <CheckpointTable :checkpoints="detail.checkpoints" />
+          <PanelCard title="Title families" subtitle="Top normalized title families">
+            <div class="panel-body">
+              <TitleFamilyChart :counts="metrics.title_family_counts ?? {}" />
+            </div>
           </PanelCard>
         </section>
       </section>
@@ -144,15 +115,9 @@ h1 {
 }
 .layout > * { min-width: 0; }
 .sidebar, .content { display: grid; gap: 1rem; min-width: 0; }
-.split {
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
-  gap: 1rem;
-}
-.split > * { min-width: 0; }
 :deep(.panel-body) { min-width: 0; overflow: hidden; }
 @media (max-width: 1180px) {
-  .layout, .split { grid-template-columns: 1fr; }
+  .layout { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
   .page { width: min(100% - 1rem, 1680px); }

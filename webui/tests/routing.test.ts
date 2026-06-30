@@ -24,9 +24,9 @@ vi.mock('../src/services/api', () => ({ monitorApi: apiMocks }))
 import App from '../src/App.vue'
 import router from '../src/router'
 import OverviewPage from '../src/pages/OverviewPage.vue'
-import DataQualityPage from '../src/pages/DataQualityPage.vue'
+import DataPage from '../src/pages/DataPage.vue'
+import QualityPage from '../src/pages/QualityPage.vue'
 import TopologyPage from '../src/pages/TopologyPage.vue'
-
 function buildRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: 'build-1',
@@ -75,9 +75,14 @@ describe('monitor routing', () => {
     expect(wrapper.findComponent(OverviewPage).exists()).toBe(true)
   })
 
-  it('renders DataQualityPage at /data', async () => {
+  it('renders DataPage at /data', async () => {
     const wrapper = await mountAt('/data')
-    expect(wrapper.findComponent(DataQualityPage).exists()).toBe(true)
+    expect(wrapper.findComponent(DataPage).exists()).toBe(true)
+  })
+
+  it('renders QualityPage at /quality', async () => {
+    const wrapper = await mountAt('/quality')
+    expect(wrapper.findComponent(QualityPage).exists()).toBe(true)
   })
 
   it('renders TopologyPage at /topology', async () => {

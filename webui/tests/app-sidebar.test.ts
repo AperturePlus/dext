@@ -11,6 +11,7 @@ function makeRouter() {
     routes: [
       { path: '/', name: 'overview', component: { template: '<div />' } },
       { path: '/data', name: 'data', component: { template: '<div />' } },
+      { path: '/quality', name: 'quality', component: { template: '<div />' } },
       { path: '/topology', name: 'topology', component: { template: '<div />' } }
     ]
   })
@@ -23,7 +24,7 @@ const baseProps = {
 }
 
 describe('AppSidebar', () => {
-  it('renders three nav links pointing at the three routes', async () => {
+  it('renders four nav links pointing at the four routes', async () => {
     const router = makeRouter()
     router.push('/')
     await router.isReady()
@@ -33,10 +34,11 @@ describe('AppSidebar', () => {
     })
     await nextTick()
     const links = wrapper.findAll('.nav-link')
-    expect(links).toHaveLength(3)
+    expect(links).toHaveLength(4)
     expect(links[0].attributes('href')).toBe('/')
     expect(links[1].attributes('href')).toBe('/data')
-    expect(links[2].attributes('href')).toBe('/topology')
+    expect(links[2].attributes('href')).toBe('/quality')
+    expect(links[3].attributes('href')).toBe('/topology')
   })
 
   it('marks the active route with router-link-active', async () => {
@@ -50,7 +52,7 @@ describe('AppSidebar', () => {
     await nextTick()
     const active = wrapper.findAll('.nav-link.router-link-active')
     expect(active).toHaveLength(1)
-    expect(active[0].text()).toBe('数据与质量')
+    expect(active[0].text()).toBe('数据')
   })
 
   it('emits refresh and toggle-pause from the footer RefreshControl', async () => {
