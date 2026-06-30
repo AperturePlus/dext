@@ -29,6 +29,7 @@ dependencies = [
 [project.scripts]
 crawl = "dext.cli:main"
 dext = "dext_graph.cli:main"
+monitor = "dext_graph.cli:monitor"
 
 [dependency-groups]
 dev = [

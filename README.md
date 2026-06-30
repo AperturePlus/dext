@@ -4,8 +4,8 @@
 
 - Python ≥ 3.11
 - [uv](https://docs.astral.sh/uv/) (Python 包管理器，自动同步依赖)
-- Node.js (仅编译浏览器 userscript 时需要)
-- 浏览器装有 Tampermonkey
+- Node.js（编译浏览器扩展时需要）
+- Chrome / Edge ≥ 110（开发者模式加载 `browserext/`）
 
 ## 环境变量
 
@@ -68,7 +68,7 @@ uv run crawl -u xx大学 --resume --reset
 uv run crawl -u xx大学 --log-file run.log
 ```
 
-启动后控制台会打印桥接地址 `http://127.0.0.1:21520/api`，此时需在浏览器中保持 Tampermonkey 脚本所在标签页可见并登录目标站点。
+启动后控制台会打印桥接地址 `http://127.0.0.1:21520/api`。后端不会自行打开或选择网页；请在已登录的 `*.edu.cn` / `*.github.io` 页面点击 dext 扩展图标（或页面面板中的“绑定并开始”）。扩展只会驱动显式绑定的那个标签页。
 
 ## 命令选项
 
@@ -186,10 +186,10 @@ bun run dev
 bun run build
 
 # 回到项目根目录启动只读 monitor 服务，默认监听 localhost:21530
-uv run dext monitor serve
+uv run monitor serve        # 等价于 uv run dext monitor serve
 ~~~
 
-生产模式下，如果 `webui/dist` 存在，`dext monitor serve` 会同时提供静态页面和
+生产模式下，如果 `webui/dist` 存在，`monitor serve` 会同时提供静态页面和
 `/api/monitor/*` JSON API。核心 API：
 
 - `GET /api/monitor/health`
@@ -201,15 +201,17 @@ uv run dext monitor serve
 
 涉及 LLM 的测试使用真实 DeepSeek 接口，需先在 `.env` 配置 `DEEPSEEK_API_KEY`。
 
-## 编译浏览器 userscript
+## 编译浏览器扩展
 
-在 `userscripts/` 目录下:
+在 `browserext/` 目录下：
 
 ```bash
 npm install
-npm run build      # 产物: userscripts/dist/yanclaw-assistant.user.js
-npm run test       # 工具函数测试
-npm run dev        # 开发预览
+npm run build      # 产物: browserext/dist/background.js + content.js + icons
+npm test
+npm run typecheck
 ```
 
-将 `userscripts/dist/yanclaw-assistant.user.js` 安装到 Tampermonkey。脚本的 HTTP 契约固定，不要为适配后端而修改它。
+打开 `chrome://extensions`，启用开发者模式，选择“加载已解压的扩展程序”并加载 `browserext/`。每次重新构建后需在该页面点击扩展的“重新加载”。
+
+`userscripts/` 中的 Tampermonkey 脚本仅用于扩展失效时的人工应急恢复；正常运行时不要同时启用两套前端。
