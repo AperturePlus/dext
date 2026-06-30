@@ -43,7 +43,7 @@ button {
   padding: 0.82rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: rgba(13, 25, 45, 0.62);
+  background: var(--surface-soft);
   color: var(--text);
   text-align: left;
 }

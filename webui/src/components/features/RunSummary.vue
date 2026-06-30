@@ -39,7 +39,7 @@ defineProps<{
   padding: 1rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: rgba(13, 25, 45, 0.56);
+  background: var(--surface-soft);
 }
 
 .run-summary > div {

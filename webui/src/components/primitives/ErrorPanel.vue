@@ -18,7 +18,7 @@ defineProps<{
   border: 1px solid rgba(255, 107, 122, 0.34);
   border-radius: var(--radius-md);
   background: rgba(255, 107, 122, 0.1);
-  color: #ffd7dc;
+  color: var(--danger);
 }
 
 .error-panel p {

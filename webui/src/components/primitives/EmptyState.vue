@@ -21,7 +21,7 @@ defineProps<{
   padding: 2rem;
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius-lg);
-  background: rgba(13, 25, 45, 0.5);
+  background: var(--surface-soft);
   color: var(--muted);
   text-align: center;
 }

@@ -11,7 +11,7 @@ defineProps<{
   <ol class="stage-timeline" aria-label="Build stages">
     <li v-for="stage in stages" :key="stage.name" :class="`stage-${stage.state}`">
       <span class="rail-dot" />
-      <span>{{ stage.name }}</span>
+      <span class="stage-name">{{ stage.name }}</span>
       <StatusBadge v-if="stage.state === 'current' || stage.state === 'failed'" :status="stage.state" />
     </li>
   </ol>
@@ -20,7 +20,7 @@ defineProps<{
 <style scoped>
 .stage-timeline {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 0.8rem;
   padding: 0;
   margin: 0;
@@ -30,15 +30,24 @@ defineProps<{
 li {
   display: grid;
   gap: 0.55rem;
+  align-content: start;
+  min-width: 0;
   min-height: 92px;
   padding: 0.85rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: rgba(13, 25, 45, 0.7);
+  background: var(--surface-soft);
   color: var(--muted);
   font-size: 0.78rem;
   font-weight: 800;
   letter-spacing: 0.04em;
+}
+
+.stage-name {
+  min-width: 0;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .rail-dot {

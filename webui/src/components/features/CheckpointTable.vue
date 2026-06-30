@@ -38,7 +38,7 @@ article {
   padding: 0.8rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: rgba(13, 25, 45, 0.54);
+  background: var(--surface-soft);
 }
 
 strong {

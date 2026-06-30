@@ -52,7 +52,7 @@ defineProps<{
   padding-right: 0.55rem;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: rgba(13, 25, 45, 0.5);
+  background: var(--surface-soft);
 }
 
 .finding-chip strong {
@@ -72,7 +72,7 @@ article {
   padding: 0.72rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: rgba(13, 25, 45, 0.54);
+  background: var(--surface-soft);
 }
 
 strong {
