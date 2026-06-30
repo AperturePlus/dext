@@ -10,6 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from click.testing import CliRunner
 
 from dext_graph.cli import main
+from dext_monitor.catalog_reader import MonitorCatalogError
 from dext_monitor.server import create_app
 from dext_monitor.service import MonitorService
 from dext_monitor.settings import MonitorSettings
@@ -777,6 +778,90 @@ def test_graph_tree_returns_complete_university_orgunit_tree(tmp_path: Path) -> 
     assert targets == {"u", "u2"}
 
 
+def _write_professor_catalog(path: Path) -> str:
+    """Like ``_write_tree_catalog`` but also seeds ``node:Professor`` rows so
+    ``orgunit_professors`` has real professor payloads to return. Professors
+    p1, p2 are affiliated with org (college under 大学A); p3 with org2."""
+    build_id = _write_tree_catalog(path)
+    connection = sqlite3.connect(path)
+    try:
+        prof_rows = [
+            ("node:Professor", "p1", "node", "Professor", None, None,
+             '{"graph_key":"p1","name":"张三","title":"教授","title_family":"教授","role_status":"active"}'),
+            ("node:Professor", "p2", "node", "Professor", None, None,
+             '{"graph_key":"p2","name":"李四","title":"副教授","title_family":"副教授","role_status":"active"}'),
+            ("node:Professor", "p3", "node", "Professor", None, None,
+             '{"graph_key":"p3","name":"王五","title":"讲师","title_family":"讲师","role_status":"active"}'),
+        ]
+        for row in prof_rows:
+            connection.execute(
+                "INSERT INTO graph_export_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'p', 'c')",
+                (build_id, *row),
+            )
+        connection.execute(
+            "INSERT INTO graph_export_partitions VALUES (?, ?, 'node', 'Professor', ?, NULL, NULL, 'checksum', 'now')",
+            (build_id, "node:Professor", 3),
+        )
+        connection.commit()
+        return build_id
+    finally:
+        connection.close()
+
+
+def test_orgunit_professors_returns_professors_and_edges(tmp_path: Path) -> None:
+    catalog = tmp_path / "catalog.db"
+    build_id = _write_professor_catalog(catalog)
+    service = MonitorService(_settings(catalog))
+
+    result = service.orgunit_professors(build_id, "org")
+    assert set(result.keys()) == {"build_id", "orgunit", "professors", "links"}
+    assert result["build_id"] == build_id
+    assert result["orgunit"]["graph_key"] == "org"
+    assert result["orgunit"]["label"] == "学院A1"
+    assert result["orgunit"]["kind"] == "college"
+
+    profs = {p["graph_key"]: p for p in result["professors"]}
+    assert set(profs) == {"p1", "p2"}  # p3 is affiliated with org2, excluded
+    assert profs["p1"]["name"] == "张三"
+    assert profs["p1"]["title"] == "教授"
+
+    assert len(result["links"]) == 2
+    for link in result["links"]:
+        assert link["label"] == "AFFILIATED_WITH"
+        assert link["target"] == "org"
+        assert link["source"] in profs  # endpoint resolves to a returned professor
+
+
+def test_orgunit_professors_unknown_org_returns_empty(tmp_path: Path) -> None:
+    catalog = tmp_path / "catalog.db"
+    build_id = _write_professor_catalog(catalog)
+    service = MonitorService(_settings(catalog))
+
+    result = service.orgunit_professors(build_id, "no-such-org")
+    assert result["professors"] == []
+    assert result["links"] == []
+    assert result["orgunit"]["graph_key"] == "no-such-org"
+
+
+def test_orgunit_professors_cross_org_professor_excluded(tmp_path: Path) -> None:
+    """A professor affiliated with org1 must NOT appear under org2."""
+    catalog = tmp_path / "catalog.db"
+    build_id = _write_professor_catalog(catalog)
+    service = MonitorService(_settings(catalog))
+
+    result = service.orgunit_professors(build_id, "org2")
+    profs = {p["graph_key"] for p in result["professors"]}
+    assert profs == {"p3"}  # only p3 is affiliated with org2
+
+
+def test_orgunit_professors_unknown_build_raises(tmp_path: Path) -> None:
+    catalog = tmp_path / "catalog.db"
+    _write_professor_catalog(catalog)
+    service = MonitorService(_settings(catalog))
+    with pytest.raises(MonitorCatalogError, match="unknown build ID"):
+        service.orgunit_professors("does-not-exist", "org")
+
+
 def test_monitor_handles_empty_and_incompatible_catalog(tmp_path: Path) -> None:
     empty_catalog = tmp_path / "empty.db"
     _write_catalog(empty_catalog, with_build=False)
@@ -852,6 +937,24 @@ async def test_monitor_aiohttp_api(tmp_path: Path) -> None:
         )
         assert resp2.status == 304
         assert await resp2.text() == ""
+
+
+@pytest.mark.asyncio
+async def test_monitor_orgunit_professors_endpoint(tmp_path: Path) -> None:
+    catalog = tmp_path / "catalog.db"
+    build_id = _write_professor_catalog(catalog)
+    app = create_app(_settings(catalog))
+    async with TestClient(TestServer(app)) as client:
+        url = f"/api/monitor/builds/{build_id}/orgunit/org/professors"
+        resp = await client.get(url)
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["data"]["orgunit"]["graph_key"] == "org"
+        assert {p["graph_key"] for p in body["data"]["professors"]} == {"p1", "p2"}
+
+        etag = resp.headers["ETag"]
+        resp2 = await client.get(url, headers={"If-None-Match": etag})
+        assert resp2.status == 304
 
 
 @pytest.mark.asyncio

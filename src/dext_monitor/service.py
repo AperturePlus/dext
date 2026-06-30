@@ -495,6 +495,83 @@ class MonitorService:
             "links": links,
         }
 
+    def orgunit_professors(self, build_id: str, org_graph_key: str) -> dict[str, Any]:
+        """Professors affiliated with one OrgUnit + their AFFILIATED_WITH edges.
+
+        ``org_graph_key`` is the OrgUnit ``id`` returned by ``graph_tree``
+        (``payload.graph_key``). Reads ``rel:AFFILIATED_WITH`` to find professor
+        keys whose affiliation ends at this org, then ``node:Professor`` payloads
+        for their names/titles. Empty result for an unknown org is legal.
+        """
+        with self.reader.connect() as connection:
+            self.reader.require_supported_schema(connection)
+            self._get_build(connection, build_id)
+            affiliated_rows = list(
+                connection.execute(
+                    "SELECT start_graph_key FROM graph_export_rows "
+                    "WHERE build_id=? AND partition_key='rel:AFFILIATED_WITH' "
+                    "AND end_graph_key=?",
+                    (build_id, org_graph_key),
+                )
+            )
+            professor_keys = {str(row["start_graph_key"]) for row in affiliated_rows}
+
+            org_row = connection.execute(
+                "SELECT payload_json FROM graph_export_rows "
+                "WHERE build_id=? AND partition_key='node:OrgUnit' AND row_key=?",
+                (build_id, org_graph_key),
+            ).fetchone()
+            org_payload = json_loads(org_row["payload_json"], {}) if org_row else {}
+            org_to_univ = self._org_to_university(connection, build_id)
+            orgunit = {
+                "graph_key": org_graph_key,
+                "label": str(org_payload.get("name") or org_graph_key),
+                "kind": str(org_payload.get("kind") or ""),
+                "university": org_to_univ.get(org_graph_key, ""),
+            }
+
+            professors: list[dict[str, Any]] = []
+            if professor_keys:
+                placeholders = ",".join("?" for _ in professor_keys)
+                prof_rows = connection.execute(
+                    f"SELECT payload_json FROM graph_export_rows "
+                    f"WHERE build_id=? AND partition_key='node:Professor' "
+                    f"AND row_key IN ({placeholders})",
+                    (build_id, *professor_keys),
+                )
+                for row in prof_rows:
+                    payload = json_loads(row["payload_json"], {})
+                    graph_key = str(payload.get("graph_key") or payload.get("id") or "")
+                    professors.append(
+                        {
+                            "graph_key": graph_key,
+                            "name": str(payload.get("name") or graph_key),
+                            "title": payload.get("title"),
+                            "title_family": payload.get("title_family"),
+                            "role_status": str(payload.get("role_status") or ""),
+                        }
+                    )
+            professors.sort(key=lambda p: p["name"])
+
+        links = [
+            {"source": p["graph_key"], "target": org_graph_key, "label": "AFFILIATED_WITH"}
+            for p in professors
+        ]
+        return {
+            "build_id": build_id,
+            "orgunit": orgunit,
+            "professors": professors,
+            "links": links,
+        }
+
+    def _org_to_university(self, connection, build_id: str) -> dict[str, str]:
+        rows = connection.execute(
+            "SELECT start_graph_key, end_graph_key FROM graph_export_rows "
+            "WHERE build_id=? AND partition_key='rel:PART_OF'",
+            (build_id,),
+        )
+        return {str(r["start_graph_key"]): str(r["end_graph_key"]) for r in rows}
+
     def _get_build(self, connection, build_id: str) -> dict[str, Any]:
         row = connection.execute("SELECT * FROM graph_builds WHERE id=?", (build_id,)).fetchone()
         if row is None:
