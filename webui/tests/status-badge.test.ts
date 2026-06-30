@@ -6,6 +6,7 @@ describe('StatusBadge', () => {
   it('renders the status text and class', () => {
     const wrapper = mount(StatusBadge, { props: { status: 'FAILED' } })
     expect(wrapper.text()).toContain('FAILED')
+    expect(wrapper.find('.status-text').text()).toBe('FAILED')
     expect(wrapper.classes()).toContain('status-failed')
   })
 

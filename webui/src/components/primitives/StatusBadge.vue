@@ -9,7 +9,7 @@ const normalized = () => props.status.toLowerCase()
 <template>
   <span class="status-badge" :class="`status-${normalized()}`">
     <span class="dot" />
-    {{ status }}
+    <span class="status-text">{{ status }}</span>
   </span>
 </template>
 
@@ -18,7 +18,8 @@ const normalized = () => props.status.toLowerCase()
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  min-width: max-content;
+  max-width: 100%;
+  min-width: 0;
   padding: 0.32rem 0.62rem;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -30,11 +31,19 @@ const normalized = () => props.status.toLowerCase()
 }
 
 .dot {
+  flex: 0 0 auto;
   width: 0.48rem;
   height: 0.48rem;
   border-radius: 999px;
   background: currentColor;
   box-shadow: 0 0 14px currentColor;
+}
+
+.status-text {
+  min-width: 0;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .status-writing_vector,
