@@ -8,7 +8,6 @@ import os
 import re
 import sqlite3
 import unicodedata
-import uuid
 from collections.abc import Iterator
 from contextlib import closing
 from dataclasses import dataclass
@@ -23,7 +22,11 @@ from dext_graph.catalog.db import (
     json_loads,
     utcnow_iso,
 )
-from dext_graph.catalog.ids import canonical_source_url, hash_parts
+from dext_graph.catalog.ids import hash_parts
+from dext_graph.catalog.org_units import (
+    iter_resolved_affiliations,
+    load_org_records,
+)
 from dext_graph.config import GraphSettings
 
 EVIDENCE_VERSION = "evidence-v1"
@@ -283,12 +286,6 @@ def _graph_key(build_id: str, logical_id: str) -> str:
     return f"{build_id}:{logical_id}"
 
 
-def _org_logical_id(university_id: str, url: object, name: object) -> str:
-    canonical = canonical_source_url(url)
-    identity = canonical or _text(name).casefold()
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{university_id}\0{identity}"))
-
-
 def _export_row(
     build_id: str,
     partition: str,
@@ -341,38 +338,18 @@ def _snapshot_meta(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def _org_records(connection: sqlite3.Connection, build_id: str) -> dict[tuple[str, int], dict[str, Any]]:
-    records: dict[tuple[str, int], dict[str, Any]] = {}
-    for task in _source_tasks(connection, build_id):
-        path = Path(task["snapshot_path"]).resolve()
-        source = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
-        source.row_factory = sqlite3.Row
-        try:
-            has_org_units = source.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='org_units'"
-            ).fetchone()
-            if has_org_units is None:
-                continue
-            columns = {
-                str(row[1]) for row in source.execute("PRAGMA table_info(org_units)")
-            }
-            url = "url" if "url" in columns else "NULL AS url"
-            kind = "kind" if "kind" in columns else "NULL AS kind"
-            for row in source.execute(
-                f"SELECT id, name, {url}, {kind} FROM org_units ORDER BY id"
-            ):
-                logical_id = _org_logical_id(task["university_id"], row["url"], row["name"])
-                records[(str(task["university_id"]), int(row["id"]))] = {
-                    "logical_id": logical_id,
-                    "graph_key": _graph_key(build_id, logical_id),
-                    "university_id": str(task["university_id"]),
-                    "source_id": int(row["id"]),
-                    "name": str(row["name"]),
-                    "url": str(row["url"]) if row["url"] is not None else None,
-                    "kind": row["kind"],
-                }
-        finally:
-            source.close()
-    return records
+    return {
+        key: {
+            "logical_id": record.logical_id,
+            "graph_key": record.graph_key,
+            "university_id": record.university_id,
+            "source_id": record.source_id,
+            "name": record.name,
+            "url": record.url,
+            "kind": record.kind,
+        }
+        for key, record in load_org_records(connection, build_id).items()
+    }
 
 
 def _node_rows(connection: sqlite3.Connection, build_id: str, partition: str) -> Iterator[ExportRow]:
@@ -435,7 +412,14 @@ def _node_rows(connection: sqlite3.Connection, build_id: str, partition: str) ->
         return
     if label == "Professor":
         for row in connection.execute(
-            "SELECT * FROM canonical_professors WHERE build_id=? AND active=1 ORDER BY entity_id",
+            """
+            SELECT cp.*,pp.profile_hash
+            FROM canonical_professors cp
+            LEFT JOIN professor_profiles pp
+              ON pp.build_id=cp.build_id AND pp.entity_id=cp.entity_id
+            WHERE cp.build_id=? AND cp.active=1
+            ORDER BY cp.entity_id
+            """,
             (build_id,),
         ):
             logical_id = str(row["entity_id"])
@@ -453,7 +437,7 @@ def _node_rows(connection: sqlite3.Connection, build_id: str, partition: str) ->
                     "master_eligibility": row["master_eligibility"],
                     "phd_eligibility": row["phd_eligibility"],
                     "active": True,
-                    "profile_hash": None,
+                    "profile_hash": row["profile_hash"],
                 }, provenance,
             )
         return
@@ -471,6 +455,28 @@ def _node_rows(connection: sqlite3.Connection, build_id: str, partition: str) ->
                     "raw_text": row["raw_text"],
                     "language": row["language"],
                     "statement_hash": row["statement_hash"],
+                }, provenance,
+            )
+        return
+    if label == "Topic":
+        query = """
+            SELECT * FROM topics
+            WHERE taxonomy_version=(SELECT taxonomy_version FROM graph_builds WHERE id=?)
+              AND status='active' ORDER BY id
+        """
+        for row in connection.execute(query, (build_id,)):
+            logical_id = str(row["id"])
+            provenance = f"taxonomy:{row['taxonomy_version']}:topic:{logical_id}"
+            yield _export_row(
+                build_id, partition, logical_id, "node", label,
+                {
+                    "logical_id": logical_id,
+                    "graph_key": _graph_key(build_id, logical_id),
+                    "canonical_name": row["canonical_name"],
+                    "normalized_name": row["normalized_name"],
+                    "kind": row["kind"],
+                    "status": row["status"],
+                    "taxonomy_version": row["taxonomy_version"],
                 }, provenance,
             )
         return
@@ -535,6 +541,7 @@ def _relationship(
     evidence_count: int,
     confidence: float,
     provenance: str,
+    method: str | None = None,
 ) -> ExportRow:
     relationship_type = partition.removeprefix("rel:")
     row_key = f"{start}|{end}"
@@ -546,6 +553,8 @@ def _relationship(
             "confidence": confidence,
             "evidence_count": evidence_count,
             "evidence_lookup": provenance,
+            "provenance_ref": provenance,
+            **({"method": method} if method is not None else {}),
         }, provenance, start, end,
     )
 
@@ -554,7 +563,7 @@ def _relationship_rows(
     connection: sqlite3.Connection, build_id: str, partition: str
 ) -> Iterator[ExportRow]:
     relationship_type = partition.removeprefix("rel:")
-    orgs = _org_records(connection, build_id) if relationship_type in {"PART_OF", "AFFILIATED_WITH"} else {}
+    orgs = _org_records(connection, build_id) if relationship_type == "PART_OF" else {}
     if relationship_type == "PART_OF":
         for record in sorted(orgs.values(), key=lambda value: value["graph_key"]):
             start = record["graph_key"]
@@ -563,14 +572,6 @@ def _relationship_rows(
             yield _relationship(build_id, partition, start, end, 1, 1.0, provenance)
         return
     if relationship_type == "AFFILIATED_WITH":
-        query = """
-            SELECT eo.entity_id, o.id AS observation_id, o.university_id,
-                   o.payload_json, o.provenance_grade
-            FROM entity_observations eo
-            JOIN professor_observations o ON o.id=eo.observation_id AND o.active=1
-            JOIN canonical_professors cp ON cp.entity_id=eo.entity_id AND cp.build_id=? AND cp.active=1
-            WHERE eo.build_id=? ORDER BY eo.entity_id, o.id
-        """
         current_entity = ""
         grouped: dict[str, tuple[int, float, str]] = {}
 
@@ -582,26 +583,18 @@ def _relationship_rows(
                     count, confidence, lookup,
                 )
 
-        for row in connection.execute(query, (build_id, build_id)):
-            entity_id = str(row["entity_id"])
+        for affiliation in iter_resolved_affiliations(connection, build_id):
+            entity_id = affiliation.entity_id
             if current_entity and entity_id != current_entity:
                 yield from emit(current_entity)
                 grouped = {}
             current_entity = entity_id
-            payload = json_loads(row["payload_json"], {})
-            affiliations = payload.get("affiliations") or []
-            if not affiliations and payload.get("org_unit_name"):
-                affiliations = [{"org_unit_id": None, "org_unit_name": payload["org_unit_name"]}]
-            for affiliation in affiliations:
-                source_id = affiliation.get("org_unit_id")
-                record = orgs.get((str(row["university_id"]), int(source_id))) if source_id is not None else None
-                if record is None:
-                    continue
-                org_key = str(record["graph_key"])
-                confidence = _EDGE_CONFIDENCE.get(str(row["provenance_grade"]), 0.5)
-                old_count, old_confidence, _ = grouped.get(org_key, (0, 1.0, ""))
-                lookup = f"catalog:affiliation:{build_id}:{entity_id}:{record['logical_id']}"
-                grouped[org_key] = (old_count + 1, min(old_confidence, confidence), lookup)
+            record = affiliation.org_unit
+            org_key = record.graph_key
+            confidence = _EDGE_CONFIDENCE.get(affiliation.provenance_grade, 0.5)
+            old_count, old_confidence, _ = grouped.get(org_key, (0, 1.0, ""))
+            lookup = f"catalog:affiliation:{build_id}:{entity_id}:{record.logical_id}"
+            grouped[org_key] = (old_count + 1, min(old_confidence, confidence), lookup)
         if current_entity:
             yield from emit(current_entity)
         return
@@ -617,6 +610,43 @@ def _relationship_rows(
                 build_id, partition, _graph_key(build_id, str(row["entity_id"])),
                 _graph_key(build_id, str(row["id"])), 1,
                 _EDGE_CONFIDENCE.get(str(row["provenance_grade"]), 0.5), provenance,
+            )
+        return
+    if relationship_type in {
+        "PRIMARY_TOPIC", "USES_METHOD", "APPLIED_TO", "TARGETS_TASK", "STUDIES"
+    }:
+        query = """
+            SELECT l.* FROM statement_topic_links l
+            JOIN topics t ON t.taxonomy_version=l.taxonomy_version AND t.id=l.topic_id
+            WHERE l.build_id=? AND l.relation_type=? AND l.review_status='approved'
+              AND t.status='active'
+            ORDER BY l.statement_id,l.topic_id
+        """
+        for row in connection.execute(query, (build_id, relationship_type)):
+            start = _graph_key(build_id, str(row["statement_id"]))
+            end = _graph_key(build_id, str(row["topic_id"]))
+            yield _relationship(
+                build_id, partition, start, end, 1, float(row["confidence"]),
+                str(row["provenance_ref"]), str(row["method"]),
+            )
+        return
+    if relationship_type == "SUBTOPIC_OF":
+        query = """
+            SELECT r.* FROM topic_relations r
+            JOIN topics child ON child.taxonomy_version=r.taxonomy_version
+              AND child.id=r.from_topic_id
+            JOIN topics parent ON parent.taxonomy_version=r.taxonomy_version
+              AND parent.id=r.to_topic_id
+            WHERE r.build_id=? AND r.relation_type='SUBTOPIC_OF'
+              AND child.status='active' AND parent.status='active'
+            ORDER BY r.from_topic_id,r.to_topic_id
+        """
+        for row in connection.execute(query, (build_id,)):
+            start = _graph_key(build_id, str(row["from_topic_id"]))
+            end = _graph_key(build_id, str(row["to_topic_id"]))
+            yield _relationship(
+                build_id, partition, start, end, 1, float(row["confidence"]),
+                str(row["provenance_ref"]), str(row["method"]),
             )
         return
     if relationship_type == "HAS_PUBLICATION_MENTION":
@@ -678,11 +708,18 @@ PARTITIONS = (
     "node:OrgUnit",
     "node:Professor",
     "node:ResearchStatement",
+    "node:Topic",
     "node:PublicationMention",
     "node:SourceDocument",
     "rel:PART_OF",
     "rel:AFFILIATED_WITH",
     "rel:HAS_RESEARCH_STATEMENT",
+    "rel:PRIMARY_TOPIC",
+    "rel:USES_METHOD",
+    "rel:APPLIED_TO",
+    "rel:TARGETS_TASK",
+    "rel:STUDIES",
+    "rel:SUBTOPIC_OF",
     "rel:HAS_PUBLICATION_MENTION",
     "rel:OBSERVED_IN",
     "rel:FROM_UNIVERSITY",
@@ -758,11 +795,19 @@ def _finalize_partition(connection: sqlite3.Connection, build_id: str, partition
 
 
 async def freeze_graph_exports(
-    writer: CatalogWriter, build_id: str, settings: GraphSettings
+    writer: CatalogWriter,
+    build_id: str,
+    settings: GraphSettings,
+    *,
+    partitions: tuple[str, ...] | None = None,
 ) -> dict[str, int]:
+    selected = partitions or PARTITIONS
+    unknown = set(selected) - set(PARTITIONS)
+    if unknown:
+        raise CatalogError(f"unknown graph export partitions: {sorted(unknown)}")
     counts: dict[str, int] = {}
     batches = 0
-    for partition in PARTITIONS:
+    for partition in selected:
         last = await writer.execute(
             lambda connection, value=partition: _last_key(
                 connection, build_id, "graph_export", value
@@ -816,6 +861,45 @@ async def freeze_graph_exports(
     return counts
 
 
+def _reset_graph_partitions(
+    connection: sqlite3.Connection, build_id: str, partitions: tuple[str, ...]
+) -> None:
+    if not partitions:
+        return
+    placeholders = ",".join("?" for _ in partitions)
+    params = (build_id, *partitions)
+    connection.execute(
+        f"DELETE FROM graph_export_rows WHERE build_id=? AND partition_key IN ({placeholders})",
+        params,
+    )
+    connection.execute(
+        f"DELETE FROM graph_export_partitions WHERE build_id=? AND partition_key IN ({placeholders})",
+        params,
+    )
+    connection.execute(
+        f"DELETE FROM sink_checkpoints WHERE build_id=? AND sink IN ('graph_export','neo4j') "
+        f"AND partition_key IN ({placeholders})",
+        params,
+    )
+
+
+async def rebuild_graph_partitions(
+    writer: CatalogWriter,
+    build_id: str,
+    settings: GraphSettings,
+    partitions: tuple[str, ...],
+) -> dict[str, int]:
+    unknown = set(partitions) - set(PARTITIONS)
+    if unknown:
+        raise CatalogError(f"unknown graph export partitions: {sorted(unknown)}")
+    await writer.execute(
+        lambda connection: _reset_graph_partitions(connection, build_id, partitions)
+    )
+    return await freeze_graph_exports(
+        writer, build_id, settings, partitions=partitions
+    )
+
+
 __all__ = [
     "EVIDENCE_VERSION",
     "EXPORT_VERSION",
@@ -823,6 +907,7 @@ __all__ = [
     "detect_language",
     "freeze_graph_exports",
     "materialize_evidence",
+    "rebuild_graph_partitions",
     "split_publication_mentions",
     "split_research_statements",
 ]

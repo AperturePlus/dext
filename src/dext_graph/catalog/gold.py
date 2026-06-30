@@ -8,7 +8,16 @@ from itertools import combinations
 from pathlib import Path
 from typing import Any
 
-from dext_graph.catalog.db import CatalogError, connect_catalog_read_only
+from dext_graph.catalog.db import (
+    CatalogError,
+    backup_existing_catalog,
+    catalog_write_lock,
+    connect_catalog,
+    connect_catalog_read_only,
+    initialize_catalog,
+    json_dumps,
+    json_loads,
+)
 
 
 def _resolve(connection, entity_id: str) -> str:  # noqa: ANN001
@@ -77,7 +86,7 @@ def evaluate_curation_gold(
     excluded_correct = sum(item["role_status"] == "excluded" for item in excluded)
     supervised_lecturers = [item for item in gold if item.get("lecturer_with_supervisor_evidence")]
     retained = sum(predicted[item["observation_id"]][1] != "excluded" for item in supervised_lecturers)
-    return {
+    metrics = {
         "status": "evaluated",
         "rows": len(gold),
         "auto_merge_pairwise_precision": correct_pairs / predicted_pairs if predicted_pairs else 1.0,
@@ -87,6 +96,50 @@ def evaluate_curation_gold(
         "supervised_lecturer_retention": retained / len(supervised_lecturers) if supervised_lecturers else 1.0,
         "supervised_lecturers": len(supervised_lecturers),
     }
+    metrics["merge_gate_passed"] = metrics["auto_merge_pairwise_precision"] >= 0.995
+    metrics["excluded_gate_passed"] = metrics["excluded_precision"] >= 0.99
+    metrics["lecturer_gate_passed"] = metrics["supervised_lecturer_retention"] >= 0.95
+    if not all(
+        metrics[key]
+        for key in (
+            "merge_gate_passed",
+            "excluded_gate_passed",
+            "lecturer_gate_passed",
+        )
+    ):
+        metrics["status"] = "failed"
+
+    catalog = Path(catalog_path).expanduser().resolve()
+    with catalog_write_lock(catalog):
+        backup_existing_catalog(catalog)
+        initialize_catalog(catalog)
+        with closing(connect_catalog(catalog)) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = connection.execute(
+                "SELECT summary_json FROM curation_runs WHERE build_id=?", (build_id,)
+            ).fetchone()
+            if run is None:
+                raise CatalogError("build has no curation run")
+            summary = json_loads(run[0], {})
+            summary["gold_status"] = metrics["status"]
+            summary["gold"] = metrics
+            connection.execute(
+                "UPDATE curation_runs SET summary_json=? WHERE build_id=?",
+                (json_dumps(summary), build_id),
+            )
+            build_summary = json_loads(
+                connection.execute(
+                    "SELECT summary_json FROM graph_builds WHERE id=?", (build_id,)
+                ).fetchone()[0],
+                {},
+            )
+            build_summary["curation"] = summary
+            connection.execute(
+                "UPDATE graph_builds SET summary_json=? WHERE id=?",
+                (json_dumps(build_summary), build_id),
+            )
+            connection.commit()
+    return metrics
 
 
 __all__ = ["evaluate_curation_gold"]

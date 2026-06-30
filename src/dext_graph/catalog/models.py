@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-CATALOG_SCHEMA_VERSION = 4
+CATALOG_SCHEMA_VERSION = 6
 
 BUILD_STATUSES = (
     "CREATED",
@@ -461,13 +461,191 @@ ON embedding_cache(embedding_fingerprint, profile_hash);
 """
 
 
+TOPIC_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS taxonomy_versions (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL CHECK (status IN ('draft','published','retired')),
+    parent_version TEXT REFERENCES taxonomy_versions(id),
+    manifest_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS topics (
+    taxonomy_version TEXT NOT NULL REFERENCES taxonomy_versions(id),
+    id TEXT NOT NULL,
+    canonical_name TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (
+      kind IN ('discipline','method','task','application_domain','research_object')
+    ),
+    status TEXT NOT NULL CHECK (status IN ('active','provisional','deprecated')),
+    created_method TEXT NOT NULL,
+    PRIMARY KEY (taxonomy_version, id),
+    UNIQUE (taxonomy_version, kind, normalized_name)
+);
+
+CREATE TABLE IF NOT EXISTS topic_aliases (
+    id TEXT PRIMARY KEY,
+    topic_id TEXT NOT NULL,
+    alias_text TEXT NOT NULL,
+    alias_key TEXT NOT NULL,
+    language TEXT NOT NULL CHECK (language IN ('zh','en','mixed','unknown')),
+    method TEXT NOT NULL,
+    confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    taxonomy_version TEXT NOT NULL,
+    FOREIGN KEY (taxonomy_version, topic_id)
+      REFERENCES topics(taxonomy_version, id),
+    UNIQUE (taxonomy_version, topic_id, alias_key),
+    UNIQUE (taxonomy_version, alias_key)
+);
+
+CREATE TABLE IF NOT EXISTS statement_topic_links (
+    build_id TEXT NOT NULL REFERENCES graph_builds(id),
+    statement_id TEXT NOT NULL,
+    taxonomy_version TEXT NOT NULL,
+    topic_id TEXT NOT NULL,
+    relation_type TEXT NOT NULL CHECK (
+      relation_type IN ('PRIMARY_TOPIC','USES_METHOD','APPLIED_TO','TARGETS_TASK','STUDIES')
+    ),
+    evidence_span TEXT NOT NULL,
+    method TEXT NOT NULL,
+    confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    review_status TEXT NOT NULL CHECK (review_status IN ('approved','review','rejected')),
+    provenance_ref TEXT NOT NULL,
+    FOREIGN KEY (build_id, statement_id)
+      REFERENCES research_statements(build_id, id),
+    FOREIGN KEY (taxonomy_version, topic_id)
+      REFERENCES topics(taxonomy_version, id),
+    PRIMARY KEY (build_id, statement_id, topic_id, relation_type, evidence_span)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_statement_primary_topic_approved
+ON statement_topic_links(build_id, statement_id)
+WHERE relation_type='PRIMARY_TOPIC' AND review_status='approved';
+
+CREATE TABLE IF NOT EXISTS topic_relations (
+    build_id TEXT NOT NULL REFERENCES graph_builds(id),
+    from_topic_id TEXT NOT NULL,
+    to_topic_id TEXT NOT NULL,
+    relation_type TEXT NOT NULL CHECK (relation_type='SUBTOPIC_OF'),
+    method TEXT NOT NULL,
+    confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    taxonomy_version TEXT NOT NULL,
+    provenance_ref TEXT NOT NULL,
+    FOREIGN KEY (taxonomy_version, from_topic_id)
+      REFERENCES topics(taxonomy_version, id),
+    FOREIGN KEY (taxonomy_version, to_topic_id)
+      REFERENCES topics(taxonomy_version, id),
+    PRIMARY KEY (build_id, from_topic_id, to_topic_id, relation_type)
+);
+
+CREATE TABLE IF NOT EXISTS topic_link_jobs (
+    build_id TEXT NOT NULL REFERENCES graph_builds(id),
+    statement_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+      status IN ('pending','running','retry','succeeded','terminal-invalid-input')
+    ),
+    candidate_ids_json TEXT NOT NULL DEFAULT '[]',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (build_id, statement_id)
+      REFERENCES research_statements(build_id, id),
+    PRIMARY KEY (build_id, statement_id)
+);
+
+CREATE TABLE IF NOT EXISTS topic_merge_suggestions (
+    id TEXT PRIMARY KEY,
+    taxonomy_version TEXT NOT NULL REFERENCES taxonomy_versions(id),
+    topic_ids_json TEXT NOT NULL,
+    method TEXT NOT NULL,
+    score REAL NOT NULL CHECK (score >= 0.0 AND score <= 1.0),
+    status TEXT NOT NULL CHECK (status IN ('review','accepted','rejected')),
+    created_at TEXT NOT NULL,
+    UNIQUE (taxonomy_version, topic_ids_json, method)
+);
+
+CREATE TABLE IF NOT EXISTS topic_runs (
+    id TEXT PRIMARY KEY,
+    build_id TEXT NOT NULL UNIQUE REFERENCES graph_builds(id),
+    taxonomy_version TEXT NOT NULL REFERENCES taxonomy_versions(id),
+    manifest_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('PENDING','RUNNING','COMPLETED','FAILED')),
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    started_at TEXT,
+    finished_at TEXT,
+    last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS topic_candidate_collections (
+    taxonomy_version TEXT NOT NULL REFERENCES taxonomy_versions(id),
+    embedding_fingerprint TEXT NOT NULL,
+    collection_name TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN ('BUILDING','READY','FAILED')),
+    point_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (taxonomy_version, embedding_fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS ix_topics_version_status_kind
+ON topics(taxonomy_version, status, kind, id);
+CREATE INDEX IF NOT EXISTS ix_topic_alias_lookup
+ON topic_aliases(taxonomy_version, alias_key);
+CREATE INDEX IF NOT EXISTS ix_statement_topic_links_approved
+ON statement_topic_links(build_id, review_status, statement_id);
+CREATE INDEX IF NOT EXISTS ix_topic_link_jobs_status
+ON topic_link_jobs(build_id, status, statement_id);
+"""
+
+
+RELEASE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS validation_runs (
+    id TEXT PRIMARY KEY,
+    build_id TEXT NOT NULL UNIQUE REFERENCES graph_builds(id),
+    validation_version TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('RUNNING','PASSED','FAILED')),
+    manifest_json TEXT NOT NULL DEFAULT '{}',
+    manifest_hash TEXT,
+    started_at TEXT,
+    finished_at TEXT,
+    last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS promotion_runs (
+    build_id TEXT PRIMARY KEY REFERENCES graph_builds(id),
+    validation_manifest_hash TEXT NOT NULL,
+    previous_active_build_id TEXT REFERENCES graph_builds(id),
+    status TEXT NOT NULL CHECK (status IN ('PENDING','RUNNING','COMPLETED','FAILED')),
+    neo4j_done INTEGER NOT NULL DEFAULT 0 CHECK (neo4j_done IN (0,1)),
+    qdrant_done INTEGER NOT NULL DEFAULT 0 CHECK (qdrant_done IN (0,1)),
+    readback_done INTEGER NOT NULL DEFAULT 0 CHECK (readback_done IN (0,1)),
+    started_at TEXT,
+    updated_at TEXT,
+    finished_at TEXT,
+    last_error TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_graph_builds_one_active
+ON graph_builds(status) WHERE status='ACTIVE';
+
+CREATE INDEX IF NOT EXISTS ix_validation_runs_status
+ON validation_runs(status, build_id);
+
+CREATE INDEX IF NOT EXISTS ix_promotion_runs_status
+ON promotion_runs(status, build_id);
+"""
+
+
 __all__ = [
     "BUILD_STATUSES",
     "BuildSource",
     "CATALOG_SCHEMA_VERSION",
     "CURATION_SCHEMA_SQL",
     "EVIDENCE_GRAPH_SCHEMA_SQL",
+    "RELEASE_SCHEMA_SQL",
     "SEMANTIC_VECTOR_SCHEMA_SQL",
     "SCHEMA_SQL",
     "SOURCE_TASK_STATUSES",
+    "TOPIC_SCHEMA_SQL",
 ]

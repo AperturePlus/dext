@@ -1,0 +1,113 @@
+version: research-topics-v1
+status: published
+parent_version: null
+topics:
+  # disciplines (25)
+  - {id: 00000000-0000-5000-8000-000000000001, canonical_name: 自然科学, kind: discipline, aliases: [{text: Natural Sciences, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000002, canonical_name: 工程学, kind: discipline, aliases: [{text: Engineering, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000003, canonical_name: 社会科学, kind: discipline, aliases: [{text: Social Sciences, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000004, canonical_name: 人文学科, kind: discipline, aliases: [{text: Humanities, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000005, canonical_name: 物理学, kind: discipline, aliases: [{text: Physics, language: en}], parents: [00000000-0000-5000-8000-000000000001]}
+  - {id: 00000000-0000-5000-8000-000000000006, canonical_name: 化学, kind: discipline, aliases: [{text: Chemistry, language: en}], parents: [00000000-0000-5000-8000-000000000001]}
+  - {id: 00000000-0000-5000-8000-000000000007, canonical_name: 生物学, kind: discipline, aliases: [{text: Biology, language: en}], parents: [00000000-0000-5000-8000-000000000001]}
+  - {id: 00000000-0000-5000-8000-000000000008, canonical_name: 数学, kind: discipline, aliases: [{text: Mathematics, language: en}], parents: [00000000-0000-5000-8000-000000000001]}
+  - {id: 00000000-0000-5000-8000-000000000009, canonical_name: 材料科学, kind: discipline, aliases: [{text: Materials Science, language: en}], parents: [00000000-0000-5000-8000-000000000001, 00000000-0000-5000-8000-000000000002]}
+  - {id: 00000000-0000-5000-8000-000000000010, canonical_name: 计算机科学, kind: discipline, aliases: [{text: Computer Science, language: en}], parents: [00000000-0000-5000-8000-000000000002]}
+  - {id: 00000000-0000-5000-8000-000000000011, canonical_name: 电气工程, kind: discipline, aliases: [{text: Electrical Engineering, language: en}], parents: [00000000-0000-5000-8000-000000000002]}
+  - {id: 00000000-0000-5000-8000-000000000012, canonical_name: 机械工程, kind: discipline, aliases: [{text: Mechanical Engineering, language: en}], parents: [00000000-0000-5000-8000-000000000002]}
+  - {id: 00000000-0000-5000-8000-000000000013, canonical_name: 土木工程, kind: discipline, aliases: [{text: Civil Engineering, language: en}], parents: [00000000-0000-5000-8000-000000000002]}
+  - {id: 00000000-0000-5000-8000-000000000014, canonical_name: 环境科学与工程, kind: discipline, aliases: [{text: Environmental Science and Engineering, language: en}], parents: [00000000-0000-5000-8000-000000000001, 00000000-0000-5000-8000-000000000002]}
+  - {id: 00000000-0000-5000-8000-000000000015, canonical_name: 生物医学工程, kind: discipline, aliases: [{text: Biomedical Engineering, language: en}], parents: [00000000-0000-5000-8000-000000000002]}
+  - {id: 00000000-0000-5000-8000-000000000016, canonical_name: 医学, kind: discipline, aliases: [{text: Medicine, language: en}], parents: [00000000-0000-5000-8000-000000000001]}
+  - {id: 00000000-0000-5000-8000-000000000017, canonical_name: 经济学, kind: discipline, aliases: [{text: Economics, language: en}], parents: [00000000-0000-5000-8000-000000000003]}
+  - {id: 00000000-0000-5000-8000-000000000018, canonical_name: 管理学, kind: discipline, aliases: [{text: Management Science, language: en}], parents: [00000000-0000-5000-8000-000000000003]}
+  - {id: 00000000-0000-5000-8000-000000000019, canonical_name: 法学, kind: discipline, aliases: [{text: Law, language: en}], parents: [00000000-0000-5000-8000-000000000003]}
+  - {id: 00000000-0000-5000-8000-000000000020, canonical_name: 教育学, kind: discipline, aliases: [{text: Education, language: en}], parents: [00000000-0000-5000-8000-000000000003]}
+  - {id: 00000000-0000-5000-8000-000000000021, canonical_name: 社会学, kind: discipline, aliases: [{text: Sociology, language: en}], parents: [00000000-0000-5000-8000-000000000003]}
+  - {id: 00000000-0000-5000-8000-000000000022, canonical_name: 心理学, kind: discipline, aliases: [{text: Psychology, language: en}], parents: [00000000-0000-5000-8000-000000000003]}
+  - {id: 00000000-0000-5000-8000-000000000023, canonical_name: 地理学, kind: discipline, aliases: [{text: Geography, language: en}], parents: [00000000-0000-5000-8000-000000000001]}
+  - {id: 00000000-0000-5000-8000-000000000024, canonical_name: 农学, kind: discipline, aliases: [{text: Agricultural Science, language: en}], parents: [00000000-0000-5000-8000-000000000001]}
+  - {id: 00000000-0000-5000-8000-000000000025, canonical_name: 能源科学与工程, kind: discipline, aliases: [{text: Energy Science and Engineering, language: en}], parents: [00000000-0000-5000-8000-000000000002]}
+
+  # methods (25)
+  - {id: 00000000-0000-5000-8000-000000000026, canonical_name: 统计分析, kind: method, aliases: [{text: Statistical Analysis, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000027, canonical_name: 机器学习, kind: method, aliases: [{text: Machine Learning, language: en}], parents: [00000000-0000-5000-8000-000000000026]}
+  - {id: 00000000-0000-5000-8000-000000000028, canonical_name: 深度学习, kind: method, aliases: [{text: Deep Learning, language: en}], parents: [00000000-0000-5000-8000-000000000027]}
+  - {id: 00000000-0000-5000-8000-000000000029, canonical_name: 图神经网络, kind: method, aliases: [{text: Graph Neural Network, language: en}, {text: GNN, language: en}], parents: [00000000-0000-5000-8000-000000000027, 00000000-0000-5000-8000-000000000028]}
+  - {id: 00000000-0000-5000-8000-000000000030, canonical_name: 自监督学习, kind: method, aliases: [{text: Self-supervised Learning, language: en}], parents: [00000000-0000-5000-8000-000000000027]}
+  - {id: 00000000-0000-5000-8000-000000000031, canonical_name: 强化学习, kind: method, aliases: [{text: Reinforcement Learning, language: en}], parents: [00000000-0000-5000-8000-000000000027]}
+  - {id: 00000000-0000-5000-8000-000000000032, canonical_name: 数值优化, kind: method, aliases: [{text: Numerical Optimization, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000033, canonical_name: 有限元方法, kind: method, aliases: [{text: Finite Element Method, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000034, canonical_name: 计算流体力学, kind: method, aliases: [{text: Computational Fluid Dynamics, language: en}, {text: CFD, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000035, canonical_name: 光谱分析, kind: method, aliases: [{text: Spectroscopy, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000036, canonical_name: 显微成像, kind: method, aliases: [{text: Microscopy, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000037, canonical_name: 数值模拟, kind: method, aliases: [{text: Numerical Simulation, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000038, canonical_name: 实验研究, kind: method, aliases: [{text: Experimental Method, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000039, canonical_name: 定性研究, kind: method, aliases: [{text: Qualitative Research, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000040, canonical_name: 计量经济学, kind: method, aliases: [{text: Econometrics, language: en}], parents: [00000000-0000-5000-8000-000000000026]}
+  - {id: 00000000-0000-5000-8000-000000000041, canonical_name: 因果推断, kind: method, aliases: [{text: Causal Inference, language: en}], parents: [00000000-0000-5000-8000-000000000026]}
+  - {id: 00000000-0000-5000-8000-000000000042, canonical_name: 控制理论, kind: method, aliases: [{text: Control Theory, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000043, canonical_name: 信号处理, kind: method, aliases: [{text: Signal Processing, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000044, canonical_name: 图像处理, kind: method, aliases: [{text: Image Processing, language: en}], parents: [00000000-0000-5000-8000-000000000043]}
+  - {id: 00000000-0000-5000-8000-000000000045, canonical_name: 自然语言处理, kind: method, aliases: [{text: Natural Language Processing, language: en}, {text: NLP, language: en}], parents: [00000000-0000-5000-8000-000000000027]}
+  - {id: 00000000-0000-5000-8000-000000000046, canonical_name: 计算机视觉, kind: method, aliases: [{text: Computer Vision, language: en}], parents: [00000000-0000-5000-8000-000000000027]}
+  - {id: 00000000-0000-5000-8000-000000000047, canonical_name: 生物信息学, kind: method, aliases: [{text: Bioinformatics, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000048, canonical_name: 分子动力学, kind: method, aliases: [{text: Molecular Dynamics, language: en}], parents: [00000000-0000-5000-8000-000000000037]}
+  - {id: 00000000-0000-5000-8000-000000000049, canonical_name: 密度泛函理论, kind: method, aliases: [{text: Density Functional Theory, language: en}, {text: DFT, language: en}], parents: [00000000-0000-5000-8000-000000000037]}
+  - {id: 00000000-0000-5000-8000-000000000050, canonical_name: 知识图谱, kind: method, aliases: [{text: Knowledge Graph, language: en}], parents: []}
+
+  # tasks (20)
+  - {id: 00000000-0000-5000-8000-000000000051, canonical_name: 数据分析, kind: task, aliases: [{text: Data Analysis, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000052, canonical_name: 分类, kind: task, aliases: [{text: Classification, language: en}], parents: [00000000-0000-5000-8000-000000000051]}
+  - {id: 00000000-0000-5000-8000-000000000053, canonical_name: 回归分析, kind: task, aliases: [{text: Regression, language: en}], parents: [00000000-0000-5000-8000-000000000051]}
+  - {id: 00000000-0000-5000-8000-000000000054, canonical_name: 聚类, kind: task, aliases: [{text: Clustering, language: en}], parents: [00000000-0000-5000-8000-000000000051]}
+  - {id: 00000000-0000-5000-8000-000000000055, canonical_name: 图像分割, kind: task, aliases: [{text: Image Segmentation, language: en}], parents: [00000000-0000-5000-8000-000000000052]}
+  - {id: 00000000-0000-5000-8000-000000000056, canonical_name: 目标检测, kind: task, aliases: [{text: Object Detection, language: en}], parents: [00000000-0000-5000-8000-000000000052]}
+  - {id: 00000000-0000-5000-8000-000000000057, canonical_name: 故障诊断, kind: task, aliases: [{text: Fault Diagnosis, language: en}], parents: [00000000-0000-5000-8000-000000000052]}
+  - {id: 00000000-0000-5000-8000-000000000058, canonical_name: 预测, kind: task, aliases: [{text: Prediction, language: en}], parents: [00000000-0000-5000-8000-000000000051]}
+  - {id: 00000000-0000-5000-8000-000000000059, canonical_name: 控制, kind: task, aliases: [{text: Control, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000060, canonical_name: 优化, kind: task, aliases: [{text: Optimization, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000061, canonical_name: 合成, kind: task, aliases: [{text: Synthesis, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000062, canonical_name: 表征, kind: task, aliases: [{text: Characterization, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000063, canonical_name: 建模, kind: task, aliases: [{text: Modeling, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000064, canonical_name: 信息检索, kind: task, aliases: [{text: Information Retrieval, language: en}], parents: [00000000-0000-5000-8000-000000000051]}
+  - {id: 00000000-0000-5000-8000-000000000065, canonical_name: 内容生成, kind: task, aliases: [{text: Content Generation, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000066, canonical_name: 模式识别, kind: task, aliases: [{text: Pattern Recognition, language: en}], parents: [00000000-0000-5000-8000-000000000052]}
+  - {id: 00000000-0000-5000-8000-000000000067, canonical_name: 状态监测, kind: task, aliases: [{text: Condition Monitoring, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000068, canonical_name: 图像重建, kind: task, aliases: [{text: Image Reconstruction, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000069, canonical_name: 机器翻译, kind: task, aliases: [{text: Machine Translation, language: en}], parents: [00000000-0000-5000-8000-000000000065]}
+  - {id: 00000000-0000-5000-8000-000000000070, canonical_name: 推荐, kind: task, aliases: [{text: Recommendation, language: en}], parents: [00000000-0000-5000-8000-000000000051]}
+
+  # application domains (15)
+  - {id: 00000000-0000-5000-8000-000000000071, canonical_name: 工业生产, kind: application_domain, aliases: [{text: Industrial Production, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000072, canonical_name: 医学影像, kind: application_domain, aliases: [{text: Medical Imaging, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000073, canonical_name: 环境治理, kind: application_domain, aliases: [{text: Environmental Governance, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000074, canonical_name: 能源系统, kind: application_domain, aliases: [{text: Energy Systems, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000075, canonical_name: 智能交通, kind: application_domain, aliases: [{text: Intelligent Transportation, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000076, canonical_name: 金融科技, kind: application_domain, aliases: [{text: Financial Technology, language: en}, {text: FinTech, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000077, canonical_name: 智慧教育, kind: application_domain, aliases: [{text: Smart Education, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000078, canonical_name: 智慧农业, kind: application_domain, aliases: [{text: Smart Agriculture, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000079, canonical_name: 航空航天, kind: application_domain, aliases: [{text: Aerospace, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000080, canonical_name: 智能制造, kind: application_domain, aliases: [{text: Intelligent Manufacturing, language: en}], parents: [00000000-0000-5000-8000-000000000071]}
+  - {id: 00000000-0000-5000-8000-000000000081, canonical_name: 药物发现, kind: application_domain, aliases: [{text: Drug Discovery, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000082, canonical_name: 公共卫生, kind: application_domain, aliases: [{text: Public Health, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000083, canonical_name: 智慧城市, kind: application_domain, aliases: [{text: Smart City, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000084, canonical_name: 机器人系统, kind: application_domain, aliases: [{text: Robotic Systems, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000085, canonical_name: 互联网服务, kind: application_domain, aliases: [{text: Internet Services, language: en}], parents: []}
+
+  # research objects (15)
+  - {id: 00000000-0000-5000-8000-000000000086, canonical_name: 材料, kind: research_object, aliases: [{text: Materials, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000087, canonical_name: 分子, kind: research_object, aliases: [{text: Molecules, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000088, canonical_name: 蛋白质, kind: research_object, aliases: [{text: Proteins, language: en}], parents: [00000000-0000-5000-8000-000000000087]}
+  - {id: 00000000-0000-5000-8000-000000000089, canonical_name: 细胞, kind: research_object, aliases: [{text: Cells, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000090, canonical_name: 基因, kind: research_object, aliases: [{text: Genes, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000091, canonical_name: 网络, kind: research_object, aliases: [{text: Networks, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000092, canonical_name: 复杂系统, kind: research_object, aliases: [{text: Complex Systems, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000093, canonical_name: 图像, kind: research_object, aliases: [{text: Images, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000094, canonical_name: 文本, kind: research_object, aliases: [{text: Text, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000095, canonical_name: 信号, kind: research_object, aliases: [{text: Signals, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000096, canonical_name: 机器人, kind: research_object, aliases: [{text: Robots, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000097, canonical_name: 工程结构, kind: research_object, aliases: [{text: Engineering Structures, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000098, canonical_name: 流体, kind: research_object, aliases: [{text: Fluids, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000099, canonical_name: 生态系统, kind: research_object, aliases: [{text: Ecosystems, language: en}], parents: []}
+  - {id: 00000000-0000-5000-8000-000000000100, canonical_name: 组织, kind: research_object, aliases: [{text: Organizations, language: en}], parents: []}

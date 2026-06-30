@@ -18,6 +18,7 @@ _LABELS = (
     "OrgUnit",
     "Professor",
     "ResearchStatement",
+    "Topic",
     "PublicationMention",
     "SourceDocument",
 )
@@ -26,6 +27,12 @@ _REL_ENDPOINTS = {
     "PART_OF": ("OrgUnit", "University"),
     "AFFILIATED_WITH": ("Professor", "OrgUnit"),
     "HAS_RESEARCH_STATEMENT": ("Professor", "ResearchStatement"),
+    "PRIMARY_TOPIC": ("ResearchStatement", "Topic"),
+    "USES_METHOD": ("ResearchStatement", "Topic"),
+    "APPLIED_TO": ("ResearchStatement", "Topic"),
+    "TARGETS_TASK": ("ResearchStatement", "Topic"),
+    "STUDIES": ("ResearchStatement", "Topic"),
+    "SUBTOPIC_OF": ("Topic", "Topic"),
     "HAS_PUBLICATION_MENTION": ("Professor", "PublicationMention"),
     "OBSERVED_IN": ("Professor", "SourceDocument"),
     "FROM_UNIVERSITY": ("SourceDocument", "University"),
@@ -94,7 +101,9 @@ async def _write_batch(session: Any, partition: str, rows: list[dict[str, Any]])
 
 async def _create_constraints(driver: Any, database: str) -> None:
     statements = [
-        "CREATE CONSTRAINT build_id_unique IF NOT EXISTS FOR (n:Build) REQUIRE n.id IS UNIQUE"
+        "CREATE CONSTRAINT build_id_unique IF NOT EXISTS FOR (n:Build) REQUIRE n.id IS UNIQUE",
+        "CREATE CONSTRAINT graph_state_name_unique IF NOT EXISTS "
+        "FOR (n:GraphState) REQUIRE n.name IS UNIQUE",
     ]
     statements.extend(
         f"CREATE CONSTRAINT {label.lower()}_graph_key_unique IF NOT EXISTS "
@@ -243,4 +252,99 @@ async def validate_neo4j_exports(driver: Any, build_id: str, settings: GraphSett
                 raise CatalogError(f"Neo4j checksum mismatch for {partition}")
 
 
-__all__ = ["validate_neo4j_exports", "write_neo4j_exports"]
+def _new_driver(settings: GraphSettings) -> Any:
+    try:
+        from neo4j import AsyncGraphDatabase
+    except ImportError as exc:  # pragma: no cover - dependency installation error
+        raise CatalogError("Neo4j Python driver is not installed") from exc
+    if bool(settings.neo4j_username) != bool(settings.neo4j_password):
+        raise CatalogError("Neo4j username and password must be configured together")
+    auth = (
+        (settings.neo4j_username, settings.neo4j_password)
+        if settings.neo4j_username
+        else None
+    )
+    return AsyncGraphDatabase.driver(
+        settings.neo4j_uri,
+        auth=auth,
+        max_transaction_retry_time=settings.neo4j_max_retry_seconds,
+    )
+
+
+async def set_active_build(
+    build_id: str, settings: GraphSettings, *, driver: Any | None = None
+) -> None:
+    owns_driver = driver is None
+    driver = driver or _new_driver(settings)
+    try:
+        await driver.verify_connectivity()
+        await _create_constraints(driver, settings.neo4j_database)
+        async with driver.session(database=settings.neo4j_database) as session:
+
+            async def switch(tx: Any) -> str:
+                result = await tx.run(
+                    """
+                    MATCH (build:Build {id:$build_id})
+                    MERGE (state:GraphState {name:'active'})
+                    OPTIONAL MATCH (state)-[old:POINTS_TO]->(:Build)
+                    WITH state,build,collect(old) AS old_relationships
+                    FOREACH (relationship IN old_relationships | DELETE relationship)
+                    MERGE (state)-[:POINTS_TO]->(build)
+                    RETURN build.id AS build_id
+                    """,
+                    build_id=build_id,
+                )
+                record = await result.single(strict=True)
+                return str(record["build_id"])
+
+            selected = await session.execute_write(switch)
+            if selected != build_id:
+                raise CatalogError("Neo4j active build switch returned the wrong build")
+    finally:
+        if owns_driver:
+            await driver.close()
+
+
+async def get_active_build(
+    settings: GraphSettings, *, driver: Any | None = None
+) -> str | None:
+    owns_driver = driver is None
+    driver = driver or _new_driver(settings)
+    try:
+        await driver.verify_connectivity()
+        async with driver.session(database=settings.neo4j_database) as session:
+            result = await session.run(
+                """
+                MATCH (:GraphState {name:'active'})-[:POINTS_TO]->(build:Build)
+                RETURN build.id AS build_id ORDER BY build.id
+                """
+            )
+            values = [str(record["build_id"]) async for record in result]
+        if len(values) > 1:
+            raise CatalogError("Neo4j active pointer targets multiple builds")
+        return values[0] if values else None
+    finally:
+        if owns_driver:
+            await driver.close()
+
+
+async def validate_persisted_exports(
+    build_id: str, settings: GraphSettings, *, driver: Any | None = None
+) -> None:
+    owns_driver = driver is None
+    driver = driver or _new_driver(settings)
+    try:
+        await driver.verify_connectivity()
+        await validate_neo4j_exports(driver, build_id, settings)
+    finally:
+        if owns_driver:
+            await driver.close()
+
+
+__all__ = [
+    "get_active_build",
+    "set_active_build",
+    "validate_neo4j_exports",
+    "validate_persisted_exports",
+    "write_neo4j_exports",
+]

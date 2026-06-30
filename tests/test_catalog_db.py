@@ -46,6 +46,17 @@ def test_catalog_schema_is_versioned_and_complete(tmp_path):
             "embedding_jobs",
             "embedding_cache",
             "vector_sentinel_runs",
+            "taxonomy_versions",
+            "topics",
+            "topic_aliases",
+            "statement_topic_links",
+            "topic_relations",
+            "topic_link_jobs",
+            "topic_merge_suggestions",
+            "topic_runs",
+            "topic_candidate_collections",
+            "validation_runs",
+            "promotion_runs",
         }.issubset(tables)
 
 

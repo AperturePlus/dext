@@ -1,3 +1,4 @@
+import json
 import sqlite3
 
 import pytest
@@ -113,6 +114,7 @@ async def test_vector_stage_uploads_only_eligible_professors_and_preserves_revie
     assert review_payload["role_reason_codes"] == ["identity_conflict"]
     assert all(point.payload["provenance_ref"].startswith("catalog:entity:") for point in sink.points)
     assert len(embedding.calls) == 1
+    assert all(point.payload["org_unit_ids"] for point in sink.points)
 
     with sqlite3.connect(settings.catalog_path) as connection:
         assert connection.execute(
@@ -127,6 +129,26 @@ async def test_vector_stage_uploads_only_eligible_professors_and_preserves_revie
             "WHERE build_id=? AND sink='qdrant' AND partition_key='professors'",
             (build_id,),
         ).fetchone()[0] == max(entities[1:])
+        exported_profiles = {
+            row[0]: json.loads(row[1])["profile_hash"]
+            for row in connection.execute(
+                "SELECT row_key,payload_json FROM graph_export_rows "
+                "WHERE build_id=? AND partition_key='node:Professor'",
+                (build_id,),
+            )
+        }
+        affiliation_org_ids = {
+            row[0].removeprefix(f"{build_id}:")
+            for row in connection.execute(
+                "SELECT end_graph_key FROM graph_export_rows "
+                "WHERE build_id=? AND partition_key='rel:AFFILIATED_WITH'",
+                (build_id,),
+            )
+        }
+    assert exported_profiles[entities[0]] is None
+    for point in sink.points:
+        assert exported_profiles[point.entity_id] == point.payload["profile_hash"]
+        assert set(point.payload["org_unit_ids"]) == affiliation_org_ids
     assert output["vector"]["status"] == "COMPLETED"
     assert output["vector"]["collection_name"] == f"dext_professors__{build_id}"
 

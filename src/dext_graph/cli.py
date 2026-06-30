@@ -153,6 +153,96 @@ def vector_command(build_id: str) -> None:
     _guard_catalog(lambda: vector_build(build_id, settings), asynchronous=True)
 
 
+@graph.command("validate")
+@click.argument("build_id")
+def validate_command(build_id: str) -> None:
+    """Run deterministic release gates and mark a passing build READY."""
+    from dext_graph.catalog.lifecycle import validate_build
+    from dext_graph.config import GraphSettings
+
+    settings = GraphSettings()
+    _guard_catalog(lambda: validate_build(build_id, settings), asynchronous=True)
+
+
+@graph.command("promote")
+@click.argument("build_id")
+def promote_command(build_id: str) -> None:
+    """Publish one validated READY build to Neo4j and Qdrant."""
+    from dext_graph.catalog.lifecycle import promote_build
+    from dext_graph.config import GraphSettings
+
+    settings = GraphSettings()
+    _guard_catalog(lambda: promote_build(build_id, settings), asynchronous=True)
+
+
+@graph.group("topics")
+def topics_group() -> None:
+    """Build, review, and evaluate the versioned Topic taxonomy."""
+
+
+@topics_group.command("build")
+@click.argument("build_id")
+def topics_build_command(build_id: str) -> None:
+    """Run or resume stage-5 Topic linking and graph projection."""
+    from dext_graph.catalog.topic_workflow import topic_build
+    from dext_graph.config import GraphSettings
+
+    settings = GraphSettings()
+    _guard_catalog(lambda: topic_build(build_id, settings), asynchronous=True)
+
+
+@topics_group.command("suggest-merges")
+@click.argument("build_id")
+def topics_suggest_merges_command(build_id: str) -> None:
+    """Create review-only provisional Topic merge suggestions."""
+    from dext_graph.catalog.topic_merge import suggest_topic_merges
+    from dext_graph.config import GraphSettings
+
+    settings = GraphSettings()
+    _guard_catalog(lambda: suggest_topic_merges(build_id, settings), asynchronous=True)
+
+
+@topics_group.command("gold-generate")
+@click.argument("build_id")
+@click.option("--size", default=400, show_default=True, type=click.IntRange(min=1))
+@click.option(
+    "--output-root",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+)
+def topics_gold_generate_command(
+    build_id: str, size: int, output_root: Path | None
+) -> None:
+    """Generate a stratified, unlabelled Topic gold template."""
+    from dext_graph.catalog.topic_gold import generate_topic_gold
+    from dext_graph.config import GraphSettings
+
+    settings = GraphSettings()
+    _guard_catalog(
+        lambda: generate_topic_gold(
+            settings.catalog_path, build_id, size=size, output_root=output_root
+        )
+    )
+
+
+@topics_group.command("gold-evaluate")
+@click.argument("build_id")
+@click.option(
+    "--dataset",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+def topics_gold_evaluate_command(build_id: str, dataset: Path) -> None:
+    """Evaluate approved Topic links against completed human annotations."""
+    from dext_graph.catalog.topic_gold import evaluate_topic_gold
+    from dext_graph.config import GraphSettings
+
+    settings = GraphSettings()
+    _guard_catalog(
+        lambda: evaluate_topic_gold(settings.catalog_path, build_id, dataset)
+    )
+
+
 @graph.command("status")
 @click.argument("build_id", required=False)
 def status_command(build_id: str | None) -> None:
@@ -162,6 +252,29 @@ def status_command(build_id: str | None) -> None:
 
     settings = GraphSettings()
     _guard_catalog(lambda: get_status(build_id, settings))
+
+
+@graph.group("curation-gold")
+def curation_gold_group() -> None:
+    """Evaluate human-labelled identity and role decisions."""
+
+
+@curation_gold_group.command("evaluate")
+@click.argument("build_id")
+@click.option(
+    "--dataset",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+def curation_gold_evaluate_command(build_id: str, dataset: Path) -> None:
+    """Persist curation gold metrics for release validation."""
+    from dext_graph.catalog.gold import evaluate_curation_gold
+    from dext_graph.config import GraphSettings
+
+    settings = GraphSettings()
+    _guard_catalog(
+        lambda: evaluate_curation_gold(settings.catalog_path, build_id, dataset)
+    )
 
 
 @graph.group("gold")

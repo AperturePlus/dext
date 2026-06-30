@@ -23,13 +23,17 @@ def test_versioned_assets_have_required_sizes():
 
 def test_safe_settings_snapshot_excludes_key():
     settings = GraphSettings(
-        embedding_api_key="must-not-appear", neo4j_password="also-secret"
+        embedding_api_key="must-not-appear",
+        topic_llm_api_key="topic-secret",
+        neo4j_password="also-secret",
     )
     snapshot = settings.safe_snapshot()
     assert "embedding_api_key" not in snapshot
     assert "neo4j_password" not in snapshot
+    assert "topic_llm_api_key" not in snapshot
     assert "must-not-appear" not in repr(settings)
     assert "also-secret" not in repr(settings)
+    assert "topic-secret" not in repr(settings)
     assert settings.catalog_path.as_posix() == "data/catalog/catalog.db"
     assert settings.build_read_batch == 100
     assert settings.build_write_queue == 2
@@ -53,7 +57,10 @@ def test_cli_exposes_catalog_build_commands():
     runner = CliRunner()
     result = runner.invoke(main, ["graph", "--help"])
     assert result.exit_code == 0
-    for command in ("build", "resume", "status", "vector", "gold", "value-validation"):
+    for command in (
+        "build", "resume", "status", "vector", "validate", "promote",
+        "topics", "gold", "curation-gold", "value-validation"
+    ):
         assert command in result.output
     build_help = runner.invoke(main, ["graph", "build", "--help"])
     assert build_help.exit_code == 0
@@ -62,3 +69,7 @@ def test_cli_exposes_catalog_build_commands():
     assert gold_help.exit_code == 0
     assert "generate" in gold_help.output
     assert "evaluate" in gold_help.output
+    topics_help = runner.invoke(main, ["graph", "topics", "--help"])
+    assert topics_help.exit_code == 0
+    for command in ("build", "suggest-merges", "gold-generate", "gold-evaluate"):
+        assert command in topics_help.output

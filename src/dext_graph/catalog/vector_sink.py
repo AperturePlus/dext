@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any
 
 from dext_graph.models import ValueValidationError
@@ -22,6 +23,7 @@ _INDEX_FIELDS = (
     "application_domain_topic_ids",
     "task_topic_ids",
 )
+CURRENT_PROFESSOR_ALIAS = "dext_professors_current"
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,13 @@ class ProfessorVectorPoint:
     entity_id: str
     dense: list[float]
     sparse: dict[str, list[int] | list[float]]
+    payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ProfessorQueryHit:
+    entity_id: str
+    score: float
     payload: dict[str, Any]
 
 
@@ -61,8 +70,34 @@ class ProfessorQdrant:
 
     @staticmethod
     def _validate_collection_name(name: str) -> None:
-        if not name.startswith("dext_professors__") or name == "dext_professors_current":
+        if not name.startswith("dext_professors__") or name == CURRENT_PROFESSOR_ALIAS:
             raise ValueValidationError(f"refusing non-professor Qdrant collection: {name}")
+
+    @classmethod
+    def _validate_read_name(cls, name: str) -> None:
+        if name == CURRENT_PROFESSOR_ALIAS:
+            return
+        cls._validate_collection_name(name)
+
+    @staticmethod
+    def _query_filter(filters: Mapping[str, object] | None) -> Any | None:
+        if not filters:
+            return None
+        from qdrant_client import models
+
+        conditions = []
+        for field, value in sorted(filters.items()):
+            if field not in _INDEX_FIELDS:
+                raise ValueValidationError(f"unsupported professor filter: {field}")
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                values = list(value)
+                if not values:
+                    raise ValueValidationError(f"professor filter {field} cannot be empty")
+                match = models.MatchAny(any=values)
+            else:
+                match = models.MatchValue(value=value)
+            conditions.append(models.FieldCondition(key=field, match=match))
+        return models.Filter(must=conditions)
 
     async def create_collection(self, name: str, *, dimension: int) -> None:
         from qdrant_client import models
@@ -120,9 +155,116 @@ class ProfessorQdrant:
         result = await self._client.count(collection_name=name, exact=True)
         return int(result.count)
 
+    async def query(
+        self,
+        name: str,
+        *,
+        dense: list[float],
+        sparse: Mapping[str, Sequence[int] | Sequence[float]],
+        filters: Mapping[str, object] | None = None,
+        limit: int = 20,
+        prefetch_limit: int | None = None,
+    ) -> list[ProfessorQueryHit]:
+        from qdrant_client import models
+
+        self._validate_read_name(name)
+        if limit <= 0:
+            raise ValueValidationError("professor query limit must be positive")
+        candidate_limit = prefetch_limit or max(limit, 50)
+        if candidate_limit < limit:
+            raise ValueValidationError("prefetch_limit cannot be smaller than limit")
+        sparse_vector = models.SparseVector(
+            indices=[int(item) for item in sparse.get("indices", [])],
+            values=[float(item) for item in sparse.get("values", [])],
+        )
+        response = await self._client.query_points(
+            collection_name=name,
+            prefetch=[
+                models.Prefetch(query=dense, using="dense", limit=candidate_limit),
+                models.Prefetch(
+                    query=sparse_vector, using="sparse", limit=candidate_limit
+                ),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            query_filter=self._query_filter(filters),
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+        return [
+            ProfessorQueryHit(
+                entity_id=str(point.id),
+                score=float(point.score),
+                payload=dict(point.payload or {}),
+            )
+            for point in response.points
+        ]
+
+    async def iter_payloads(
+        self, name: str, *, batch_size: int = 256
+    ) -> AsyncIterator[dict[str, Any]]:
+        self._validate_read_name(name)
+        if batch_size <= 0:
+            raise ValueValidationError("Qdrant payload batch size must be positive")
+        offset: Any | None = None
+        while True:
+            points, offset = await self._client.scroll(
+                collection_name=name,
+                limit=batch_size,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for point in points:
+                yield {"entity_id": str(point.id), "payload": dict(point.payload or {})}
+            if offset is None:
+                return
+
+    async def resolve_current_alias(self) -> str | None:
+        aliases = await self._client.get_aliases()
+        matches = [
+            str(alias.collection_name)
+            for alias in aliases.aliases
+            if str(alias.alias_name) == CURRENT_PROFESSOR_ALIAS
+        ]
+        if len(matches) > 1:
+            raise ValueValidationError("Qdrant current professor alias is ambiguous")
+        return matches[0] if matches else None
+
+    async def switch_current_alias(self, name: str) -> None:
+        from qdrant_client import models
+
+        self._validate_collection_name(name)
+        if not await self._client.collection_exists(name):
+            raise ValueValidationError(f"Qdrant professor collection does not exist: {name}")
+        current = await self.resolve_current_alias()
+        if current == name:
+            return
+        operations: list[Any] = []
+        if current is not None:
+            operations.append(
+                models.DeleteAliasOperation(
+                    delete_alias=models.DeleteAlias(alias_name=CURRENT_PROFESSOR_ALIAS)
+                )
+            )
+        operations.append(
+            models.CreateAliasOperation(
+                create_alias=models.CreateAlias(
+                    collection_name=name, alias_name=CURRENT_PROFESSOR_ALIAS
+                )
+            )
+        )
+        await self._client.update_collection_aliases(
+            change_aliases_operations=operations
+        )
+        if await self.resolve_current_alias() != name:
+            raise ValueValidationError("Qdrant professor alias readback mismatch")
+
 
 __all__ = [
+    "CURRENT_PROFESSOR_ALIAS",
     "ProfessorQdrant",
+    "ProfessorQueryHit",
     "ProfessorVectorPoint",
     "professor_collection_name",
 ]

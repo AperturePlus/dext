@@ -5,7 +5,11 @@ import pytest
 
 from dext_graph.catalog.workflow import create_build
 from dext_graph.catalog.db import CatalogWriter
-from dext_graph.catalog.neo4j_sink import write_neo4j_exports
+from dext_graph.catalog.neo4j_sink import (
+    get_active_build,
+    set_active_build,
+    write_neo4j_exports,
+)
 from test_catalog_workflow import _patch_runtime, _settings, _source_db
 
 
@@ -23,6 +27,7 @@ async def test_real_neo4j_constraints_merge_and_manifest_readback(tmp_path, monk
     _source_db(settings.source_data_dir / "test.db", count=3)
     result = await create_build(["测试大学"], settings)
     build_id = result["build"]["id"]
+    previous_active = None
     try:
         assert result["build"]["status"] == "WRITING_VECTOR"
         assert result["graph"]["status"] == "COMPLETED"
@@ -34,11 +39,23 @@ async def test_real_neo4j_constraints_merge_and_manifest_readback(tmp_path, monk
             )
         async with CatalogWriter(settings.catalog_path, max_queue=2) as writer:
             await write_neo4j_exports(writer, build_id, settings)
+        previous_active = await get_active_build(settings)
+        await set_active_build(build_id, settings)
+        assert await get_active_build(settings) == build_id
     finally:
         from neo4j import AsyncGraphDatabase
 
         driver = AsyncGraphDatabase.driver(uri, auth=None)
         try:
+            if previous_active is not None:
+                await set_active_build(previous_active, settings)
+            else:
+                await driver.execute_query(
+                    "MATCH (:GraphState {name:'active'})-[r:POINTS_TO]->"
+                    "(:Build {id:$build_id}) DELETE r",
+                    build_id=build_id,
+                    database_="neo4j",
+                )
             await driver.execute_query(
                 "MATCH (n {build_id: $build_id}) DETACH DELETE n",
                 build_id=build_id,

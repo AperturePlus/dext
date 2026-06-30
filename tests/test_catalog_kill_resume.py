@@ -42,6 +42,9 @@ def test_subprocess_kill_and_resume_converges(
             "DEXT_BUILD_WRITE_QUEUE": "2",
             "DEXT_BUILD_MAX_RSS_MB": "2048",
             "DEXT_TEST_SKIP_NEO4J": "1",
+            # This test exercises stages 1-3 recovery only. Topic/vector stages
+            # require external providers and have their own kill/resume tests.
+            "DEXT_TEST_SKIP_VECTOR": "1",
             kill_variable: "1",
         }
     )

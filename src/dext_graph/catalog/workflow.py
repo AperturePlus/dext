@@ -68,6 +68,11 @@ _RESUME_SETTING_KEYS = (
     "qdrant_url",
     "qdrant_upsert_batch",
     "bm25_tokenizer_version",
+    "taxonomy_path",
+    "topic_llm_base_url",
+    "topic_llm_model",
+    "topic_candidate_top_k",
+    "topic_merge_min_score",
     "neo4j_uri",
     "neo4j_database",
     "build_neo4j_batch",
@@ -1136,6 +1141,20 @@ def _backup_progress(settings: GraphSettings):
     return progress
 
 
+async def _run_topic_and_vector(
+    writer: CatalogWriter, build_id: str, settings: GraphSettings
+) -> dict[str, Any]:
+    if os.getenv("DEXT_TEST_SKIP_TOPICS") != "1":
+        from dext_graph.catalog.topic_workflow import run_topic_stage
+
+        result = await run_topic_stage(writer, build_id, settings)
+        if result["build"]["status"] != "WRITING_VECTOR":
+            return result
+    from dext_graph.catalog.vector_workflow import run_vector_stage
+
+    return await run_vector_stage(writer, build_id, settings)
+
+
 async def create_build(
     university_names: list[str] | tuple[str, ...],
     settings: GraphSettings | None = None,
@@ -1168,9 +1187,7 @@ async def create_build(
                 result["build"]["status"] == "WRITING_VECTOR"
                 and os.getenv("DEXT_TEST_SKIP_VECTOR") != "1"
             ):
-                from dext_graph.catalog.vector_workflow import run_vector_stage
-
-                return await run_vector_stage(writer, build_id, settings)
+                return await _run_topic_and_vector(writer, build_id, settings)
             return result
 
 
@@ -1187,7 +1204,14 @@ def _assert_resume_compatible(build: dict[str, Any], settings: GraphSettings) ->
             "resume settings are incompatible with the frozen build: "
             + ", ".join(differences)
         )
-    if frozen.get("catalog_schema_version") not in {1, 2, 3, CATALOG_SCHEMA_VERSION}:
+    if frozen.get("catalog_schema_version") not in {
+        1,
+        2,
+        3,
+        4,
+        5,
+        CATALOG_SCHEMA_VERSION,
+    }:
         raise CatalogError("build catalog schema version is incompatible")
 
 
@@ -1201,6 +1225,8 @@ async def resume_build(
     with closing(connect_catalog_read_only(path)) as connection:
         build = _load_build(connection, build_id)
     _assert_resume_compatible(build, settings)
+    if build["status"] in {"VALIDATING", "FAILED_VALIDATION", "READY", "ACTIVE"}:
+        return build_status(path, build_id)
     if build["status"] == "WRITING_VECTOR" and os.getenv("DEXT_TEST_SKIP_VECTOR") == "1":
         return build_status(path, build_id)
     with catalog_write_lock(path):
@@ -1221,21 +1247,26 @@ async def resume_build(
                 is not None,
                 transactional=False,
             )
+            has_topic_run = await writer.execute(
+                lambda connection: connection.execute(
+                    "SELECT 1 FROM topic_runs WHERE build_id=?", (build_id,)
+                ).fetchone()
+                is not None,
+                transactional=False,
+            )
             if build["status"] == "WRITING_VECTOR" or (
                 build["status"] == "FAILED"
-                and await writer.execute(
+                and (has_topic_run or await writer.execute(
                     lambda connection: connection.execute(
                         "SELECT 1 FROM vector_runs WHERE build_id=?", (build_id,)
                     ).fetchone()
                     is not None,
                     transactional=False,
-                )
+                ))
             ):
-                from dext_graph.catalog.vector_workflow import run_vector_stage
-
                 if os.getenv("DEXT_TEST_SKIP_VECTOR") == "1":
                     return build_status(path, build_id)
-                return await run_vector_stage(writer, build_id, settings)
+                return await _run_topic_and_vector(writer, build_id, settings)
             if build["status"] in {"EMBEDDING", "WRITING_GRAPH"} or (
                 build["status"] == "FAILED" and has_graph_run
             ):
@@ -1246,9 +1277,7 @@ async def resume_build(
                     result["build"]["status"] == "WRITING_VECTOR"
                     and os.getenv("DEXT_TEST_SKIP_VECTOR") != "1"
                 ):
-                    from dext_graph.catalog.vector_workflow import run_vector_stage
-
-                    return await run_vector_stage(writer, build_id, settings)
+                    return await _run_topic_and_vector(writer, build_id, settings)
                 return result
             if build["status"] == "CURATING" or (
                 build["status"] == "FAILED" and has_curation_run and not has_graph_run
@@ -1264,9 +1293,7 @@ async def resume_build(
                         result["build"]["status"] == "WRITING_VECTOR"
                         and os.getenv("DEXT_TEST_SKIP_VECTOR") != "1"
                     ):
-                        from dext_graph.catalog.vector_workflow import run_vector_stage
-
-                        return await run_vector_stage(writer, build_id, settings)
+                        return await _run_topic_and_vector(writer, build_id, settings)
                     return result
                 return result
             result = await _run_build(writer, build_id, settings)
@@ -1282,19 +1309,30 @@ async def resume_build(
                     result["build"]["status"] == "WRITING_VECTOR"
                     and os.getenv("DEXT_TEST_SKIP_VECTOR") != "1"
                 ):
-                    from dext_graph.catalog.vector_workflow import run_vector_stage
-
-                    return await run_vector_stage(writer, build_id, settings)
+                    return await _run_topic_and_vector(writer, build_id, settings)
                 return result
             return result
 
 
 def _serializable_row(row: sqlite3.Row) -> dict[str, Any]:
     value = dict(row)
-    for key in ("settings_json", "summary_json", "row_counts_json", "details_json"):
+    for key in (
+        "settings_json",
+        "summary_json",
+        "row_counts_json",
+        "details_json",
+        "manifest_json",
+    ):
         if key in value:
             value[key] = json_loads(value[key], {})
-    for key in ("deactivation_eligible", "resolved", "active"):
+    for key in (
+        "deactivation_eligible",
+        "resolved",
+        "active",
+        "neo4j_done",
+        "qdrant_done",
+        "readback_done",
+    ):
         if key in value:
             value[key] = bool(value[key])
     return value
@@ -1303,7 +1341,7 @@ def _serializable_row(row: sqlite3.Row) -> dict[str, Any]:
 def build_status(catalog_path: str | Path, build_id: str | None = None) -> dict[str, Any]:
     with closing(connect_catalog_read_only(catalog_path)) as connection:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version not in {1, CATALOG_SCHEMA_VERSION}:
+        if version not in {1, 2, 3, 4, 5, CATALOG_SCHEMA_VERSION}:
             raise CatalogError(
                 f"catalog schema version {version} is incompatible with "
                 f"{CATALOG_SCHEMA_VERSION}"
@@ -1373,6 +1411,34 @@ def build_status(catalog_path: str | Path, build_id: str | None = None) -> dict[
             ).fetchone()
             if row is not None:
                 vector_run = _serializable_row(row)
+        topic_run = None
+        has_topic_table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='topic_runs'"
+        ).fetchone()
+        if has_topic_table is not None:
+            row = connection.execute(
+                "SELECT * FROM topic_runs WHERE build_id=?", (build_id,)
+            ).fetchone()
+            if row is not None:
+                topic_run = _serializable_row(row)
+        validation_run = None
+        promotion_run = None
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='validation_runs'"
+        ).fetchone() is not None:
+            row = connection.execute(
+                "SELECT * FROM validation_runs WHERE build_id=?", (build_id,)
+            ).fetchone()
+            if row is not None:
+                validation_run = _serializable_row(row)
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='promotion_runs'"
+        ).fetchone() is not None:
+            row = connection.execute(
+                "SELECT * FROM promotion_runs WHERE build_id=?", (build_id,)
+            ).fetchone()
+            if row is not None:
+                promotion_run = _serializable_row(row)
         return {
             "catalog_path": str(Path(catalog_path).resolve()),
             "build": _serializable_row(build),
@@ -1381,7 +1447,10 @@ def build_status(catalog_path: str | Path, build_id: str | None = None) -> dict[
             "unresolved_findings": finding_counts,
             "curation": curation_run,
             "graph": graph_run,
+            "topics": topic_run,
             "vector": vector_run,
+            "validation": validation_run,
+            "promotion": promotion_run,
         }
 
 

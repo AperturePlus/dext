@@ -19,8 +19,10 @@ from dext_graph.catalog.models import (
     CATALOG_SCHEMA_VERSION,
     CURATION_SCHEMA_SQL,
     EVIDENCE_GRAPH_SCHEMA_SQL,
+    RELEASE_SCHEMA_SQL,
     SEMANTIC_VECTOR_SCHEMA_SQL,
     SCHEMA_SQL,
+    TOPIC_SCHEMA_SQL,
 )
 
 T = TypeVar("T")
@@ -140,12 +142,14 @@ def initialize_catalog(path: str | Path) -> Path:
             connection.executescript(CURATION_SCHEMA_SQL)
             connection.executescript(EVIDENCE_GRAPH_SCHEMA_SQL)
             connection.executescript(SEMANTIC_VECTOR_SCHEMA_SQL)
+            connection.executescript(TOPIC_SCHEMA_SQL)
+            connection.executescript(RELEASE_SCHEMA_SQL)
             connection.execute(
                 "INSERT INTO catalog_meta(key, value) VALUES ('schema_version', ?)",
                 (str(CATALOG_SCHEMA_VERSION),),
             )
             connection.execute(f"PRAGMA user_version={CATALOG_SCHEMA_VERSION}")
-        elif version in {1, 2, 3} and CATALOG_SCHEMA_VERSION == 4:
+        elif version in {1, 2, 3, 4, 5} and CATALOG_SCHEMA_VERSION == 6:
             # Public mutating workflows take a verified online backup before
             # reaching this migration. Keep all schema additions and the
             # version bump in one SQLite transaction.
@@ -154,7 +158,11 @@ def initialize_catalog(path: str | Path) -> Path:
                 migration_sql += CURATION_SCHEMA_SQL + "\n"
             if version in {1, 2}:
                 migration_sql += EVIDENCE_GRAPH_SCHEMA_SQL + "\n"
-            migration_sql += SEMANTIC_VECTOR_SCHEMA_SQL
+            if version in {1, 2, 3}:
+                migration_sql += SEMANTIC_VECTOR_SCHEMA_SQL + "\n"
+            if version in {1, 2, 3, 4}:
+                migration_sql += TOPIC_SCHEMA_SQL + "\n"
+            migration_sql += RELEASE_SCHEMA_SQL
             migration_sql += (
                 f"\nUPDATE catalog_meta SET value='{CATALOG_SCHEMA_VERSION}' "
                 "WHERE key='schema_version';\n"
@@ -166,6 +174,8 @@ def initialize_catalog(path: str | Path) -> Path:
             connection.executescript(CURATION_SCHEMA_SQL)
             connection.executescript(EVIDENCE_GRAPH_SCHEMA_SQL)
             connection.executescript(SEMANTIC_VECTOR_SCHEMA_SQL)
+            connection.executescript(TOPIC_SCHEMA_SQL)
+            connection.executescript(RELEASE_SCHEMA_SQL)
             recorded = connection.execute(
                 "SELECT value FROM catalog_meta WHERE key='schema_version'"
             ).fetchone()

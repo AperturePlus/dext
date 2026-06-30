@@ -20,6 +20,7 @@ class GraphSettings(BaseSettings):
     catalog_path: Path = Path("data/catalog/catalog.db")
     source_data_dir: Path = Path("data/universities")
     seed_path: Path = Path("entrances.yaml")
+    taxonomy_path: Path = Path("taxonomy/research-topics.yaml")
     qdrant_url: str = "http://127.0.0.1:6333"
     neo4j_uri: str = "bolt://127.0.0.1:7687"
     neo4j_database: str = "neo4j"
@@ -40,6 +41,16 @@ class GraphSettings(BaseSettings):
     embedding_passage_prefix: str = ""
     embedding_query_prefix: str = ""
     bm25_tokenizer_version: str = "bm25-simple-v1"
+
+    topic_llm_api_key: str = Field(
+        default="", validation_alias="DEEPSEEK_API_KEY", repr=False
+    )
+    topic_llm_base_url: str = "https://api.deepseek.com"
+    topic_llm_model: str = "deepseek-v4-flash"
+    topic_llm_timeout_seconds: float = 90.0
+    topic_llm_max_retries: int = 2
+    topic_candidate_top_k: int = 8
+    topic_merge_min_score: float = 0.90
 
     tokenizer_model: str = "BAAI/bge-m3"
     tokenizer_revision: str = "5617a9f61b028005a4858fdac845db406aefb181"
@@ -69,6 +80,8 @@ class GraphSettings(BaseSettings):
         "embedding_max_concurrency",
         "embedding_max_retries",
         "embedding_queue_maxsize",
+        "topic_llm_max_retries",
+        "topic_candidate_top_k",
         "profile_max_tokens",
         "source_read_batch",
         "qdrant_upsert_batch",
@@ -91,9 +104,17 @@ class GraphSettings(BaseSettings):
             raise ValueError("DEXT_BUILD_MIN_SOURCE_RETENTION_RATIO must be in (0, 1]")
         return value
 
+    @field_validator("topic_merge_min_score")
+    @classmethod
+    def topic_score_is_fraction(cls, value: float) -> float:
+        if not 0 < value <= 1:
+            raise ValueError("DEXT_TOPIC_MERGE_MIN_SCORE must be in (0, 1]")
+        return value
+
     def safe_snapshot(self) -> dict[str, object]:
         return self.model_dump(
-            mode="json", exclude={"embedding_api_key", "neo4j_password"}
+            mode="json",
+            exclude={"embedding_api_key", "topic_llm_api_key", "neo4j_password"},
         )
 
 

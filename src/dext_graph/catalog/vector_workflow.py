@@ -18,6 +18,9 @@ from dext_graph.catalog.db import (
     json_loads,
     utcnow_iso,
 )
+from dext_graph.catalog.evidence import rebuild_graph_partitions
+from dext_graph.catalog.neo4j_sink import write_neo4j_exports
+from dext_graph.catalog.org_units import entity_org_unit_map
 from dext_graph.catalog.semantic import (
     build_semantic_profile,
     load_embedding_cache,
@@ -231,6 +234,42 @@ def _entity_evidence(
     return statements, mentions
 
 
+def _entity_topics(
+    connection: sqlite3.Connection, build_id: str, entity_id: str
+) -> tuple[list[str], dict[str, list[str]]]:
+    grouped: dict[str, list[tuple[str, str]]] = {}
+    query = """
+        SELECT DISTINCT t.id,t.canonical_name,t.kind
+        FROM research_statements s
+        JOIN statement_topic_links l ON l.build_id=s.build_id AND l.statement_id=s.id
+        JOIN topics t ON t.taxonomy_version=l.taxonomy_version AND t.id=l.topic_id
+        WHERE s.build_id=? AND s.entity_id=? AND l.review_status='approved'
+          AND t.status='active'
+        ORDER BY t.kind,t.canonical_name,t.id
+    """
+    for row in connection.execute(query, (build_id, entity_id)):
+        grouped.setdefault(str(row["kind"]), []).append(
+            (str(row["id"]), str(row["canonical_name"]))
+        )
+    labels = {
+        "discipline": "学科",
+        "method": "方法",
+        "task": "任务",
+        "application_domain": "应用领域",
+        "research_object": "研究对象",
+    }
+    profile_topics = [
+        f"{labels[kind]}：" + "、".join(name for _topic_id, name in grouped[kind])
+        for kind in labels
+        if grouped.get(kind)
+    ]
+    ids = {
+        kind: [topic_id for topic_id, _name in values]
+        for kind, values in grouped.items()
+    }
+    return profile_topics, ids
+
+
 def _org_units(payload: dict[str, Any]) -> list[str]:
     affiliations = payload.get("affiliations") or []
     values = [
@@ -250,6 +289,7 @@ async def _build_points(
     build_id: str,
     rows: list[dict[str, Any]],
     contexts: dict[str, dict[str, Any]],
+    org_unit_ids_by_entity: dict[str, list[str]],
     tokenizer: Any,
     settings: GraphSettings,
     embedding_client: Any,
@@ -266,6 +306,13 @@ async def _build_points(
             ),
             transactional=False,
         )
+        approved_topic_names, approved_topic_ids = await writer.execute(
+            lambda connection, entity=str(row["entity_id"]): _entity_topics(
+                connection, build_id, entity
+            ),
+            transactional=False,
+        )
+        org_unit_ids = org_unit_ids_by_entity.get(str(row["entity_id"]), [])
         role_reason_codes = json_loads(row["role_reason_codes"], [])
         profile = build_semantic_profile(
             {
@@ -276,7 +323,7 @@ async def _build_points(
             },
             research_statements=statements,
             publication_mentions=mentions,
-            approved_topics=[],
+            approved_topics=approved_topic_names,
             bio=row["bio"],
             template_name=PROFILE_TEMPLATE_VERSION,
             tokenizer=tokenizer,
@@ -286,22 +333,28 @@ async def _build_points(
             "build_id": build_id,
             "entity_id": str(row["entity_id"]),
             "university_id": university_id,
-            "org_unit_ids": [],
+            "org_unit_ids": org_unit_ids,
             "role_status": row["role_status"],
             "role_reason_codes": role_reason_codes,
             "master_eligibility": row["master_eligibility"],
             "phd_eligibility": row["phd_eligibility"],
             "title_family": row["title_family"],
             "city": context.get("city"),
-            "topic_ids": [],
-            "method_topic_ids": [],
-            "application_domain_topic_ids": [],
-            "task_topic_ids": [],
+            "topic_ids": sorted(
+                topic_id
+                for values in approved_topic_ids.values()
+                for topic_id in values
+            ),
+            "method_topic_ids": approved_topic_ids.get("method", []),
+            "application_domain_topic_ids": approved_topic_ids.get(
+                "application_domain", []
+            ),
+            "task_topic_ids": approved_topic_ids.get("task", []),
             "profile_hash": profile.profile_hash,
             "embedding_provider": "siliconflow",
             "embedding_model": settings.embedding_model,
             "embedding_fingerprint": fingerprint,
-            "provenance_ref": f"catalog:entity:{row['entity_id']}",
+            "provenance_ref": f"catalog:entity:{row['entity_id']}:build:{build_id}",
         }
         await writer.execute(
             lambda connection, p=profile, payload_json=json_dumps(point_payload): connection.execute(
@@ -475,6 +528,7 @@ async def run_vector_stage(
     embedding_client: Any | None = None,
     qdrant_sink: Any | None = None,
     tokenizer: Any | None = None,
+    neo4j_writer: Any | None = None,
 ) -> dict[str, Any]:
     tokenizer = tokenizer or TransformersTokenizer(
         settings.tokenizer_model, settings.tokenizer_revision
@@ -506,6 +560,7 @@ async def run_vector_stage(
         embedding_client = EmbeddingClient(settings, metric_sink)
     if qdrant_sink is None:
         qdrant_sink = ProfessorQdrant(settings.qdrant_url)
+    neo4j_writer = neo4j_writer or write_neo4j_exports
 
     try:
         collection_name = professor_collection_name(build_id)
@@ -514,6 +569,10 @@ async def run_vector_stage(
         )
         contexts = await writer.execute(
             lambda connection: _source_context(connection, build_id),
+            transactional=False,
+        )
+        org_unit_ids_by_entity = await writer.execute(
+            lambda connection: entity_org_unit_map(connection, build_id),
             transactional=False,
         )
         fingerprint = _embedding_fingerprint(settings, tokenizer.identity)
@@ -540,6 +599,7 @@ async def run_vector_stage(
                 build_id=build_id,
                 rows=rows,
                 contexts=contexts,
+                org_unit_ids_by_entity=org_unit_ids_by_entity,
                 tokenizer=tokenizer,
                 settings=settings,
                 embedding_client=embedding_client,
@@ -567,6 +627,11 @@ async def run_vector_stage(
             transactional=False,
         )
         count = await qdrant_sink.count(collection_name)
+        await rebuild_graph_partitions(
+            writer, build_id, settings, ("node:Professor",)
+        )
+        if os.getenv("DEXT_TEST_SKIP_NEO4J") != "1":
+            await neo4j_writer(writer, build_id, settings)
         await writer.execute(
             lambda connection: _finish(
                 connection,

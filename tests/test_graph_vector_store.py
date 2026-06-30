@@ -4,6 +4,7 @@ import pytest
 
 from dext_graph.artifacts import collection_name
 from dext_graph.catalog.vector_sink import (
+    CURRENT_PROFESSOR_ALIAS,
     ProfessorQdrant,
     ProfessorVectorPoint,
     professor_collection_name,
@@ -156,3 +157,95 @@ async def test_professor_qdrant_collection_schema_indexes_and_payload():
     assert set(uploaded.vector) == {"dense", "sparse"}
     assert uploaded.payload["role_status"] == "review"
     assert "name" not in uploaded.payload
+
+
+class FakeProfessorQueryClient:
+    def __init__(self):
+        self.query_kwargs = None
+        self.alias_target = None
+        self.scroll_calls = 0
+
+    async def query_points(self, **kwargs):
+        self.query_kwargs = kwargs
+        return SimpleNamespace(
+            points=[
+                SimpleNamespace(
+                    id="entity-1",
+                    score=0.75,
+                    payload={"entity_id": "entity-1", "role_status": "included"},
+                )
+            ]
+        )
+
+    async def scroll(self, **_kwargs):
+        self.scroll_calls += 1
+        if self.scroll_calls == 1:
+            return (
+                [SimpleNamespace(id="entity-1", payload={"profile_hash": "hash-1"})],
+                "next",
+            )
+        return (
+            [SimpleNamespace(id="entity-2", payload={"profile_hash": "hash-2"})],
+            None,
+        )
+
+    async def get_aliases(self):
+        aliases = []
+        if self.alias_target is not None:
+            aliases.append(
+                SimpleNamespace(
+                    alias_name=CURRENT_PROFESSOR_ALIAS,
+                    collection_name=self.alias_target,
+                )
+            )
+        return SimpleNamespace(aliases=aliases)
+
+    async def collection_exists(self, _name):
+        return True
+
+    async def update_collection_aliases(self, *, change_aliases_operations):
+        for operation in change_aliases_operations:
+            if getattr(operation, "delete_alias", None) is not None:
+                self.alias_target = None
+            if getattr(operation, "create_alias", None) is not None:
+                self.alias_target = operation.create_alias.collection_name
+        return True
+
+
+async def test_professor_qdrant_hybrid_query_filters_payloads_and_alias():
+    fake = FakeProfessorQueryClient()
+    sink = ProfessorQdrant("http://unused", client=fake)
+    hits = await sink.query(
+        CURRENT_PROFESSOR_ALIAS,
+        dense=[1.0, 0.0],
+        sparse={"indices": [7], "values": [0.8]},
+        filters={"university_id": ["u1", "u2"], "role_status": "included"},
+        limit=5,
+        prefetch_limit=10,
+    )
+    assert hits[0].entity_id == "entity-1"
+    assert hits[0].score == 0.75
+    assert fake.query_kwargs["with_vectors"] is False
+    assert len(fake.query_kwargs["prefetch"]) == 2
+    assert len(fake.query_kwargs["query_filter"].must) == 2
+
+    payloads = [
+        item
+        async for item in sink.iter_payloads(
+            professor_collection_name("build-1"), batch_size=1
+        )
+    ]
+    assert [item["entity_id"] for item in payloads] == ["entity-1", "entity-2"]
+
+    await sink.switch_current_alias(professor_collection_name("build-1"))
+    assert await sink.resolve_current_alias() == professor_collection_name("build-1")
+    await sink.switch_current_alias(professor_collection_name("build-2"))
+    assert await sink.resolve_current_alias() == professor_collection_name("build-2")
+
+    with pytest.raises(ValueValidationError, match="unsupported professor filter"):
+        await sink.query(
+            CURRENT_PROFESSOR_ALIAS,
+            dense=[1.0, 0.0],
+            sparse={"indices": [], "values": []},
+            filters={"email": "private@example.test"},
+        )
