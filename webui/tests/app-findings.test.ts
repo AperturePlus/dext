@@ -7,7 +7,6 @@ const apiMocks = vi.hoisted(() => ({
   builds: vi.fn(),
   buildDetail: vi.fn(),
   metrics: vi.fn(),
-  graphPreview: vi.fn(),
   universityTopology: vi.fn(),
   findings: vi.fn()
 }))
@@ -56,10 +55,6 @@ describe('App findings fetch (P1-7)', () => {
       build_id: 'build-1', stage: [], source_status_counts: {}, finding_counts: {},
       role_counts: {}, title_family_counts: {},
       export_partitions: [], observations_by_source: []
-    })
-    apiMocks.graphPreview.mockResolvedValue({
-      build_id: 'build-1', limit: 300, nodes: [], links: [],
-      total_nodes: 0, total_relationships: 0, truncated: false
     })
     apiMocks.universityTopology.mockResolvedValue({
       build_id: 'build-1', universities: [], nodes: [], links: []

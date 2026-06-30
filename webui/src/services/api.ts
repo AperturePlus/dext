@@ -3,7 +3,6 @@ import type {
   BuildDetailResponse,
   BuildsResponse,
   FindingsResponse,
-  GraphPreviewResponse,
   HealthResponse,
   MetricsResponse,
   UniversityTopologyResponse
@@ -59,10 +58,6 @@ export const monitorApi = {
     request<BuildDetailResponse>(`/api/monitor/builds/${encodeURIComponent(buildId)}`),
   metrics: (buildId: string) =>
     request<MetricsResponse>(`/api/monitor/builds/${encodeURIComponent(buildId)}/metrics`),
-  graphPreview: (buildId: string, limit = 300) =>
-    request<GraphPreviewResponse>(
-      `/api/monitor/builds/${encodeURIComponent(buildId)}/graph-preview?limit=${limit}`
-    ),
   universityTopology: (buildId: string) =>
     request<UniversityTopologyResponse>(
       `/api/monitor/builds/${encodeURIComponent(buildId)}/graph-tree`

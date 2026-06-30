@@ -3,7 +3,6 @@ import type {
   BuildDetailResponse,
   BuildsResponse,
   Finding,
-  GraphPreviewResponse,
   HealthResponse,
   MetricsResponse,
   UniversityTopologyResponse
@@ -35,7 +34,6 @@ defineProps<{
   builds: BuildsResponse | null
   detail: BuildDetailResponse | null
   metrics: MetricsResponse | null
-  graph: GraphPreviewResponse | null
   topology: UniversityTopologyResponse | null
   findings: Finding[]
   selectedBuildId: string | null

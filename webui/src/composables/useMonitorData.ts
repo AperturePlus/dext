@@ -3,7 +3,6 @@ import { monitorApi } from '../services/api'
 import type {
   BuildDetailResponse,
   BuildsResponse,
-  GraphPreviewResponse,
   HealthResponse,
   MetricsResponse,
   UniversityTopologyResponse
@@ -28,7 +27,6 @@ export function useMonitorData() {
   const builds = ref<BuildsResponse | null>(null)
   const detail = ref<BuildDetailResponse | null>(null)
   const metrics = ref<MetricsResponse | null>(null)
-  const graph = ref<GraphPreviewResponse | null>(null)
   const topology = ref<UniversityTopologyResponse | null>(null)
   const selectedBuildId = ref<string | null>(null)
   const loading = ref(false)
@@ -62,19 +60,16 @@ export function useMonitorData() {
     if (!buildId) {
       detail.value = null
       metrics.value = null
-      graph.value = null
       topology.value = null
       return
     }
-    const [nextDetail, nextMetrics, nextGraph, nextTopology] = await Promise.all([
+    const [nextDetail, nextMetrics, nextTopology] = await Promise.all([
       monitorApi.buildDetail(buildId),
       monitorApi.metrics(buildId),
-      monitorApi.graphPreview(buildId),
       monitorApi.universityTopology(buildId)
     ])
     detail.value = nextDetail
     metrics.value = nextMetrics
-    graph.value = nextGraph
     topology.value = nextTopology
     // Push a throughput sample after a successful detail load. Derived from the
     // latest build summary (point-in-time counters — the sparkline visualizes
@@ -153,7 +148,6 @@ export function useMonitorData() {
     activeBuildId,
     detail,
     metrics,
-    graph,
     topology,
     loading,
     error,
