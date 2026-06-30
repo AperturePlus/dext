@@ -86,4 +86,23 @@ describe('UniversityTopologyChart', () => {
     const uni = series.data.find((n) => n.id === 'u')
     expect(uni?.name).toBe('大学A')
   })
+
+  // Regression: nodes used to render black because color was declared as a series-level
+  // itemStyle.color callback while the categories[] carried no color. ECharts resolves a
+  // force-graph node's color from its CATEGORY's itemStyle.color; with none set it falls back
+  // to the series default (#000). The fix is to put itemStyle.color on each category entry.
+  it('declares a color on every category so nodes are not left to the black default', () => {
+    const wrapper = mount(UniversityTopologyChart, {
+      props: { topology: buildTopology() },
+      global: { stubs: { ChartFrame: stubs.ChartFrame, EmptyState: stubs.EmptyState } }
+    })
+    const series = (wrapper.findComponent(stubs.ChartFrame).props('option') as {
+      series: Array<{ categories?: Array<{ name?: string; itemStyle?: { color?: string } }> }>
+    }).series[0]
+    const categories = series.categories ?? []
+    expect(categories.length).toBeGreaterThan(0)
+    for (const cat of categories) {
+      expect(cat.itemStyle?.color, `category "${cat.name}" has no itemStyle.color`).toBeTruthy()
+    }
+  })
 })

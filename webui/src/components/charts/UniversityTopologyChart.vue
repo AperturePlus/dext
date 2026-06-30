@@ -56,7 +56,13 @@ const option = computed<ChartOption>(() => ({
       layout: 'force',
       roam: true,
       draggable: true,
-      categories: KIND_CATEGORIES.map((name) => ({ name })),
+      categories: KIND_CATEGORIES.map((name, i) => ({
+        name,
+        // Color lives on the CATEGORY, not on a series-level itemStyle callback:
+        // ECharts resolves a force-graph node's fill from its category's itemStyle.color,
+        // and falls back to the series default (#000 black) when none is set.
+        itemStyle: { color: palette[i % palette.length] }
+      })),
       data: filtered.value.nodes.map((node) => ({
         id: node.id,
         name: nodeName(node),
@@ -76,11 +82,7 @@ const option = computed<ChartOption>(() => ({
         formatter: (params: { name: string }) =>
           params.name.length > 14 ? `${params.name.slice(0, 14)}…` : params.name
       },
-      lineStyle: { color: chartTheme.edge, curveness: 0.18 },
-      itemStyle: {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        color: (params: any) => palette[(Number(params.category) || 0) % palette.length]
-      }
+      lineStyle: { color: chartTheme.edge, curveness: 0.18 }
     }
   ]
 }))
