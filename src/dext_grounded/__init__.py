@@ -12,6 +12,7 @@ __version__ = "0.1.0"
 
 from dext_grounded.citation import CitationValidator
 from dext_grounded.claims import Claim, GenerationResult, GenerationWarning
+from dext_grounded.codes import GenerationWarningCode
 from dext_grounded.content import ContentClass
 from dext_grounded.fact_bundle import FactBundle, FactItem
 from dext_grounded.ports import FakeLLMGenerationPort, LLMGenerationPort
@@ -30,6 +31,7 @@ __all__ = [
     "GenerationProfile",
     "GenerationResult",
     "GenerationWarning",
+    "GenerationWarningCode",
     "LLMGenerationPort",
     "ProfileRegistry",
     "QUOTE_MAX_LEN",
