@@ -8,7 +8,8 @@ const apiMocks = vi.hoisted(() => ({
   buildDetail: vi.fn(),
   metrics: vi.fn(),
   universityTopology: vi.fn(),
-  findings: vi.fn()
+  findings: vi.fn(),
+  orgUnitProfessors: vi.fn()
 }))
 
 vi.mock('../src/services/api', () => ({
@@ -63,6 +64,11 @@ describe('App findings fetch (P1-7)', () => {
       build_id: 'build-1', universities: [], nodes: [], links: []
     })
     apiMocks.findings.mockResolvedValue({ findings: [{ id: 'f1', build_id: 'build-1', severity: 'warning', code: 'c', entity_id: null, observation_id: null, details_json: {}, resolved: false }], limit: 100 })
+    apiMocks.orgUnitProfessors.mockResolvedValue({
+      build_id: 'build-1',
+      orgunit: { graph_key: 'org', label: 'x', kind: 'college', university: 'u' },
+      professors: [], links: []
+    })
   })
   afterEach(() => {
     vi.useRealTimers()

@@ -1,21 +1,23 @@
 <script setup lang="ts">
+import { computed, ref, watch } from 'vue'
 import type {
   BuildDetailResponse,
   BuildsResponse,
   Finding,
   HealthResponse,
   MetricsResponse,
+  OrgUnitProfessorResponse,
   UniversityTopologyResponse
 } from '../types/monitor'
 import type { ThroughputSample } from '../composables/useMonitorData'
+import { monitorApi } from '../services/api'
 import UniversityTopologyChart from '../components/charts/UniversityTopologyChart.vue'
+import OrgUnitProfessorChart from '../components/charts/OrgUnitProfessorChart.vue'
 import PanelCard from '../components/features/PanelCard.vue'
 import EmptyState from '../components/primitives/EmptyState.vue'
 import ErrorPanel from '../components/primitives/ErrorPanel.vue'
-import RefreshControl from '../components/primitives/RefreshControl.vue'
-import StatusBadge from '../components/primitives/StatusBadge.vue'
 
-defineProps<{
+const props = defineProps<{
   health: HealthResponse | null
   builds: BuildsResponse | null
   detail: BuildDetailResponse | null
@@ -34,113 +36,191 @@ defineEmits<{
   togglePause: []
   selectBuild: [buildId: string]
 }>()
+
+const selectedUniversity = ref<string | null>(null)
+const selectedCollege = ref<string | null>(null)
+const subgraph = ref<OrgUnitProfessorResponse | null>(null)
+const subgraphError = ref<string | null>(null)
+
+// Colleges belonging to the selected university (from graph_tree nodes).
+const colleges = computed(() => {
+  const all = props.topology
+  if (!all || !selectedUniversity.value) return []
+  return all.nodes.filter(
+    (n) => n.category === 'OrgUnit' && n.university === selectedUniversity.value
+  )
+})
+
+function onUniversityChange(event: Event) {
+  const value = (event.target as HTMLSelectElement).value
+  selectedUniversity.value = value === '__all__' ? null : value
+  // Changing university clears the college drill-down (a college belongs to one university).
+  selectedCollege.value = null
+  subgraph.value = null
+  subgraphError.value = null
+}
+
+async function onCollegeChange(event: Event) {
+  const value = (event.target as HTMLSelectElement).value
+  selectedCollege.value = value === '__none__' ? null : value
+  subgraph.value = null
+  subgraphError.value = null
+  if (!selectedCollege.value || !props.selectedBuildId) return
+  try {
+    subgraph.value = await monitorApi.orgUnitProfessors(props.selectedBuildId, selectedCollege.value)
+  } catch (e) {
+    subgraphError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function backToUniversityView() {
+  selectedCollege.value = null
+  subgraph.value = null
+  subgraphError.value = null
+}
+
+// If the build changes out from under us, drop a stale drill-down.
+watch(
+  () => props.selectedBuildId,
+  () => {
+    selectedCollege.value = null
+    subgraph.value = null
+    subgraphError.value = null
+  }
+)
 </script>
 
 <template>
-  <main class="topology-page">
+  <main class="page">
     <header class="hero">
       <div>
-        <div class="brand-row">
-          <span class="brand-mark">dx</span>
-          <span>dext monitor</span>
-        </div>
+        <div class="brand-row"><span class="brand-mark">dx</span><span>dext monitor</span></div>
         <h1>University topology</h1>
-        <p>Full-page 大学 → 学院 graph with professor counts. Drag to rearrange, scroll to zoom.</p>
-      </div>
-      <div class="hero-actions">
-        <StatusBadge :status="health?.readable ? 'catalog_readable' : 'catalog_unavailable'" />
-        <RefreshControl
-          :paused="paused"
-          :last-updated="lastUpdated"
-          @refresh="$emit('refresh')"
-          @toggle-pause="$emit('togglePause')"
-        />
+        <p>Pick a university, then a college, to see that college's teachers and their affiliation edges.</p>
       </div>
     </header>
 
     <ErrorPanel v-if="error" :message="error" />
 
-    <PanelCard title="University topology" subtitle="大学 → 学院 with professor counts">
+    <PanelCard
+      :title="selectedCollege ? 'College subgraph' : 'University topology'"
+      :subtitle="selectedCollege ? '学院 → 教师 with AFFILIATED_WITH edges' : '大学 → 学院 with professor counts'"
+    >
       <div class="panel-body">
-        <UniversityTopologyChart :topology="topology" :min-height="640" />
+        <div class="controls">
+          <select
+            v-if="topology && topology.universities.length"
+            class="uni-select"
+            :value="selectedUniversity ?? '__all__'"
+            @change="onUniversityChange"
+          >
+            <option value="__all__">全部大学</option>
+            <option
+              v-for="uni in topology.universities"
+              :key="uni.graph_key"
+              :value="uni.graph_key"
+            >
+              {{ uni.name }} ({{ uni.orgunit_count }}学院 / {{ uni.professor_count }}教授)
+            </option>
+          </select>
+
+          <select
+            v-if="topology && topology.universities.length"
+            class="uni-select"
+            :disabled="!selectedUniversity"
+            :value="selectedCollege ?? '__none__'"
+            @change="onCollegeChange"
+          >
+            <option value="__none__">选择学院</option>
+            <option v-for="org in colleges" :key="org.id" :value="org.id">
+              {{ org.label }} ·{{ org.professor_count }}
+            </option>
+          </select>
+
+          <button v-if="selectedCollege" class="back-btn" @click="backToUniversityView">
+            返回大学视图
+          </button>
+        </div>
+
+        <ErrorPanel v-if="subgraphError" :message="subgraphError" />
+
+        <OrgUnitProfessorChart
+          v-if="selectedCollege"
+          :subgraph="subgraph"
+        />
+        <EmptyState
+          v-else-if="!topology || !topology.nodes.length"
+          title="No topology rows"
+          message="University→学院 topology is not available for the selected build yet."
+        />
+        <UniversityTopologyChart
+          v-else
+          :topology="topology"
+          :min-height="560"
+        />
       </div>
     </PanelCard>
   </main>
 </template>
 
 <style scoped>
-.topology-page {
+.page {
   width: min(1680px, calc(100% - 2rem));
   margin: 0 auto;
   padding: 1.2rem 0 2.5rem;
 }
-
-.hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 2rem;
-  padding: 1.2rem 0 1.4rem;
-}
-
+.hero { padding: 1.2rem 0 1.4rem; }
 .brand-row {
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  color: var(--accent);
-  font-size: 0.86rem;
-  font-weight: 900;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  display: flex; align-items: center; gap: 0.7rem;
+  color: var(--accent); font-size: 0.86rem; font-weight: 900;
+  letter-spacing: 0.08em; text-transform: uppercase;
 }
-
 .brand-mark {
-  display: inline-grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border: 1px solid rgba(62, 230, 181, 0.42);
-  border-radius: 12px;
-  background: rgba(62, 230, 181, 0.12);
-  color: var(--text);
+  display: inline-grid; place-items: center; width: 36px; height: 36px;
+  border: 1px solid var(--border-strong); border-radius: 12px;
+  background: var(--surface-soft); color: var(--text);
 }
-
 h1 {
-  max-width: 760px;
-  margin: 0.7rem 0 0;
-  font-size: clamp(2.25rem, 5vw, 4.4rem);
-  line-height: 0.94;
-  letter-spacing: -0.07em;
+  max-width: 760px; margin: 0.7rem 0 0;
+  font-size: clamp(2rem, 4vw, 3.4rem); line-height: 0.98; letter-spacing: -0.05em;
 }
-
-.hero p {
-  max-width: 720px;
-  margin: 0.9rem 0 0;
-  color: var(--muted);
-  font-size: 1rem;
+.hero p { max-width: 720px; margin: 0.9rem 0 0; color: var(--muted); font-size: 1rem; }
+.panel-body { padding: 1rem; }
+.controls {
+  display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; margin-bottom: 0.8rem;
 }
-
-.hero-actions {
-  display: grid;
-  justify-items: end;
-  gap: 0.85rem;
-  min-width: 320px;
+.uni-select {
+  padding: 0.5rem 0.82rem;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
 }
-
-.panel-body {
-  padding: 1rem;
+.uni-select:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(47, 107, 255, 0.35);
+  border-color: var(--accent);
 }
-
+.uni-select:disabled { opacity: 0.5; cursor: not-allowed; }
+.uni-select option { background: var(--surface); color: var(--text); }
+.back-btn {
+  padding: 0.5rem 0.9rem;
+  background: var(--surface-soft);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.back-btn:hover { background: var(--surface); border-color: var(--border-strong); }
 @media (max-width: 760px) {
-  .topology-page {
-    width: min(100% - 1rem, 1680px);
-  }
-  .hero {
-    display: grid;
-  }
-  .hero-actions {
-    justify-items: start;
-    min-width: 0;
-  }
+  .page { width: min(100% - 1rem, 1680px); }
+  .controls { flex-direction: column; align-items: stretch; }
 }
 </style>

@@ -10,8 +10,14 @@ const stubs = vi.hoisted(() => ({
 vi.mock('../src/components/charts/ChartFrame.vue', () => ({ default: stubs.ChartFrame }))
 vi.mock('../src/components/primitives/EmptyState.vue', () => ({ default: stubs.EmptyState }))
 
+const apiMocks = vi.hoisted(() => ({
+  orgUnitProfessors: vi.fn()
+}))
+vi.mock('../src/services/api', () => ({ monitorApi: apiMocks }))
+
 import TopologyPage from '../src/pages/TopologyPage.vue'
-import type { UniversityTopologyResponse } from '../src/types/monitor'
+import OrgUnitProfessorChart from '../src/components/charts/OrgUnitProfessorChart.vue'
+import type { UniversityTopologyResponse, OrgUnitProfessorResponse } from '../src/types/monitor'
 
 function buildTopology(): UniversityTopologyResponse {
   return {
@@ -27,34 +33,55 @@ function buildTopology(): UniversityTopologyResponse {
   }
 }
 
+function buildSubgraph(): OrgUnitProfessorResponse {
+  return {
+    build_id: 'b1',
+    orgunit: { graph_key: 'org', label: '学院A1', kind: 'college', university: 'u' },
+    professors: [
+      { graph_key: 'p1', name: '张三', title: '教授', title_family: '教授', role_status: 'active' }
+    ],
+    links: [{ source: 'p1', target: 'org', label: 'AFFILIATED_WITH' }]
+  }
+}
+
 const baseProps = {
   health: null, builds: null, detail: null, metrics: null, topology: null,
-  findings: [], selectedBuildId: null, error: null, paused: false, lastUpdated: null, history: []
+  findings: [], selectedBuildId: 'b1', error: null, paused: false, lastUpdated: null, history: []
 }
 
 describe('TopologyPage', () => {
-  it('renders the chart with the large full-page minHeight', () => {
+  it('renders the university chart before a college is selected', () => {
     const wrapper = mount(TopologyPage, {
       props: { ...baseProps, topology: buildTopology() },
       global: { stubs: { ChartFrame: stubs.ChartFrame, EmptyState: stubs.EmptyState } }
     })
-    const frame = wrapper.findComponent(stubs.ChartFrame)
-    expect(frame.exists()).toBe(true)
-    // Full-page canvas must be taller than the dashboard's old 390px default.
-    expect(frame.props('minHeight')).toBeGreaterThan(390)
+    const frames = wrapper.findAllComponents(stubs.ChartFrame)
+    expect(frames.length).toBeGreaterThanOrEqual(1)
+    expect(wrapper.findComponent(OrgUnitProfessorChart).exists()).toBe(false)
   })
 
-  it('emits refresh and toggle-pause from the hero RefreshControl', async () => {
+  it('enables the college dropdown after a university is chosen and drills in', async () => {
+    apiMocks.orgUnitProfessors.mockResolvedValue(buildSubgraph())
     const wrapper = mount(TopologyPage, {
       props: { ...baseProps, topology: buildTopology() },
       global: { stubs: { ChartFrame: stubs.ChartFrame, EmptyState: stubs.EmptyState } }
     })
-    // RefreshControl renders two buttons; first is "Refresh".
-    const buttons = wrapper.findAll('button')
-    await buttons[0].trigger('click')
-    await buttons[1].trigger('click')
-    expect(wrapper.emitted('refresh')).toBeTruthy()
-    expect(wrapper.emitted('togglePause')).toBeTruthy()
+    const selects = wrapper.findAll('select')
+    const uniSelect = selects[0]
+    const collegeSelect = selects[1]
+    // college dropdown disabled until a university is picked
+    expect(collegeSelect.attributes('disabled')).toBeDefined()
+
+    await uniSelect.setValue('u')
+    await nextTick()
+    expect(collegeSelect.attributes('disabled')).toBeUndefined()
+    // college options now list this university's colleges
+    expect(collegeSelect.findAll('option').some((o) => o.attributes('value') === 'org')).toBe(true)
+
+    await collegeSelect.setValue('org')
+    await flushPromises()
+    expect(apiMocks.orgUnitProfessors).toHaveBeenCalledWith('b1', 'org')
+    expect(wrapper.findComponent(OrgUnitProfessorChart).exists()).toBe(true)
   })
 
   it('shows EmptyState when topology has no nodes', () => {

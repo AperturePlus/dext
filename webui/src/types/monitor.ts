@@ -197,3 +197,29 @@ export interface UniversityTopologyResponse {
   nodes: UniversityTopologyNode[]
   links: UniversityTopologyLink[]
 }
+
+export interface ProfessorNode {
+  graph_key: string
+  name: string
+  title: string | null
+  title_family: string | null
+  role_status: string
+}
+
+export interface ProfessorLink {
+  source: string
+  target: string
+  label: 'AFFILIATED_WITH'
+}
+
+export interface OrgUnitProfessorResponse {
+  build_id: string
+  orgunit: {
+    graph_key: string
+    label: string
+    kind: string
+    university: string
+  }
+  professors: ProfessorNode[]
+  links: ProfessorLink[]
+}
