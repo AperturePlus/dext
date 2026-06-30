@@ -11,11 +11,14 @@ Both consumer modules import this package but never import each other.
 __version__ = "0.1.0"
 
 from dext_grounded.content import ContentClass
+from dext_grounded.fact_bundle import FactBundle, FactItem
 from dext_grounded.source_ref import QUOTE_MAX_LEN, SourceRef, UserContextRef
 from dext_grounded.student_context import StudentContext
 
 __all__ = [
     "ContentClass",
+    "FactBundle",
+    "FactItem",
     "QUOTE_MAX_LEN",
     "SourceRef",
     "StudentContext",
