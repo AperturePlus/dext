@@ -43,7 +43,7 @@ function buildTopology(): UniversityTopologyResponse {
 describe('UniversityTopologyChart', () => {
   it('renders all universities + orgunits + PART_OF links when no university is selected', () => {
     const wrapper = mount(UniversityTopologyChart, {
-      props: { topology: buildTopology() },
+      props: { topology: buildTopology(), selectedUniversity: null },
       global: { stubs: { ChartFrame: stubs.ChartFrame, EmptyState: stubs.EmptyState } }
     })
     const frame = wrapper.findComponent(stubs.ChartFrame)
@@ -53,22 +53,28 @@ describe('UniversityTopologyChart', () => {
     expect(series.links).toHaveLength(2)
   })
 
-  it('filters to the selected university cluster', async () => {
+  it('filters to the selected university cluster from its prop', () => {
     const wrapper = mount(UniversityTopologyChart, {
-      props: { topology: buildTopology() },
+      props: { topology: buildTopology(), selectedUniversity: 'u2' },
       global: { stubs: { ChartFrame: stubs.ChartFrame, EmptyState: stubs.EmptyState } }
     })
-    // select 大学B (graph_key 'u2') via the dropdown
-    await wrapper.find('select').setValue('u2')
     const series = (wrapper.findComponent(stubs.ChartFrame).props('option') as { series: Array<{ data: Array<{ id: string }>; links: Array<{ source: string }> }> }).series[0]
     expect(series.data.map((n) => n.id).sort()).toEqual(['org2', 'u2'])
     expect(series.links).toHaveLength(1)
     expect(series.links[0].source).toBe('org2')
   })
 
+  it('does not render its own university selector', () => {
+    const wrapper = mount(UniversityTopologyChart, {
+      props: { topology: buildTopology(), selectedUniversity: null },
+      global: { stubs: { ChartFrame: stubs.ChartFrame, EmptyState: stubs.EmptyState } }
+    })
+    expect(wrapper.find('select').exists()).toBe(false)
+  })
+
   it('shows EmptyState when topology is null', () => {
     const wrapper = mount(UniversityTopologyChart, {
-      props: { topology: null },
+      props: { topology: null, selectedUniversity: null },
       global: { stubs: { ChartFrame: stubs.ChartFrame, EmptyState: stubs.EmptyState } }
     })
     expect(wrapper.findComponent(stubs.ChartFrame).exists()).toBe(false)
@@ -77,7 +83,7 @@ describe('UniversityTopologyChart', () => {
 
   it('labels OrgUnit nodes with name + professor count', () => {
     const wrapper = mount(UniversityTopologyChart, {
-      props: { topology: buildTopology() },
+      props: { topology: buildTopology(), selectedUniversity: null },
       global: { stubs: { ChartFrame: stubs.ChartFrame, EmptyState: stubs.EmptyState } }
     })
     const series = (wrapper.findComponent(stubs.ChartFrame).props('option') as { series: Array<{ data: Array<{ id: string; name: string }> }> }).series[0]
@@ -93,7 +99,7 @@ describe('UniversityTopologyChart', () => {
   // to the series default (#000). The fix is to put itemStyle.color on each category entry.
   it('declares a color on every category so nodes are not left to the black default', () => {
     const wrapper = mount(UniversityTopologyChart, {
-      props: { topology: buildTopology() },
+      props: { topology: buildTopology(), selectedUniversity: null },
       global: { stubs: { ChartFrame: stubs.ChartFrame, EmptyState: stubs.EmptyState } }
     })
     const series = (wrapper.findComponent(stubs.ChartFrame).props('option') as {

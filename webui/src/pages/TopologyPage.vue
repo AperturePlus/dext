@@ -83,6 +83,7 @@ function backToUniversityView() {
 watch(
   () => props.selectedBuildId,
   () => {
+    selectedUniversity.value = null
     selectedCollege.value = null
     subgraph.value = null
     subgraphError.value = null
@@ -156,6 +157,7 @@ watch(
         <UniversityTopologyChart
           v-else
           :topology="topology"
+          :selected-university="selectedUniversity"
           :min-height="560"
         />
       </div>

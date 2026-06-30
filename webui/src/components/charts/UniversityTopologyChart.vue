@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import type { UniversityTopologyResponse } from '../../types/monitor'
 import ChartFrame from './ChartFrame.vue'
 import EmptyState from '../primitives/EmptyState.vue'
@@ -8,11 +8,9 @@ import type { ChartOption } from './options'
 
 const props = defineProps<{
   topology: UniversityTopologyResponse | null
+  selectedUniversity: string | null
   minHeight?: number
 }>()
-
-// null = show all universities. A university graph_key filters to its cluster.
-const selectedUniversity = ref<string | null>(null)
 
 const KIND_CATEGORIES = ['University', 'college', 'institute', 'department', 'hospital']
 
@@ -25,10 +23,10 @@ function categoryIndex(node: { category: string; kind?: string }): number {
 const filtered = computed(() => {
   const all = props.topology
   if (!all) return { nodes: [], links: [] }
-  if (!selectedUniversity.value) return { nodes: all.nodes, links: all.links }
-  const keep = new Set<string>([selectedUniversity.value])
+  if (!props.selectedUniversity) return { nodes: all.nodes, links: all.links }
+  const keep = new Set<string>([props.selectedUniversity])
   for (const n of all.nodes) {
-    if (n.university === selectedUniversity.value) keep.add(n.id)
+    if (n.university === props.selectedUniversity) keep.add(n.id)
   }
   return {
     nodes: all.nodes.filter((n) => keep.has(n.id)),
@@ -86,30 +84,10 @@ const option = computed<ChartOption>(() => ({
     }
   ]
 }))
-
-function onSelect(event: Event) {
-  const value = (event.target as HTMLSelectElement).value
-  selectedUniversity.value = value === '__all__' ? null : value
-}
 </script>
 
 <template>
   <div>
-    <select
-      v-if="topology && topology.universities.length"
-      class="uni-select"
-      :value="selectedUniversity ?? '__all__'"
-      @change="onSelect"
-    >
-      <option value="__all__">全部大学</option>
-      <option
-        v-for="uni in topology.universities"
-        :key="uni.graph_key"
-        :value="uni.graph_key"
-      >
-        {{ uni.name }} ({{ uni.orgunit_count }}学院 / {{ uni.professor_count }}教授)
-      </option>
-    </select>
     <ChartFrame
       v-if="topology && topology.nodes.length"
       :option="option"
@@ -122,30 +100,3 @@ function onSelect(event: Event) {
     />
   </div>
 </template>
-
-<style scoped>
-.uni-select {
-  margin-bottom: 0.6rem;
-  padding: 0.5rem 0.82rem;
-  background: var(--surface-strong);
-  color: var(--text);
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  font-size: 0.82rem;
-  font-weight: 700;
-  cursor: pointer;
-  appearance: none;
-  -webkit-appearance: none;
-}
-
-.uni-select:focus {
-  outline: none;
-  box-shadow: 0 0 0 2px rgba(47, 107, 255, 0.35);
-  border-color: var(--accent);
-}
-
-.uni-select option {
-  background: var(--surface-strong);
-  color: var(--text);
-}
-</style>

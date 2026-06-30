@@ -63,10 +63,12 @@ export const monitorApi = {
     request<UniversityTopologyResponse>(
       `/api/monitor/builds/${encodeURIComponent(buildId)}/graph-tree`
     ),
-  orgUnitProfessors: (buildId: string, orgGraphKey: string) =>
-    request<OrgUnitProfessorResponse>(
-      `/api/monitor/builds/${encodeURIComponent(buildId)}/orgunit/${encodeURIComponent(orgGraphKey)}/professors`
-    ),
+  orgUnitProfessors: (buildId: string, orgGraphKey: string) => {
+    const params = new URLSearchParams({ org_graph_key: orgGraphKey })
+    return request<OrgUnitProfessorResponse>(
+      `/api/monitor/builds/${encodeURIComponent(buildId)}/orgunit-professors?${params.toString()}`
+    )
+  },
   findings: (buildId?: string, severity?: string) => {
     const params = new URLSearchParams()
     if (buildId) params.set('build_id', buildId)

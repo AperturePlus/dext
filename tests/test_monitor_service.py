@@ -419,10 +419,10 @@ def _write_tree_catalog(path: Path) -> str:
         )
         rows = [
             ("node:Build", "build", "node", "Build", None, None, '{"id":"build-1","graph_key":"build-1"}'),
-            ("node:University", "u", "node", "University", None, None, '{"graph_key":"u","name":"大学A","logical_id":"univ:a"}'),
-            ("node:University", "u2", "node", "University", None, None, '{"graph_key":"u2","name":"大学B","logical_id":"univ:b"}'),
-            ("node:OrgUnit", "org", "node", "OrgUnit", None, None, '{"graph_key":"org","name":"学院A1","kind":"college"}'),
-            ("node:OrgUnit", "org2", "node", "OrgUnit", None, None, '{"graph_key":"org2","name":"研究所B1","kind":"institute"}'),
+            ("node:University", "row-u", "node", "University", None, None, '{"graph_key":"u","name":"大学A","logical_id":"univ:a"}'),
+            ("node:University", "row-u2", "node", "University", None, None, '{"graph_key":"u2","name":"大学B","logical_id":"univ:b"}'),
+            ("node:OrgUnit", "row-org", "node", "OrgUnit", None, None, '{"graph_key":"org","name":"学院A1","kind":"college"}'),
+            ("node:OrgUnit", "row-org2", "node", "OrgUnit", None, None, '{"graph_key":"org2","name":"研究所B1","kind":"institute"}'),
             ("rel:PART_OF", "org|u", "relationship", "PART_OF", "org", "u", '{"graph_key":"r1"}'),
             ("rel:PART_OF", "org2|u2", "relationship", "PART_OF", "org2", "u2", '{"graph_key":"r1b"}'),
             ("rel:AFFILIATED_WITH", "p1|org", "relationship", "AFFILIATED_WITH", "p1", "org", '{"graph_key":"a1"}'),
@@ -786,11 +786,11 @@ def _write_professor_catalog(path: Path) -> str:
     connection = sqlite3.connect(path)
     try:
         prof_rows = [
-            ("node:Professor", "p1", "node", "Professor", None, None,
+            ("node:Professor", "row-p1", "node", "Professor", None, None,
              '{"graph_key":"p1","name":"张三","title":"教授","title_family":"教授","role_status":"active"}'),
-            ("node:Professor", "p2", "node", "Professor", None, None,
+            ("node:Professor", "row-p2", "node", "Professor", None, None,
              '{"graph_key":"p2","name":"李四","title":"副教授","title_family":"副教授","role_status":"active"}'),
-            ("node:Professor", "p3", "node", "Professor", None, None,
+            ("node:Professor", "row-p3", "node", "Professor", None, None,
              '{"graph_key":"p3","name":"王五","title":"讲师","title_family":"讲师","role_status":"active"}'),
         ]
         for row in prof_rows:
@@ -945,7 +945,7 @@ async def test_monitor_orgunit_professors_endpoint(tmp_path: Path) -> None:
     build_id = _write_professor_catalog(catalog)
     app = create_app(_settings(catalog))
     async with TestClient(TestServer(app)) as client:
-        url = f"/api/monitor/builds/{build_id}/orgunit/org/professors"
+        url = f"/api/monitor/builds/{build_id}/orgunit-professors?org_graph_key=org"
         resp = await client.get(url)
         assert resp.status == 200
         body = await resp.json()
@@ -955,6 +955,19 @@ async def test_monitor_orgunit_professors_endpoint(tmp_path: Path) -> None:
         etag = resp.headers["ETag"]
         resp2 = await client.get(url, headers={"If-None-Match": etag})
         assert resp2.status == 304
+
+        legacy_url = f"/api/monitor/builds/{build_id}/orgunit/org/professors"
+        legacy_resp = await client.get(legacy_url)
+        assert legacy_resp.status == 200
+        legacy_body = await legacy_resp.json()
+        assert legacy_body["data"]["orgunit"]["graph_key"] == "org"
+        assert {p["graph_key"] for p in legacy_body["data"]["professors"]} == {"p1", "p2"}
+
+        missing_resp = await client.get(f"/api/monitor/builds/{build_id}/orgunit-professors")
+        assert missing_resp.status == 400
+        missing_body = await missing_resp.json()
+        assert missing_body["error"]["type"] == "ValueError"
+        assert "org_graph_key" in missing_body["error"]["message"]
 
 
 @pytest.mark.asyncio

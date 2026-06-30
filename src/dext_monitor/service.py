@@ -518,7 +518,8 @@ class MonitorService:
 
             org_row = connection.execute(
                 "SELECT payload_json FROM graph_export_rows "
-                "WHERE build_id=? AND partition_key='node:OrgUnit' AND row_key=?",
+                "WHERE build_id=? AND partition_key='node:OrgUnit' "
+                "AND json_extract(payload_json, '$.graph_key')=?",
                 (build_id, org_graph_key),
             ).fetchone()
             org_payload = json_loads(org_row["payload_json"], {}) if org_row else {}
@@ -536,7 +537,7 @@ class MonitorService:
                 prof_rows = connection.execute(
                     f"SELECT payload_json FROM graph_export_rows "
                     f"WHERE build_id=? AND partition_key='node:Professor' "
-                    f"AND row_key IN ({placeholders})",
+                    f"AND json_extract(payload_json, '$.graph_key') IN ({placeholders})",
                     (build_id, *professor_keys),
                 )
                 for row in prof_rows:

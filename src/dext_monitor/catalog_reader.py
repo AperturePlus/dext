@@ -9,7 +9,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-SUPPORTED_SCHEMA_VERSION = 3
+SUPPORTED_SCHEMA_VERSIONS = frozenset({3, 4, 5, 6})
+SUPPORTED_SCHEMA_VERSION = 6
 
 
 class MonitorCatalogError(RuntimeError):
@@ -62,7 +63,7 @@ class CatalogReader:
 
     def require_supported_schema(self, connection: sqlite3.Connection) -> int:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version != SUPPORTED_SCHEMA_VERSION:
+        if version not in SUPPORTED_SCHEMA_VERSIONS:
             raise MonitorCatalogError(
                 f"catalog schema version {version} is incompatible with monitor schema "
                 f"{SUPPORTED_SCHEMA_VERSION}"

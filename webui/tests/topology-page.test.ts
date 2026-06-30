@@ -23,13 +23,19 @@ function buildTopology(): UniversityTopologyResponse {
   return {
     build_id: 'b1',
     universities: [
-      { graph_key: 'u', name: '大学A', logical_id: 'univ:a', orgunit_count: 1, professor_count: 2 }
+      { graph_key: 'u', name: '大学A', logical_id: 'univ:a', orgunit_count: 1, professor_count: 2 },
+      { graph_key: 'u2', name: '大学B', logical_id: 'univ:b', orgunit_count: 1, professor_count: 1 }
     ],
     nodes: [
       { id: 'u', label: '大学A', category: 'University', professor_count: 2, orgunit_count: 1 },
-      { id: 'org', label: '学院A1', category: 'OrgUnit', kind: 'college', professor_count: 2, university: 'u' }
+      { id: 'u2', label: '大学B', category: 'University', professor_count: 1, orgunit_count: 1 },
+      { id: 'org', label: '学院A1', category: 'OrgUnit', kind: 'college', professor_count: 2, university: 'u' },
+      { id: 'org2', label: '学院B1', category: 'OrgUnit', kind: 'college', professor_count: 1, university: 'u2' }
     ],
-    links: [{ source: 'org', target: 'u', label: 'PART_OF' }]
+    links: [
+      { source: 'org', target: 'u', label: 'PART_OF' },
+      { source: 'org2', target: 'u2', label: 'PART_OF' }
+    ]
   }
 }
 
@@ -49,6 +55,12 @@ const baseProps = {
   findings: [], selectedBuildId: 'b1', error: null, paused: false, lastUpdated: null, history: []
 }
 
+function chartNodeIds(wrapper: ReturnType<typeof mount>): string[] {
+  const frame = wrapper.findComponent(stubs.ChartFrame)
+  const option = frame.props('option') as { series: Array<{ data: Array<{ id: string }> }> }
+  return option.series[0].data.map((n) => n.id).sort()
+}
+
 describe('TopologyPage', () => {
   it('renders the university chart before a college is selected', () => {
     const wrapper = mount(TopologyPage, {
@@ -58,6 +70,17 @@ describe('TopologyPage', () => {
     const frames = wrapper.findAllComponents(stubs.ChartFrame)
     expect(frames.length).toBeGreaterThanOrEqual(1)
     expect(wrapper.findComponent(OrgUnitProfessorChart).exists()).toBe(false)
+  })
+
+  it('renders only the page-level university selector and the college selector', () => {
+    const wrapper = mount(TopologyPage, {
+      props: { ...baseProps, topology: buildTopology() },
+      global: { stubs: { ChartFrame: stubs.ChartFrame, EmptyState: stubs.EmptyState } }
+    })
+    const selects = wrapper.findAll('select')
+    expect(selects).toHaveLength(2)
+    expect(selects[0].find('option[value="__all__"]').exists()).toBe(true)
+    expect(selects[1].find('option[value="__none__"]').exists()).toBe(true)
   })
 
   it('enables the college dropdown after a university is chosen and drills in', async () => {
@@ -77,11 +100,58 @@ describe('TopologyPage', () => {
     expect(collegeSelect.attributes('disabled')).toBeUndefined()
     // college options now list this university's colleges
     expect(collegeSelect.findAll('option').some((o) => o.attributes('value') === 'org')).toBe(true)
+    expect(collegeSelect.findAll('option').some((o) => o.attributes('value') === 'org2')).toBe(false)
+    expect(chartNodeIds(wrapper)).toEqual(['org', 'u'])
 
     await collegeSelect.setValue('org')
     await flushPromises()
     expect(apiMocks.orgUnitProfessors).toHaveBeenCalledWith('b1', 'org')
     expect(wrapper.findComponent(OrgUnitProfessorChart).exists()).toBe(true)
+  })
+
+  it('selecting all universities clears the college drill-down and restores the full graph', async () => {
+    apiMocks.orgUnitProfessors.mockResolvedValue(buildSubgraph())
+    const wrapper = mount(TopologyPage, {
+      props: { ...baseProps, topology: buildTopology() },
+      global: { stubs: { ChartFrame: stubs.ChartFrame, EmptyState: stubs.EmptyState } }
+    })
+    const [uniSelect, collegeSelect] = wrapper.findAll('select')
+
+    await uniSelect.setValue('u')
+    await nextTick()
+    await collegeSelect.setValue('org')
+    await flushPromises()
+    expect(wrapper.findComponent(OrgUnitProfessorChart).exists()).toBe(true)
+
+    await uniSelect.setValue('__all__')
+    await nextTick()
+    expect(wrapper.findComponent(OrgUnitProfessorChart).exists()).toBe(false)
+    expect(collegeSelect.element.value).toBe('__none__')
+    expect(collegeSelect.attributes('disabled')).toBeDefined()
+    expect(chartNodeIds(wrapper)).toEqual(['org', 'org2', 'u', 'u2'])
+  })
+
+  it('changing builds clears stale university, college, and subgraph state', async () => {
+    apiMocks.orgUnitProfessors.mockResolvedValue(buildSubgraph())
+    const wrapper = mount(TopologyPage, {
+      props: { ...baseProps, topology: buildTopology() },
+      global: { stubs: { ChartFrame: stubs.ChartFrame, EmptyState: stubs.EmptyState } }
+    })
+    const [uniSelect, collegeSelect] = wrapper.findAll('select')
+
+    await uniSelect.setValue('u')
+    await nextTick()
+    await collegeSelect.setValue('org')
+    await flushPromises()
+    expect(wrapper.findComponent(OrgUnitProfessorChart).exists()).toBe(true)
+
+    await wrapper.setProps({ selectedBuildId: 'b2' })
+    await nextTick()
+    expect(uniSelect.element.value).toBe('__all__')
+    expect(collegeSelect.element.value).toBe('__none__')
+    expect(collegeSelect.attributes('disabled')).toBeDefined()
+    expect(wrapper.findComponent(OrgUnitProfessorChart).exists()).toBe(false)
+    expect(chartNodeIds(wrapper)).toEqual(['org', 'org2', 'u', 'u2'])
   })
 
   it('shows EmptyState when topology has no nodes', () => {
