@@ -31,22 +31,34 @@ PlanChangeCard
   proposed_fields
   rationale
   source_refs: list[SourceRef]
-  validation_status: "pending|accepted|rejected"
+  # 三个独立状态轴，不混用单一 enum
+  validation_status: "pending|passed|rejected"      # 机器校验：越界/删必做/违反时间模型/缺依据/冲突
+  approval_status: "pending|accepted|declined"       # 用户审批：用户主动 accept/decline
+  application_status: "not_applied|applied|failed"   # 实际落地：accept 后由 applier 应用
 ```
 
 `rationale` 必须基于备赛流程/方法指南片段或用户上下文；`source_refs` 可回溯。无来源的改动理由由 `CitationValidator` 降级。
+
+三状态轴的生命周期：
+
+1. 生成时三轴初始化：`validation_status=pending`、`approval_status=pending`、`application_status=not_applied`。
+2. validator 先跑：`passed` 才进入用户审批；`rejected` 直接终止，不向用户展示可落地选项。
+3. 用户对 `validation_status=passed` 的卡 `accept`/`decline`：`declined` 终止，不落地。
+4. 仅 `validation_status=passed` 且 `approval_status=accepted` 的卡由 `plan_change_applier` 原子应用，应用成功置 `application_status=applied`，失败置 `failed` 并回滚。
+
+这样能区分“校验通过待审批”“用户主动拒绝”“已应用/应用失败”，不再用单一 enum 表达三个正交维度。
 
 ## 4. 校验与落地边界
 
 所有改动必须先经过 validator，用户 accept 后才应用：
 
-- 越界日期：拒绝。
-- 删除必做任务：拒绝。
-- 违反时间模型（提交型误删 `defense_prep`、窗口型超出窗口）：拒绝。
-- 缺少依据（无 `source_refs` 且非 `advice`）：拒绝或降级为建议。
-- 与考试/不可用时间冲突：拒绝或降级为建议。
+- 越界日期：`validation_status=rejected`。
+- 删除必做任务：`validation_status=rejected`。
+- 违反时间模型（提交型误删 `defense_prep`、窗口型超出窗口）：`validation_status=rejected`。
+- 缺少依据（无 `source_refs` 且非 `advice`）：`validation_status=rejected` 或降级为建议。
+- 与考试/不可用时间冲突：`validation_status=rejected` 或降级为建议。
 
-被拒绝的卡 `validation_status=rejected`，不落地。accept 的卡由 `plan_change_applier` 原子应用，失败回滚。
+`validation_status=rejected` 的卡不进入用户审批，不落地。仅 `validation_status=passed` 且 `approval_status=accepted` 的卡由 `plan_change_applier` 原子应用，应用失败置 `application_status=failed` 并回滚。
 
 ## 5. 受约束生成
 

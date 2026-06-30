@@ -88,23 +88,27 @@ RecommendationError
 ```text
 BuildSnapshotPort
   get_snapshot() -> ActiveBuildSnapshot
-  refresh() -> ActiveBuildSnapshot | null
+  refresh() -> ActiveBuildSnapshot | null      # 刷新失败返回 null，不污染当前已验证 snapshot
 
 VectorSearchPort
-  hybrid_recall(query_vector, filters, oversample, profile_version) -> list[VectorHit]
-  alias_readback() -> AliasReadback
-  count_readback(filter) -> int
+  hybrid_recall(snapshot, query_vector, filters, oversample, profile_version) -> list[VectorHit]
+  alias_readback(snapshot) -> AliasReadback
+  count_readback(snapshot, filter) -> int
 
 ProfessorFactPort
-  get_detail(entity_id, include_contacts, viewer_permissions) -> ProfessorDetail
-  hydrate(entity_ids) -> dict[entity_id, ProfessorFact]
+  get_detail(snapshot, entity_id, include_contacts, viewer_permissions) -> ProfessorDetail
+  hydrate(snapshot, entity_ids) -> dict[entity_id, ProfessorFact]
 
 QueryEmbeddingPort
-  embed(query_text) -> EmbeddingResult  # 含 fingerprint 校验
+  embed(snapshot, query_text) -> EmbeddingResult  # 含与 snapshot.embedding_fingerprint 比对
 
 LLMGenerationPort
   # re-export 共享契约，不在本模块重复定义
 ```
+
+**snapshot 显式入参**：`hybrid_recall`/`hydrate`/`get_detail`/`alias_readback`/`count_readback`/`embed` 都显式接收 `ActiveBuildSnapshot`（或其稳定句柄 `build_id` + 物理 collection/子图标识）。这样把“单次请求共享同一 snapshot”从约定提升为接口契约——Qdrant alias 或 Neo4j pointer 在请求中途切换时，各端口用的是请求开始时固定的物理资源，不会混用新旧 build。
+
+调用方（recommend core / detail service / 生成服务）在请求入口取一次 snapshot 并固定，全程传同一份；端口不得在内部自行 `get_snapshot()` 或 `refresh()`，避免隐式刷新导致混合版本。`refresh()` 失败返回 `null`，调用方据此保持旧 snapshot 或返回 `active_build_inconsistent`，绝不把半刷新状态并入旧 snapshot。
 
 `ProfessorDetail` 在本阶段定义为只读容器（阶段 4 填充组装逻辑）；`EmbeddingResult` 必须携带与 `ActiveBuildSnapshot.embedding_fingerprint` 比对所需的字段。
 

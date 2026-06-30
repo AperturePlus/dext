@@ -16,18 +16,19 @@
 
 ```text
 RecommendRequest
+  -> ReadinessService.get_snapshot()（请求入口固定一次，全程传同一份）
   -> validate/normalize
   -> QueryUnderstanding + intent routing (new_search 路径)
-  -> query embedding (QueryEmbeddingPort)
-  -> VectorSearchPort dense+sparse hybrid recall (RRF)
+  -> query embedding (QueryEmbeddingPort, snapshot 显式入参)
+  -> VectorSearchPort dense+sparse hybrid recall (RRF, snapshot 显式入参)
   -> payload pre-filter
-  -> ProfessorFactPort hydration and final filter
+  -> ProfessorFactPort hydration and final filter (snapshot 显式入参)
   -> deterministic rerank
   -> explanation and card assembly
   -> response validation
 ```
 
-各步骤落在独立模块，`core/service.py` 只做编排，不下沉业务。
+各步骤落在独立模块，`core/service.py` 只做编排，不下沉业务。snapshot 在请求入口固定后传入所有数据端口（见 foundations §5），请求中途 alias/pointer 切换不影响本次请求，避免混用新旧 build。
 
 ## 3. 模块分解
 

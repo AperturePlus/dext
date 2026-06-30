@@ -213,8 +213,12 @@ PlanChangeCard
   proposed_fields
   rationale
   source_refs
-  validation_status: "pending|accepted|rejected"
+  validation_status: "pending|passed|rejected"      # 机器校验
+  approval_status: "pending|accepted|declined"      # 用户审批
+  application_status: "not_applied|applied|failed"   # 实际落地
 ```
+
+三状态轴独立：validator 先跑（`passed` 才进审批），用户对 `passed` 的卡 `accept`/`decline`，仅 `passed`+`accepted` 的卡由 applier 原子应用。详见 [plan-assistant 子 spec](2026-06-30-dext-competition-06-plan-assistant-design.md)。
 
 所有改动必须先经过 validator，用户 accept 后才应用。越界日期、删除必做任务、违反时间模型、缺少依据或与考试/不可用时间冲突的卡片必须拒绝或降级为建议。
 

@@ -34,7 +34,7 @@ ProfessorDetail
 
 ## 3. 组装流程
 
-`ProfessorFactPort.get_detail(entity_id, include_contacts, viewer_permissions)` 按发布产物协议组装：
+`ProfessorFactPort.get_detail(snapshot, entity_id, include_contacts, viewer_permissions)` 按发布产物协议组装：
 
 1. 按 `entity_id` 从 catalog 发布 schema 读取 identity / profile / readable 字段。
 2. 读取 affiliations、approved topics、research statements、selected publication mentions。
@@ -42,7 +42,7 @@ ProfessorDetail
 4. 规范化 source URL 与 provenance refs。
 5. 按 `viewer_permissions` 与 `include_contacts` 决定是否附加联系方式（默认列表结果不返回 email/phone）。
 
-`hydrate(entity_ids)` 为召回后的批量 hydration，返回 `entity_id -> ProfessorFact`，供 recommend core 做最终过滤与解释。
+`hydrate(snapshot, entity_ids)` 为召回后的批量 hydration，返回 `entity_id -> ProfessorFact`，供 recommend core 做最终过滤与解释。`snapshot` 由调用方在请求入口固定，全程传同一份（见 foundations §5）。
 
 ## 4. evidence 与 provenance
 

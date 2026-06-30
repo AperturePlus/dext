@@ -105,11 +105,46 @@ LLMGenerationPort
   ) -> GenerationResult
 
 GenerationResult
-  content_class: "fact|advice|uncertain"
   output: dict | str             # json_schema 非空时为 dict，否则为 markdown 文本
-  cited_refs: list[SourceRef]     # LLM 自报引用
+  claims: list[Claim]             # 逐条断言分类，见 §4.1；纯建议场景可为空
+  cited_refs: list[SourceRef]     # 事实证据引用，来自 FactBundle
   warnings: list[GenerationWarning]
 ```
+
+### 4.1 Claim（逐条分类）
+
+输出按断言拆分为 `Claim`，每条独立分类并独立挂引用，避免“事实+建议+不确定”混合输出被压成单一全局 `content_class`：
+
+```text
+Claim
+  text: str                        # 该条断言原文片段
+  content_class: "fact|advice|uncertain"
+  fact_refs: list[SourceRef]       # content_class=fact 时必须非空，指向 FactBundle
+  user_context_ref: UserContextRef | null  # 引用用户背景，见 §4.2
+```
+
+- `fact`：断言来自事实包或官方链接，`fact_refs` 必须非空且每条都能在 `FactBundle.source_refs` 内找到。
+- `advice`：基于流程/方法论与用户上下文的建议，可不挂 `fact_refs`，但引用用户背景时必须挂 `user_context_ref`。
+- `uncertain`：需要当届通知或本校文件复核的信息；不得挂 `fact_refs` 伪装确定。
+
+`GenerationResult` 不再保留全局 `content_class`；聚合展示由调用方按 `claims` 的 `content_class` 集合决定（如全 `fact` 才标 fact，含 `uncertain` 则整体标不确定）。
+
+### 4.2 UserContextRef
+
+用户背景中的经历（科研、竞赛、阶段、专业等）是合法的可引用输入，但不是事实包证据，不能塞进 `SourceRef`（`SourceRef` 专指 catalog/knowledge-base 事实证据）。新增 `UserContextRef` 表达对 `StudentContext` 字段的引用：
+
+```text
+UserContextRef
+  field: str                       # StudentContext 字段名，如 research_interests / competition_experience_summary
+  value_bucket: str | null        # 脱敏分桶值（如经验等级、阶段桶），不存原值
+  quote_or_summary: str            # 忠实摘要，长度有上限
+```
+
+约束：
+
+- `UserContextRef` 只能引用本次请求传入的 `StudentContext` 字段，不得引用训练记忆或历史档案。
+- `value_bucket` 必须是脱敏分桶，不记录 GPA/排名原值。
+- 一条 `Claim` 可同时挂 `fact_refs`（事实支撑）与 `user_context_ref`（用户背景支撑），二者独立校验。
 
 实现要求：
 
@@ -127,11 +162,13 @@ GenerationResult
 
 ### 5.2 引用校验 `CitationValidator`
 
-LLM 返回的每条断言性输出必须能映射回 `FactBundle` 中至少一个 `SourceRef`：
+逐 `Claim` 校验，按 `content_class` 区分引用要求：
 
-- 校验通过：保留输出，附 `cited_refs`。
-- 断言无对应引用：降级为 `uncertain` 或剔除该断言，并产出 `uncited_claim` warning。
-- LLM 自报引用不在 `FactBundle.source_refs` 集合内：标记 `fabricated_ref` warning 并剔除该断言。
+- `content_class=fact`：`fact_refs` 必须非空，且每条都能在 `FactBundle.source_refs` 集合内找到；否则降级为 `uncertain` 并产出 `uncited_claim` warning，或剔除该断言。
+- `content_class=advice`：可不挂 `fact_refs`；若引用用户背景，必须挂 `user_context_ref`，且 `field` 必须是本次请求 `StudentContext` 实际传入的字段，否则产出 `uncited_user_context` warning 并剔除该用户背景引用。
+- `content_class=uncertain`：不得挂 `fact_refs` 伪装确定事实。
+- LLM 自报 `fact_ref` 不在 `FactBundle.source_refs` 集合内：标记 `fabricated_ref` warning 并剔除该断言。
+- LLM 自报 `user_context_ref.field` 不在传入 `StudentContext` 字段集合内：标记 `fabricated_user_context` warning 并剔除。
 - 事实冲突（同一字段多个不一致来源）：保留冲突并在输出中显式标注，不得静默选一边。
 
 ## 6. 安全边界
@@ -168,10 +205,12 @@ LLM 返回的每条断言性输出必须能映射回 `FactBundle` 中至少一�
 - 输出无法解析为声明的 JSON schema：返回 `generation_parse_error`，不交付半结构化结果。
 - 事实包为空却要求 `fact` 输出：返回 `insufficient_facts`，不补编事实。
 - 引用校验全部失败：返回 `no_grounded_output`，不返回无引用的纯 LLM 文本。
+- `StudentContext` 传入为空但 LLM 自报 `user_context_ref`：返回 `fabricated_user_context`，不交付引用了不存在背景的断言。
 
 ## 9. 验收标准
 
 - 两个模块各自的 grounded 能力实现都通过本文定义的 `LLMGenerationPort`、`CitationValidator`、`SafetyGuard` 接口，不在 handler 中内联 prompt 或安全规则。
+- 输出按 `Claim` 逐条分类，混合 fact/advice/uncertain 时不被压成单一全局 `content_class`；`fact` 类 `fact_refs` 非空，`advice` 引用用户背景时挂 `user_context_ref`。
 - 评测样本中 `grounded generation precision` 与 `no-probability-claim rate` 同时达标；样本绑定 `generation_profile_version`。
 - 共享契约有 import 边界测试：`dext_recommend` 与 `dext_competition` 都能 import 共享契约，但互相不 import。
-- `StudentContext` 原值不出现在任何日志、prompt 明文或事实层；`SourceRef` 的 `quote_or_summary` 有长度上限。
+- `StudentContext` 原值不出现在任何日志、prompt 明文或事实层；`SourceRef` 与 `UserContextRef` 的 `quote_or_summary` 有长度上限，`UserContextRef.value_bucket` 只存脱敏分桶。
