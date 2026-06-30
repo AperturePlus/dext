@@ -7,6 +7,7 @@ import type { ChartOption } from './options'
 
 const props = defineProps<{
   topology: UniversityTopologyResponse | null
+  minHeight?: number
 }>()
 
 // null = show all universities. A university graph_key filters to its cluster.
@@ -103,7 +104,11 @@ function onSelect(event: Event) {
         {{ uni.name }} ({{ uni.orgunit_count }}学院 / {{ uni.professor_count }}教授)
       </option>
     </select>
-    <ChartFrame v-if="topology && topology.nodes.length" :option="option" :min-height="390" />
+    <ChartFrame
+      v-if="topology && topology.nodes.length"
+      :option="option"
+      :min-height="minHeight ?? 390"
+    />
     <EmptyState
       v-else
       title="No topology rows"
