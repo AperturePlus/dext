@@ -1,6 +1,14 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { nextTick } from 'vue'
+
+const stubs = vi.hoisted(() => ({
+  ChartFrame: { name: 'ChartFrame', props: ['option', 'minHeight'], template: '<div class="chart-stub" />' },
+  EmptyState: { name: 'EmptyState', props: ['title', 'message'], template: '<div class="empty-stub">{{ title }}</div>' }
+}))
+
+vi.mock('../src/components/charts/ChartFrame.vue', () => ({ default: stubs.ChartFrame }))
+vi.mock('../src/components/primitives/EmptyState.vue', () => ({ default: stubs.EmptyState }))
 
 const apiMocks = vi.hoisted(() => ({
   health: vi.fn(),

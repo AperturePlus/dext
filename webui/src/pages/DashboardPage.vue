@@ -12,7 +12,6 @@ import type { ThroughputSample } from '../composables/useMonitorData'
 import BuildStageTimeline from '../components/charts/BuildStageTimeline.vue'
 import ExportPartitionChart from '../components/charts/ExportPartitionChart.vue'
 import FindingSummaryChart from '../components/charts/FindingSummaryChart.vue'
-import UniversityTopologyChart from '../components/charts/UniversityTopologyChart.vue'
 import RoleDistributionChart from '../components/charts/RoleDistributionChart.vue'
 import SourceTaskChart from '../components/charts/SourceTaskChart.vue'
 import ThroughputSparkline from '../components/charts/ThroughputSparkline.vue'
@@ -141,12 +140,6 @@ defineEmits<{
             </div>
           </PanelCard>
 
-          <PanelCard title="University topology" subtitle="大学 → 学院 with professor counts">
-            <div class="panel-body">
-              <UniversityTopologyChart :topology="topology" />
-            </div>
-          </PanelCard>
-
           <section class="split">
             <PanelCard title="Export partitions" subtitle="Largest node/relationship partitions">
               <div class="panel-body">
@@ -249,10 +242,15 @@ h1 {
   align-items: start;
 }
 
+.layout > * {
+  min-width: 0;
+}
+
 .sidebar,
 .content {
   display: grid;
   gap: 1rem;
+  min-width: 0;
 }
 
 .split {
@@ -261,9 +259,22 @@ h1 {
   gap: 1rem;
 }
 
+.split > * {
+  min-width: 0;
+}
+
+.metric-grid > * {
+  min-width: 0;
+}
+
 .run-grid {
   display: grid;
   gap: 0.8rem;
+}
+
+:deep(.panel-body) {
+  min-width: 0;
+  overflow: hidden;
 }
 
 @media (max-width: 1180px) {
