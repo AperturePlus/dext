@@ -8,6 +8,7 @@ const apiMocks = vi.hoisted(() => ({
   buildDetail: vi.fn(),
   metrics: vi.fn(),
   graphPreview: vi.fn(),
+  universityTopology: vi.fn(),
   findings: vi.fn()
 }))
 
@@ -64,6 +65,9 @@ describe('useMonitorData history (P2-14)', () => {
     apiMocks.graphPreview.mockResolvedValue({
       build_id: 'build-1', limit: 300, nodes: [], links: [],
       total_nodes: 0, total_relationships: 0, truncated: false
+    })
+    apiMocks.universityTopology.mockResolvedValue({
+      build_id: 'build-1', universities: [], nodes: [], links: []
     })
     apiMocks.findings.mockResolvedValue({ findings: [], limit: 100 })
   })

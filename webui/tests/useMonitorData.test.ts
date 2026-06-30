@@ -182,4 +182,19 @@ describe('useMonitorData', () => {
     await nextTick()
     expect(apiMocks.health.mock.calls.length).toBeGreaterThan(terminalBase)
   })
+
+  it('exposes a topology ref populated from universityTopology', async () => {
+    apiMocks.universityTopology.mockResolvedValue({
+      build_id: 'build-1',
+      universities: [{ graph_key: 'u', name: '大学A', logical_id: 'univ:a', orgunit_count: 1, professor_count: 2 }],
+      nodes: [{ id: 'u', label: '大学A', category: 'University', professor_count: 2, orgunit_count: 1 }],
+      links: []
+    })
+    const { topology } = useMonitorData()
+    await nextTick()
+    await vi.runOnlyPendingTimersAsync()
+    expect(apiMocks.universityTopology).toHaveBeenCalledWith('build-1')
+    expect(topology.value?.universities).toHaveLength(1)
+    expect(topology.value?.universities[0].name).toBe('大学A')
+  })
 })

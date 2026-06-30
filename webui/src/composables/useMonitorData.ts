@@ -5,7 +5,8 @@ import type {
   BuildsResponse,
   GraphPreviewResponse,
   HealthResponse,
-  MetricsResponse
+  MetricsResponse,
+  UniversityTopologyResponse
 } from '../types/monitor'
 
 /** Active-build polling interval (build still running). */
@@ -28,6 +29,7 @@ export function useMonitorData() {
   const detail = ref<BuildDetailResponse | null>(null)
   const metrics = ref<MetricsResponse | null>(null)
   const graph = ref<GraphPreviewResponse | null>(null)
+  const topology = ref<UniversityTopologyResponse | null>(null)
   const selectedBuildId = ref<string | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
@@ -61,16 +63,19 @@ export function useMonitorData() {
       detail.value = null
       metrics.value = null
       graph.value = null
+      topology.value = null
       return
     }
-    const [nextDetail, nextMetrics, nextGraph] = await Promise.all([
+    const [nextDetail, nextMetrics, nextGraph, nextTopology] = await Promise.all([
       monitorApi.buildDetail(buildId),
       monitorApi.metrics(buildId),
-      monitorApi.graphPreview(buildId)
+      monitorApi.graphPreview(buildId),
+      monitorApi.universityTopology(buildId)
     ])
     detail.value = nextDetail
     metrics.value = nextMetrics
     graph.value = nextGraph
+    topology.value = nextTopology
     // Push a throughput sample after a successful detail load. Derived from the
     // latest build summary (point-in-time counters — the sparkline visualizes
     // the slope over polls, not stored deltas). In-memory only, ring-buffered.
@@ -149,6 +154,7 @@ export function useMonitorData() {
     detail,
     metrics,
     graph,
+    topology,
     loading,
     error,
     paused,

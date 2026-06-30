@@ -13,6 +13,7 @@ const {
   detail,
   metrics,
   graph,
+  topology,
   error,
   paused,
   lastUpdated,
@@ -61,6 +62,7 @@ const selected = computed(() => selectedBuildId.value)
     :detail="detail"
     :metrics="metrics"
     :graph="graph"
+    :topology="topology"
     :findings="findings"
     :selected-build-id="selected"
     :error="error"

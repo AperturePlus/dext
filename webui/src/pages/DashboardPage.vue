@@ -5,7 +5,8 @@ import type {
   Finding,
   GraphPreviewResponse,
   HealthResponse,
-  MetricsResponse
+  MetricsResponse,
+  UniversityTopologyResponse
 } from '../types/monitor'
 import { formatNumber, shortId } from '../utils/format'
 import type { ThroughputSample } from '../composables/useMonitorData'
@@ -35,6 +36,7 @@ defineProps<{
   detail: BuildDetailResponse | null
   metrics: MetricsResponse | null
   graph: GraphPreviewResponse | null
+  topology: UniversityTopologyResponse | null
   findings: Finding[]
   selectedBuildId: string | null
   error: string | null
