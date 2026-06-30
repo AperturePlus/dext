@@ -23,7 +23,8 @@ vi.mock('../src/services/api', () => ({ monitorApi: apiMocks }))
 
 import App from '../src/App.vue'
 import router from '../src/router'
-import DashboardPage from '../src/pages/DashboardPage.vue'
+import OverviewPage from '../src/pages/OverviewPage.vue'
+import DataQualityPage from '../src/pages/DataQualityPage.vue'
 import TopologyPage from '../src/pages/TopologyPage.vue'
 
 function buildRow(overrides: Partial<Record<string, unknown>> = {}) {
@@ -69,17 +70,23 @@ describe('monitor routing', () => {
   })
   afterEach(() => { vi.clearAllMocks() })
 
-  it('renders DashboardPage at / and does NOT show the topology panel', async () => {
+  it('renders OverviewPage at /', async () => {
     const wrapper = await mountAt('/')
-    expect(wrapper.findComponent(DashboardPage).exists()).toBe(true)
-    expect(wrapper.findComponent(TopologyPage).exists()).toBe(false)
-    // The topology panel heading must be gone from the dashboard.
-    expect(wrapper.text()).not.toContain('University topology')
+    expect(wrapper.findComponent(OverviewPage).exists()).toBe(true)
+  })
+
+  it('renders DataQualityPage at /data', async () => {
+    const wrapper = await mountAt('/data')
+    expect(wrapper.findComponent(DataQualityPage).exists()).toBe(true)
   })
 
   it('renders TopologyPage at /topology', async () => {
     const wrapper = await mountAt('/topology')
     expect(wrapper.findComponent(TopologyPage).exists()).toBe(true)
-    expect(wrapper.findComponent(DashboardPage).exists()).toBe(false)
+  })
+
+  it('redirects unknown paths to /', async () => {
+    const wrapper = await mountAt('/does-not-exist')
+    expect(wrapper.findComponent(OverviewPage).exists()).toBe(true)
   })
 })

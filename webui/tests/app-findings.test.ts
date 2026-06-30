@@ -70,7 +70,7 @@ describe('App findings fetch (P1-7)', () => {
   })
 
   it('fetches findings once on build load, not on every detail refresh', async () => {
-    const wrapper = mount(App, { global: { plugins: [router], stubs: { DashboardPage: { template: '<div />' } } } })
+    const wrapper = mount(App, { global: { plugins: [router], stubs: { OverviewPage: { template: '<div />' } } } })
     await vi.advanceTimersByTimeAsync(0)
     await flushPromises()
     await nextTick()
