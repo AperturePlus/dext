@@ -13,7 +13,7 @@ import type { ThroughputSample } from '../composables/useMonitorData'
 import BuildStageTimeline from '../components/charts/BuildStageTimeline.vue'
 import ExportPartitionChart from '../components/charts/ExportPartitionChart.vue'
 import FindingSummaryChart from '../components/charts/FindingSummaryChart.vue'
-import GraphNetworkPreview from '../components/charts/GraphNetworkPreview.vue'
+import UniversityTopologyChart from '../components/charts/UniversityTopologyChart.vue'
 import RoleDistributionChart from '../components/charts/RoleDistributionChart.vue'
 import SourceTaskChart from '../components/charts/SourceTaskChart.vue'
 import ThroughputSparkline from '../components/charts/ThroughputSparkline.vue'
@@ -143,9 +143,9 @@ defineEmits<{
             </div>
           </PanelCard>
 
-          <PanelCard title="Graph preview" subtitle="Limited sample from frozen graph export rows">
+          <PanelCard title="University topology" subtitle="大学 → 学院 with professor counts">
             <div class="panel-body">
-              <GraphNetworkPreview :graph="graph" />
+              <UniversityTopologyChart :topology="topology" />
             </div>
           </PanelCard>
 
