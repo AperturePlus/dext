@@ -813,6 +813,18 @@ async def test_monitor_aiohttp_api(tmp_path: Path) -> None:
         body = await resp.json()
         assert body["data"]["build_id"] == build_id
 
+        resp = await client.get(f"/api/monitor/builds/{build_id}/graph-tree")
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["data"]["build_id"] == build_id
+        # _write_catalog: 1 University + 1 OrgUnit -> 2 nodes; 1 PART_OF link.
+        assert len(body["data"]["nodes"]) == 2
+        assert len(body["data"]["links"]) == 1
+        assert len(body["data"]["universities"]) == 1
+        # ETag present (read-only endpoint, cacheable like /builds).
+        etag = resp.headers.get("ETag")
+        assert etag and etag.startswith("W/")
+
         resp = await client.get("/api/monitor/builds/nope")
         assert resp.status == 404
         body = await resp.json()

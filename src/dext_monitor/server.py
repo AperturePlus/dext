@@ -70,6 +70,12 @@ async def handle_graph_preview(request: web.Request) -> web.Response:
     )
 
 
+async def handle_graph_tree(request: web.Request) -> web.Response:
+    return json_response(
+        {"data": service(request).graph_tree(request.match_info["build_id"])}
+    )
+
+
 async def handle_findings(request: web.Request) -> web.Response:
     limit = int(request.query.get("limit", "100"))
     return json_response(
@@ -128,6 +134,7 @@ def create_app(settings: MonitorSettings | None = None) -> web.Application:
             web.get(f"{API_PREFIX}/builds/{{build_id}}", handle_build_detail),
             web.get(f"{API_PREFIX}/builds/{{build_id}}/metrics", handle_metrics),
             web.get(f"{API_PREFIX}/builds/{{build_id}}/graph-preview", handle_graph_preview),
+            web.get(f"{API_PREFIX}/builds/{{build_id}}/graph-tree", handle_graph_tree),
             web.get(f"{API_PREFIX}/findings", handle_findings),
         ]
     )
