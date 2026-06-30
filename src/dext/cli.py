@@ -197,8 +197,8 @@ async def run_university(
             logger.info("reset(bad-snapshots) %s", counts)
 
         logger.info(
-            "bridge server ready at http://%s:%s/api; ensure the Tampermonkey "
-            "browser tab is visible and has owner",
+            "bridge server ready at http://%s:%s/api; backend will not open a page: "
+            "open a supported university page and click the dext extension to bind and start",
             settings.bridge_host,
             settings.bridge_port,
         )
