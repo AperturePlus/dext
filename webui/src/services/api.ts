@@ -5,7 +5,8 @@ import type {
   FindingsResponse,
   GraphPreviewResponse,
   HealthResponse,
-  MetricsResponse
+  MetricsResponse,
+  UniversityTopologyResponse
 } from '../types/monitor'
 
 export class MonitorApiError extends Error {
@@ -61,6 +62,10 @@ export const monitorApi = {
   graphPreview: (buildId: string, limit = 300) =>
     request<GraphPreviewResponse>(
       `/api/monitor/builds/${encodeURIComponent(buildId)}/graph-preview?limit=${limit}`
+    ),
+  universityTopology: (buildId: string) =>
+    request<UniversityTopologyResponse>(
+      `/api/monitor/builds/${encodeURIComponent(buildId)}/graph-tree`
     ),
   findings: (buildId?: string, severity?: string) => {
     const params = new URLSearchParams()

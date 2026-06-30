@@ -166,3 +166,34 @@ export interface FindingsResponse {
   findings: Finding[]
   limit: number
 }
+
+export interface UniversitySummary {
+  graph_key: string
+  name: string
+  logical_id: string
+  orgunit_count: number
+  professor_count: number
+}
+
+export interface UniversityTopologyNode {
+  id: string
+  label: string
+  category: 'University' | 'OrgUnit'
+  professor_count: number
+  orgunit_count?: number
+  kind?: string
+  university?: string
+}
+
+export interface UniversityTopologyLink {
+  source: string
+  target: string
+  label: 'PART_OF'
+}
+
+export interface UniversityTopologyResponse {
+  build_id: string
+  universities: UniversitySummary[]
+  nodes: UniversityTopologyNode[]
+  links: UniversityTopologyLink[]
+}
