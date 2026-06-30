@@ -34,6 +34,50 @@ test('bind sets boundTabId/phase=assigned and persists (gate ON)', async () => {
   } finally { await cleanup(); }
 });
 
+test('start atomically binds, enables auto, clears paused, and ticks immediately', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const calls = { status: 0, claim: 0 };
+    const api = {
+      async getStatus() { calls.status += 1; return null; },
+      async claimNextJob() { calls.claim += 1; return null; },
+      async sendHeartbeat() {}, async getDecision() { return null; },
+    };
+    const c = mod.createCrawlController({
+      storage: mod.createControllerStorage(fakeArea()),
+      api,
+      chrome: { async getTab(id) { return { id, url: 'https://x.edu.cn/' }; } },
+    });
+    await c.bind(42, 500);
+    await c.setPaused(true, 600);
+    const result = await c.start(42, 1000);
+    const s = await c.getState();
+    assert.deepEqual(result, { started: true });
+    assert.equal(s.boundTabId, 42);
+    assert.equal(s.autoMode, true);
+    assert.equal(s.paused, false);
+    assert.equal(s.phase, 'idle');
+    assert.equal(calls.status, 1);
+    assert.equal(calls.claim, 1);
+  } finally { await cleanup(); }
+});
+
+test('start refuses to steal an existing binding and performs no tick', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    let statusCalls = 0;
+    const c = mod.createCrawlController({
+      storage: mod.createControllerStorage(fakeArea()),
+      api: { async getStatus() { statusCalls += 1; return null; } },
+    });
+    await c.bind(42, 500);
+    const result = await c.start(99, 1000);
+    assert.deepEqual(result, { started: false, reason: 'bound_elsewhere', boundTabId: 42 });
+    assert.equal((await c.getState()).boundTabId, 42);
+    assert.equal(statusCalls, 0);
+  } finally { await cleanup(); }
+});
+
 test('tick with no currentJob and idle does not navigate or claim (gate ON, slice-1 no-op)', async () => {
   const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
   try {
@@ -809,6 +853,52 @@ test('capture RPC recovery exhausted (3 re-sends) → content_unavailable/captur
     assert.equal(s.lastError.kind, 'content_unavailable');
     assert.equal(s.lastError.missing, 'capture_result');
     assert.equal(s.lastError.recoveryExhausted, true);
+  } finally { await cleanup(); }
+});
+
+test('retryCapture recovers an exhausted capture error with a fresh rpcId', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const { c, chr, ready } = landedController(mod, area);
+    await ready();
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverCommitted({ tabId: 42, frameId: 0, documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', timeStamp: 5200 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 200, frameId: 0, requestId: 'REQ-1', documentId: 'DOC-1', timeStamp: 5300 }, 'ok');
+    await c.deliverPageReady({ documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', detection: { errorPage: false, terminalReason: null }, timeStamp: 5400 });
+    const oldRpcId = (await c.getState()).pendingRpc.id;
+    await c.tick(40000); await c.tick(45000); await c.tick(50000); await c.tick(55000);
+    assert.equal((await c.getState()).phase, 'error');
+    const sentBefore = chr.calls.sent.length;
+    await c.retryCapture('DOC-1', 60000);
+    const s = await c.getState();
+    assert.equal(s.phase, 'capturing');
+    assert.equal(s.lastError, null);
+    assert.notEqual(s.pendingRpc.id, oldRpcId);
+    assert.equal(s.pendingRpc.sourceDocumentId, 'DOC-1');
+    assert.equal(s.pendingRpc.recoveryAttempts, 0);
+    assert.equal(chr.calls.sent.length, sentBefore + 1);
+  } finally { await cleanup(); }
+});
+
+test('reopenCurrentJob clears the capture error and navigates with an incremented attempt', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const { c, chr, ready } = landedController(mod, area);
+    await ready();
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-1', requestId: 'REQ-1', timeStamp: 5100 });
+    await c.deliverCommitted({ tabId: 42, frameId: 0, documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', timeStamp: 5200 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-1', statusCode: 200, frameId: 0, requestId: 'REQ-1', documentId: 'DOC-1', timeStamp: 5300 }, 'ok');
+    await c.deliverPageReady({ documentId: 'DOC-1', url: 'https://xjtu.edu.cn/job-1', detection: { errorPage: false, terminalReason: null }, timeStamp: 5400 });
+    const updatesBefore = chr.calls.updates.length;
+    await c.reopenCurrentJob(6000);
+    const s = await c.getState();
+    assert.equal(s.phase, 'navigating');
+    assert.equal(s.navigation.attempt, 2);
+    assert.equal(s.pendingRpc, null);
+    assert.equal(s.lastError, null);
+    assert.equal(chr.calls.updates.length, updatesBefore + 1);
   } finally { await cleanup(); }
 });
 

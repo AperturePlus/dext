@@ -1,11 +1,24 @@
 {
   "manifest_version": 3,
   "name": "dext crawl controller",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "Exclusive-control crawl orchestrator (Phase 2). Sole official browser frontend — binds one tab and drives claim→navigate→capture→complete. The dext userscript is an emergency-recovery fallback, disabled in normal operation.",
   "background": {
     "service_worker": "dist/background.js",
     "type": "module"
+  },
+  "icons": {
+    "16": "dist/icons/dext16.png",
+    "32": "dist/icons/dext32.png",
+    "48": "dist/icons/dext48.png",
+    "128": "dist/icons/dext128.png"
+  },
+  "action": {
+    "default_title": "dext：点击绑定并开始",
+    "default_icon": {
+      "16": "dist/icons/dext16.png",
+      "32": "dist/icons/dext32.png"
+    }
   },
   "content_scripts": [
     {

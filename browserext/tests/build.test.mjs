@@ -9,6 +9,15 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
 const distBg = join(root, 'dist', 'background.js');
 const distContent = join(root, 'dist', 'content.js');
+const iconSizes = [16, 32, 48, 128];
+
+test('manifest exposes the 0.2.2 toolbar action and generated icons', () => {
+  const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.version, '0.2.2');
+  assert.equal(manifest.action.default_title, 'dext：点击绑定并开始');
+  assert.equal(manifest.action.default_icon['16'], 'dist/icons/dext16.png');
+  assert.equal(manifest.icons['128'], 'dist/icons/dext128.png');
+});
 
 function build() {
   execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: root, stdio: 'pipe' });
@@ -20,6 +29,12 @@ test('build emits dist/background.js and dist/content.js', () => {
     build();
     assert.ok(existsSync(distBg), 'dist/background.js missing');
     assert.ok(existsSync(distContent), 'dist/content.js missing');
+    for (const size of iconSizes) {
+      const icon = readFileSync(join(root, 'dist', 'icons', `dext${size}.png`));
+      assert.deepEqual([...icon.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+      assert.equal(icon.readUInt32BE(16), size, `icon${size} width`);
+      assert.equal(icon.readUInt32BE(20), size, `icon${size} height`);
+    }
   } finally {
     // leave dist for inspection; gitignored anyway
   }

@@ -36,6 +36,13 @@ active userscript during transition).
 4. Open the target university page; click **绑定并开始** in the dext panel.
    Only that tab is driven; other tabs are never navigated.
 
+You can also pin the blue dext toolbar icon and click it on the target page. The
+icon is the fastest start path: it binds that tab, enables auto mode, clears
+pause, and reconciles immediately. Badge meanings: `ON` = backend connected,
+`ERR` = backend unavailable (automatic retry continues), `BUSY` = another tab is
+bound, and `N/A` = unsupported host. Granting Chrome access to all sites does not
+change the application allowlist (`*.edu.cn` and `*.github.io`).
+
 ## How it works (one-liner per phase)
 
 - **bind** — user binds one tab; `boundTabId` persisted to `chrome.storage.local`.

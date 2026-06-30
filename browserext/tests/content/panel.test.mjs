@@ -2,6 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { importTsModule } from '../harness.mjs';
 
+test('panel CSS pins the controller visibly above the host page', async () => {
+  const { mod, cleanup } = await importTsModule('../src/content/panel.ts', 'panel.ts');
+  try {
+    assert.match(mod.PANEL_CSS, /:host\s*\{/);
+    assert.match(mod.PANEL_CSS, /position:\s*fixed/);
+    assert.match(mod.PANEL_CSS, /z-index:\s*2147483647/);
+  } finally { await cleanup(); }
+});
+
 // Minimal fake DOM good enough for mountPanel + commandFromClick.
 // `host.attachShadow` increments `host.attachShadowCalls` and returns the
 // shared shadowRoot so the idempotency test can assert attachShadow is
@@ -73,6 +82,13 @@ test('commandFromClick: set_auto/set_paused carry value from dataset', async () 
   } finally { await cleanup(); }
 });
 
+test('commandFromClick: retry_capture is a distinct recovery command', async () => {
+  const { mod, cleanup } = await importTsModule('../src/content/panel.ts', 'panel.ts');
+  try {
+    assert.deepEqual(mod.commandFromClick({ dataset: { cmd: 'retry_capture' } }, () => null), { kind: 'retry_capture' });
+  } finally { await cleanup(); }
+});
+
 test('mountPanel: render shows bind button when unbound (isBoundTab false, bound false)', async () => {
   const { mod, cleanup } = await importTsModule('../src/content/panel.ts', 'panel.ts');
   try {
@@ -85,7 +101,7 @@ test('mountPanel: render shows bind button when unbound (isBoundTab false, bound
   } finally { await cleanup(); }
 });
 
-test('mountPanel: render shows controls + error text when bound (amend §7 formatError)', async () => {
+test('mountPanel renders approved dark card, progress, target and capture recovery action', async () => {
   const { mod, cleanup } = await importTsModule('../src/content/panel.ts', 'panel.ts');
   try {
     const dom = fakeDom();
@@ -93,10 +109,46 @@ test('mountPanel: render shows controls + error text when bound (amend §7 forma
     panel.render({
       isBoundTab: true, bound: true, connected: true, autoMode: true, paused: false,
       phase: 'capturing', currentJob: { id: 'job-1', url: 'https://x.edu.cn/j', status: 'assigned', context: { university_name: 'X', agent_state: '', intent: '', parent_url: '', depth: 0, org_unit_name: '', hints: [] }, created_at: 't', timeout_seconds: 60, action: null, identity_url: null },
-      navigationAttempt: 1, lastError: { kind: 'rate_limited' }, pendingDecision: null,
+      navigationAttempt: 1, lastError: { kind: 'content_unavailable', missing: 'capture_result', sourceDocumentId: 'DOC-1', since: 1, recoveryAttempts: 3, nextRecoveryAt: null, recoveryExhausted: true }, pendingDecision: null,
     });
+    assert.match(dom.shadowRoot.innerHTML, /dext crawler/);
+    assert.match(dom.shadowRoot.innerHTML, /导航/);
+    assert.match(dom.shadowRoot.innerHTML, /捕获/);
+    assert.match(dom.shadowRoot.innerHTML, /提交/);
+    assert.match(dom.shadowRoot.innerHTML, /X/);
+    assert.match(dom.shadowRoot.innerHTML, /x\.edu\.cn\/j/);
+    assert.match(dom.shadowRoot.innerHTML, /title="https:\/\/x\.edu\.cn\/j"/);
+    assert.match(dom.shadowRoot.innerHTML, /页面捕获未返回/);
+    assert.match(dom.shadowRoot.innerHTML, /data-cmd="retry_capture"/);
+    assert.match(dom.shadowRoot.innerHTML, /data-ui="more"/);
     assert.match(dom.shadowRoot.innerHTML, /data-cmd="unbind"/);
-    assert.match(dom.shadowRoot.innerHTML, /rate_limited/);
+  } finally { await cleanup(); }
+});
+
+test('panel CSS has 360px desktop sizing, narrow-screen adaptation and focus visibility', async () => {
+  const { mod, cleanup } = await importTsModule('../src/content/panel.ts', 'panel.ts');
+  try {
+    assert.match(mod.PANEL_CSS, /360px/);
+    assert.match(mod.PANEL_CSS, /@media\s*\(max-width:/);
+    assert.match(mod.PANEL_CSS, /:focus-visible/);
+  } finally { await cleanup(); }
+});
+
+test('mountPanel local collapse and more controls rerender without sending commands', async () => {
+  const { mod, cleanup } = await importTsModule('../src/content/panel.ts', 'panel.ts');
+  try {
+    let clickCb = null;
+    const shadowRoot = { innerHTML: '', querySelector() { return null; }, querySelectorAll() { return []; }, addEventListener(type, cb) { if (type === 'click') clickCb = cb; } };
+    const host = { attachShadow() { return shadowRoot; } };
+    const commands = [];
+    const panel = mod.mountPanel({ host }, (cmd) => commands.push(cmd));
+    panel.render({ isBoundTab: true, bound: true, connected: true, autoMode: true, paused: false, phase: 'idle', currentJob: null, navigationAttempt: 0, lastError: null, pendingDecision: null });
+    clickCb({ target: { dataset: { ui: 'more' } } });
+    assert.match(shadowRoot.innerHTML, /data-cmd="skip"/);
+    clickCb({ target: { dataset: { ui: 'collapse' } } });
+    assert.match(shadowRoot.innerHTML, /dext-card is-collapsed/);
+    assert.doesNotMatch(shadowRoot.innerHTML, /data-cmd="submit"/);
+    assert.deepEqual(commands, []);
   } finally { await cleanup(); }
 });
 

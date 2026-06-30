@@ -11,7 +11,7 @@
 import { isAllowedFetchHost } from '../shared/hostPolicy.js';
 import { detectPage } from './pageDetect.js';
 import { createRpcRouter } from './rpcRouter.js';
-import type { RpcRouterDoc } from './rpcRouter.js';
+import type { RpcRouter, RpcRouterDoc } from './rpcRouter.js';
 import type { CsToSw, SwToCs, PanelState } from '../shared/rpc.js';
 import { mountPanel } from './panel.js';
 import { panelStateEqual } from './panelState.js';
@@ -20,6 +20,33 @@ declare const EXCLUSIVE_CONTROL_ENABLED: boolean;
 
 const MARKER_ATTR = 'data-dext-extension-controller';
 const MARKER_VALUE = 'v1';
+
+type WorkMessage = Extract<SwToCs, { op: 'PREPARE_ACTION' | 'PERFORM_ACTION' | 'CAPTURE' }>;
+
+/** Chrome transport receipt must be synchronous. The Controller holds its
+ * mutex while awaiting tabs.sendMessage(); waiting for router.handle() here
+ * would deadlock when the result message tries to acquire that same mutex. */
+export function createWorkMessageListener(router: Pick<RpcRouter, 'handle'>) {
+  return (
+    msg: SwToCs,
+    sender: { tab?: { id: number }; frameId?: number; documentId?: string },
+    sendResponse: (response: { received: true }) => void,
+  ): boolean => {
+    if (!msg || (msg.op !== 'PREPARE_ACTION' && msg.op !== 'PERFORM_ACTION' && msg.op !== 'CAPTURE')) {
+      return false;
+    }
+    sendResponse({ received: true });
+    // Yield a full task, not only a microtask: this lets Chrome deliver the
+    // transport response and release the service-worker Controller mutex before
+    // a large synchronous DOM serialization can emit CAPTURE_RESULT.
+    setTimeout(() => {
+      void router.handle(msg as WorkMessage, sender).catch((error: unknown) => {
+        console.warn('[dext] content work RPC failed', error);
+      });
+    }, 0);
+    return false;
+  };
+}
 
 export interface ContentDeps {
   hostname: string;
@@ -81,13 +108,7 @@ export async function bootstrapContent(deps: ContentDeps): Promise<void> {
           onMessage: (cb) => chrome.runtime.onMessage.addListener(cb as never),
         },
       });
-      chrome.runtime.onMessage.addListener((msg: SwToCs, sender) => {
-        if (msg && (msg.op === 'PREPARE_ACTION' || msg.op === 'PERFORM_ACTION' || msg.op === 'CAPTURE')) {
-          void router.handle(msg, sender as { tab?: { id: number }; frameId?: number; documentId?: string });
-          return true;   // async response (transport receipt comes via a later CAPTURE_RESULT/ACTION_* message)
-        }
-        return false;
-      });
+      chrome.runtime.onMessage.addListener(createWorkMessageListener(router) as never);
       // PAGE_READY: wait for body + DOMContentLoaded, then run the first detection + emit (slice 4).
       const sendReady = () => {
         const detection = detectPage({
@@ -111,60 +132,78 @@ export async function bootstrapContent(deps: ContentDeps): Promise<void> {
     // the slice-4 work-RPC listener + PAGE_READY emitter above (both coexist).
     // Resolved against deps first (node tests inject fakes), then the globals;
     // GUARDED so slice-1/4 node tests that pass NO document/chrome skip this
-    // block without crashing — `doc?.body && chr?.runtime?.sendMessage` is the
-    // gate. The panel reads the live override-URL input via a formData closure
+    // block without crashing. The panel reads the live override-URL input via a
+    // formData closure
     // over the shadow root (Task-3 follow-up: override was dead from real
     // clicks because mountPanel hard-coded `() => null`).
     const doc = deps.document ?? (typeof document !== 'undefined' ? document : undefined);
     const chr = deps.chrome ?? (typeof chrome !== 'undefined' ? chrome : undefined);
-    if (doc?.body && chr?.runtime?.sendMessage) {
-      let panel: ReturnType<typeof mountPanel> | null = null;
-      try {
-        const host = doc.createElement('div') as HTMLDivElement & { attachShadow: (i: { mode: 'open' }) => unknown };
-        host.id = 'dext-panel-host';
-        doc.body.appendChild(host);
-        panel = mountPanel({ host: host as never }, (cmd) => {
-          try {
-            void chr.runtime.sendMessage({ op: 'COMMAND', command: cmd } as CsToSw);
-          } catch { /* SW asleep */ }
-        }, (id) => {
-          const sh = (host as unknown as { __dextShadow?: { getElementById?(id: string): { value?: string } | null } }).__dextShadow;
-          const el = sh?.getElementById?.(id);
-          return el?.value ?? null;
-        });
-      } catch { panel = null; }
-      if (panel) {
-        // REGISTER once — the receipt carries the initial PanelState (render it).
-        const url = (typeof location !== 'undefined' ? location.href : '');
-        void chr.runtime.sendMessage({ op: 'REGISTER', url } as CsToSw)
-          .then((receipt: unknown) => {
-            const r = receipt as { state?: PanelState };
-            if (r?.state) {
-              try { panel!.render(r.state); } catch { /* panel unmounted */ }
-            }
-          })
-          .catch(() => {});
-        // 2s TICK — wake/reconcile the SW (MV3 doesn't guarantee the SW stays
-        // alive; the TICK re-establishes intent + lets the SW reconcile state).
-        // `.unref?.()` is a no-op in the browser (where setInterval returns a
-        // number); in Node tests it drops the handle so the test process can exit
-        // instead of hanging on a 2s interval that never fires during the test.
-        const tick = setInterval(() => {
-          try { void chr.runtime.sendMessage({ op: 'TICK' } as CsToSw); }
-          catch { /* SW asleep — non-fatal */ }
-        }, 2000);
-        (tick as unknown as { unref?: () => void }).unref?.();
-        // STATE_CHANGED → re-render (skip no-op re-renders via panelStateEqual).
+    if (doc && chr?.runtime?.sendMessage) {
+      let panelStarted = false;
+      const startPanel = () => {
+        if (panelStarted || !doc.body) return;
+        panelStarted = true;
+        let panel: ReturnType<typeof mountPanel> | null = null;
         let last: PanelState | undefined;
-        chr.runtime.onMessage.addListener((msg: SwToCs) => {
-          if (msg && msg.op === 'STATE_CHANGED') {
-            if (panelStateEqual(last, msg.state)) return false;
-            last = msg.state;
-            try { panel!.render(msg.state); } catch { /* panel unmounted */ }
-          }
-          return false;
-        });
-      }
+        let host: HTMLDivElement & { __dextShadow?: { getElementById?(id: string): { value?: string } | null } };
+        const renderState = (state: PanelState) => {
+          if (!panel || panelStateEqual(last, state)) return;
+          last = state;
+          try { panel.render(state); } catch { /* panel unmounted */ }
+        };
+        try {
+          host = doc.createElement('div') as typeof host;
+          host.id = 'dext-panel-host';
+          doc.body.appendChild(host);
+          panel = mountPanel({ host: host as never }, (cmd) => {
+            try {
+              void chr.runtime.sendMessage({ op: 'COMMAND', command: cmd } as CsToSw);
+            } catch { /* SW asleep */ }
+          }, (id) => {
+            const sh = host.__dextShadow;
+            const el = sh?.getElementById?.(id);
+            return el?.value ?? null;
+          });
+        } catch { panel = null; }
+        if (panel) {
+          // REGISTER once — the receipt carries the initial PanelState (render it).
+          const url = (typeof location !== 'undefined' ? location.href : '');
+          void chr.runtime.sendMessage({ op: 'REGISTER', url } as CsToSw)
+            .then((receipt: unknown) => {
+              const r = receipt as { state?: PanelState };
+              if (r?.state) renderState(r.state);
+            })
+            .catch(() => {});
+          // 2s TICK — wake/reconcile the SW (MV3 doesn't guarantee the SW stays
+          // alive; the TICK re-establishes intent + lets the SW reconcile state).
+          // `.unref?.()` is a no-op in the browser (where setInterval returns a
+          // number); in Node tests it drops the handle so the test process can exit
+          // instead of hanging on a 2s interval that never fires during the test.
+          const tick = setInterval(() => {
+            try {
+              void chr.runtime.sendMessage({ op: 'TICK' } as CsToSw)
+                .then((receipt: unknown) => {
+                  const r = receipt as { state?: PanelState };
+                  if (r?.state) renderState(r.state);
+                })
+                .catch(() => {});
+            } catch { /* SW asleep — non-fatal */ }
+          }, 2000);
+          (tick as unknown as { unref?: () => void }).unref?.();
+          // STATE_CHANGED → re-render (skip no-op re-renders via panelStateEqual).
+          chr.runtime.onMessage.addListener((msg: SwToCs) => {
+            if (msg && msg.op === 'STATE_CHANGED') {
+              renderState(msg.state);
+            }
+            return false;
+          });
+        }
+      };
+
+      // Content scripts run at document_start, where document.body is normally
+      // still null. Keep the marker/listeners early, but defer only the UI.
+      if (doc.body) startPanel();
+      else doc.addEventListener('DOMContentLoaded', startPanel, { once: true });
     }
   }
 }

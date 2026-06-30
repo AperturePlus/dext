@@ -3,26 +3,75 @@
  *  SW never holds a localized string in PanelState. Also a shallow equality helper
  *  to skip no-op re-renders on identical STATE_CHANGED payloads. No chrome, no DOM. */
 
-import type { ControllerError } from '../shared/state.js';
+import type { ControllerError, ControllerPhase } from '../shared/state.js';
 import type { PanelState } from '../shared/rpc.js';
 
-const CONTENT_UNAVAILABLE_LABELS: Record<string, string> = {
-  page_ready: 'page_ready',
-  capture_result: 'capture_result',
-  action_prepare: 'action_prepare',
-  action_result: 'action_result',
-  http_outcome: 'http_outcome',
-};
+export interface ErrorPresentation {
+  title: string;
+  description: string;
+}
+
+export type StepState = 'pending' | 'active' | 'complete' | 'error';
+
+export interface PanelProgress {
+  navigation: StepState;
+  capture: StepState;
+  submit: StepState;
+}
+
+export function describeError(e: ControllerError | null): ErrorPresentation | null {
+  if (e === null) return null;
+  switch (e.kind) {
+    case 'nav_error':
+      return { title: '页面导航失败', description: `浏览器未能打开目标页面（${e.error}）。` };
+    case 'gateway_5xx':
+      return { title: '目标网站暂时不可用', description: '服务器返回网关错误，可以稍后重新打开。' };
+    case 'rate_limited':
+      return { title: '请求过于频繁', description: '目标网站限制了访问频率，请稍后再试。' };
+    case 'unexpected_status':
+      return { title: '页面响应异常', description: `目标页面返回了 HTTP ${e.statusCode}。` };
+    case 'content_unavailable':
+      switch (e.missing) {
+        case 'capture_result':
+          return { title: '页面捕获未返回', description: '目标页面已加载，但扩展未收到捕获结果。' };
+        case 'page_ready':
+          return { title: '页面未就绪', description: '目标页面没有及时报告可读取状态。' };
+        case 'action_prepare':
+          return { title: '页面操作未准备好', description: '扩展无法准备当前页面所需的表单操作。' };
+        case 'action_result':
+          return { title: '页面操作未完成', description: '扩展没有收到页面操作的执行结果。' };
+        case 'http_outcome':
+          return { title: '页面响应未确认', description: '扩展无法确认目标页面的网络响应。' };
+      }
+  }
+}
 
 export function formatError(e: ControllerError | null): string {
-  if (e === null) return '';
-  switch (e.kind) {
-    case 'nav_error': return `nav_error:${e.error}`;
-    case 'gateway_5xx': return 'gateway_5xx';
-    case 'rate_limited': return 'rate_limited';
-    case 'unexpected_status': return `unexpected_status:${e.statusCode}`;
-    case 'content_unavailable':
-      return `content_unavailable:${CONTENT_UNAVAILABLE_LABELS[e.missing] ?? e.missing}（需人工处理）`;
+  const presentation = describeError(e);
+  return presentation ? `${presentation.title}：${presentation.description}` : '';
+}
+
+export function panelProgress(state: Pick<PanelState, 'phase' | 'lastError'> | { phase: ControllerPhase; lastError: ControllerError | null }): PanelProgress {
+  if (state.phase === 'error') {
+    const captureError = state.lastError?.kind === 'content_unavailable'
+      && state.lastError.missing === 'capture_result';
+    return captureError
+      ? { navigation: 'complete', capture: 'error', submit: 'pending' }
+      : { navigation: 'error', capture: 'pending', submit: 'pending' };
+  }
+  switch (state.phase) {
+    case 'landed':
+    case 'capturing':
+      return { navigation: 'complete', capture: 'active', submit: 'pending' };
+    case 'submitting':
+      return { navigation: 'complete', capture: 'complete', submit: 'active' };
+    case 'navigating':
+    case 'acting':
+      return { navigation: 'active', capture: 'pending', submit: 'pending' };
+    case 'idle':
+    case 'assigned':
+    case 'claiming':
+      return { navigation: 'active', capture: 'pending', submit: 'pending' };
   }
 }
 
@@ -44,6 +93,8 @@ export function panelStateEqual(a: PanelState | undefined, b: PanelState | undef
     a.phase === b.phase &&
     a.navigationAttempt === b.navigationAttempt &&
     a.currentJob?.id === b.currentJob?.id &&
+    a.currentJob?.url === b.currentJob?.url &&
+    a.currentJob?.context?.university_name === b.currentJob?.context?.university_name &&
     errorEqual(a.lastError, b.lastError) &&
     a.pendingDecision?.id === b.pendingDecision?.id
   );

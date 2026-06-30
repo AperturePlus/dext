@@ -40,7 +40,7 @@ test('integration: bind → claim → navigate → land → capture → complete
       onMessage() {},
     };
     const c = ctrlMod.createCrawlController({ storage: ctrlMod.createControllerStorage(area), api, chrome });
-    const router = routerMod.createMessageRouter({ controller: c, chrome, api, extensionId: 'ext-123' });
+    const router = routerMod.createMessageRouter({ controller: c, chrome, api, extensionId: 'ext-123', now: () => 1000 });
 
     const sender = (documentId = 'DOC-1') => ({ id: 'ext-123', tab: { id: 42, url: 'https://xjtu.edu.cn/job-1' }, frameId: 0, documentId });
 
@@ -71,5 +71,69 @@ test('integration: bind → claim → navigate → land → capture → complete
   } finally {
     await ctrlBundle.cleanup();
     await routerBundle.cleanup();
+  }
+});
+
+test('integration: transport receipt releases Controller before a large CAPTURE_RESULT', async () => {
+  const ctrlBundle = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  const routerBundle = await importTsModule('../src/controller/messageRouter.ts', 'messageRouter.ts');
+  const contentBundle = await importTsModule('../src/content/index.ts', 'index.ts');
+  try {
+    const area = fakeArea();
+    const hugeHtml = `<html>${'x'.repeat(1_500_000)}</html>`;
+    const order = [];
+    let completedHtmlLength = 0;
+    const api = {
+      async getStatus() { return { current_job: job('job-port'), frontend_health: { alive: true, last_seen_seconds_ago: 0 } }; },
+      async claimNextJob() { return job('job-port'); },
+      async sendHeartbeat() {}, async getDecision() { return null; },
+      async completeJob(_id, html) { completedHtmlLength = html.length; },
+    };
+    let workListener;
+    const chrome = {
+      async getTab() { return { id: 42, url: 'https://xjtu.edu.cn/job-port' }; },
+      async updateTabUrl() {},
+      async sendMessage(_tabId, message, options) {
+        if (message.op !== 'CAPTURE') return { received: true };
+        return new Promise((resolve) => {
+          workListener(message, { id: 'ext-123', tab: { id: 42, url: 'https://xjtu.edu.cn/job-port' }, frameId: 0, documentId: options.documentId }, (receipt) => {
+            order.push('receipt');
+            resolve(receipt);
+          });
+        });
+      },
+      onMessage() {},
+    };
+    const c = ctrlBundle.mod.createCrawlController({ storage: ctrlBundle.mod.createControllerStorage(area), api, chrome });
+    const background = routerBundle.mod.createMessageRouter({ controller: c, chrome, api, extensionId: 'ext-123', now: () => 6000 });
+    workListener = contentBundle.mod.createWorkMessageListener({
+      async handle(message, sender) {
+        order.push('capture-result');
+        await background.handle({
+          op: 'CAPTURE_RESULT', rpcId: message.rpcId, jobId: message.jobId, ok: true,
+          url: 'https://xjtu.edu.cn/job-port', html: hugeHtml, title: 'Large', paginationStates: [],
+          detection: { errorPage: false, terminalReason: null },
+        }, sender);
+        return { received: true };
+      },
+    });
+
+    await c.start(42, 1000);
+    await c.tick(2000);
+    await c.deliverBeforeRequest({ tabId: 42, frameId: 0, type: 'main_frame', url: 'https://xjtu.edu.cn/job-port', requestId: 'REQ-P', timeStamp: 2100 });
+    await c.deliverCommitted({ tabId: 42, frameId: 0, documentId: 'DOC-P', url: 'https://xjtu.edu.cn/job-port', timeStamp: 2200 });
+    await c.deliverHttpEvent({ tabId: 42, url: 'https://xjtu.edu.cn/job-port', statusCode: 200, frameId: 0, requestId: 'REQ-P', documentId: 'DOC-P', timeStamp: 2300 }, 'ok');
+    await background.handle({ op: 'PAGE_READY', url: 'https://xjtu.edu.cn/job-port', title: 'Large', detection: { errorPage: false, terminalReason: null } }, { id: 'ext-123', tab: { id: 42, url: 'https://xjtu.edu.cn/job-port' }, frameId: 0, documentId: 'DOC-P' });
+
+    for (let i = 0; i < 20 && completedHtmlLength === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.deepEqual(order, ['receipt', 'capture-result']);
+    assert.equal(completedHtmlLength, hugeHtml.length);
+    assert.equal((await c.getState()).phase, 'idle');
+  } finally {
+    await ctrlBundle.cleanup();
+    await routerBundle.cleanup();
+    await contentBundle.cleanup();
   }
 });

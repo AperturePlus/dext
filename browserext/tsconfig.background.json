@@ -4,5 +4,5 @@
     "lib": ["ESNext", "WebWorker"],
     "outDir": "dist"
   },
-  "include": ["src/background/**/*.ts", "src/controller/**/*.ts", "src/shared/**/*.ts", "src/navMonitor.ts", "src/status.ts", "src/watchdog.ts", "src/api.ts", "src/chrome.ts", "src/storage.ts", "src/background.ts"]
+  "include": ["src/background/**/*.ts", "src/controller/**/*.ts", "src/shared/**/*.ts", "src/navMonitor.ts", "src/status.ts", "src/watchdog.ts", "src/api.ts", "src/chrome.ts", "src/storage.ts", "src/action.ts", "src/background.ts"]
 }

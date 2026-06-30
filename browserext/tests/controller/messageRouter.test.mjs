@@ -4,12 +4,15 @@ import { importTsModule } from '../harness.mjs';
 
 // Fake controller: records calls + holds a state the router reads via getState.
 function fakeController(state) {
-  const calls = { tick: 0, bind: [], deliverPageReady: [], deliverCaptureResult: [], deliverActionPrepared: [], deliverActionResult: [], unbind: 0, setAutoMode: [], setPaused: [], manualComplete: 0, manualSkip: [], manualFail: [], overrideUrl: [], resolveDecision: [], broadcastPanelState: [] };
+  const calls = { tick: 0, start: [], bind: [], retryCapture: [], reopenCurrentJob: 0, deliverPageReady: [], deliverCaptureResult: [], deliverActionPrepared: [], deliverActionResult: [], unbind: 0, setAutoMode: [], setPaused: [], manualComplete: 0, manualSkip: [], manualFail: [], overrideUrl: [], resolveDecision: [], broadcastPanelState: [] };
   return {
     calls,
     getNavScope: () => ({ boundTabId: state.boundTabId }),
     async getState() { return JSON.parse(JSON.stringify(state)); },
     async tick() { calls.tick += 1; },
+    async start(tabId) { calls.start.push(tabId); return { started: true }; },
+    async retryCapture(documentId) { calls.retryCapture.push(documentId); },
+    async reopenCurrentJob() { calls.reopenCurrentJob += 1; },
     async bind(tabId) { calls.bind.push(tabId); },
     async unbind() { calls.unbind += 1; },
     async setAutoMode(v) { calls.setAutoMode.push(v); },
@@ -73,7 +76,7 @@ test('TICK from bound tab triggers controller.tick (amend §7); TICK from non-bo
   } finally { await cleanup(); }
 });
 
-test('bind command from unbound tab → controller.bind called + broadcast (amend §4.7, §7)', async () => {
+test('bind command from unbound tab → controller.start called + broadcast (amend §4.7, §7)', async () => {
   const { mod, cleanup } = await importTsModule('../src/controller/messageRouter.ts', 'messageRouter.ts');
   try {
     const ctrl = fakeController({ boundTabId: null, pendingDecision: null, phase: 'idle', currentJob: null, connected: false, autoMode: false, paused: false, navigation: null, lastError: null, navigationAttempt: 0 });
@@ -81,8 +84,43 @@ test('bind command from unbound tab → controller.bind called + broadcast (amen
     const router = mod.createMessageRouter({ controller: ctrl, chrome: chr, api: {}, extensionId: EXT_ID });
     router.start();
     await chr.fire({ op: 'COMMAND', command: { kind: 'bind' } }, sender(99));
-    assert.deepEqual(ctrl.calls.bind, [99]);
+    assert.deepEqual(ctrl.calls.start, [99]);
     assert.equal(ctrl.calls.broadcastPanelState.length, 1);
+  } finally { await cleanup(); }
+});
+
+test('retry/submit use the sender documentId; open performs a real reopen', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/messageRouter.ts', 'messageRouter.ts');
+  try {
+    const ctrl = fakeController({ boundTabId: 42, pendingDecision: null, phase: 'error', currentJob: { id: 'job-1' }, connected: true, autoMode: true, paused: false, navigation: { attempt: 1 }, lastError: { kind: 'content_unavailable', missing: 'capture_result' }, navigationAttempt: 1 });
+    const chr = fakeChrome();
+    const router = mod.createMessageRouter({ controller: ctrl, chrome: chr, api: {}, extensionId: EXT_ID });
+    await router.handle({ op: 'COMMAND', command: { kind: 'retry_capture' } }, sender(42, 'DOC-LIVE'));
+    await router.handle({ op: 'COMMAND', command: { kind: 'submit' } }, sender(42, 'DOC-LIVE'));
+    await router.handle({ op: 'COMMAND', command: { kind: 'open' } }, sender(42, 'DOC-LIVE'));
+    assert.deepEqual(ctrl.calls.retryCapture, ['DOC-LIVE', 'DOC-LIVE']);
+    assert.equal(ctrl.calls.reopenCurrentJob, 1);
+  } finally { await cleanup(); }
+});
+
+test('TICK returns state read after reconciliation and presents that fresh state', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/messageRouter.ts', 'messageRouter.ts');
+  try {
+    const base = { boundTabId: 42, pendingDecision: null, phase: 'idle', currentJob: null, connected: false, autoMode: true, paused: false, navigation: null, lastError: null, navigationAttempt: 0 };
+    const ctrl = fakeController(base);
+    let connected = false;
+    ctrl.tick = async () => { ctrl.calls.tick += 1; connected = true; };
+    ctrl.getState = async () => ({ ...base, connected });
+    const presented = [];
+    const chr = fakeChrome();
+    const router = mod.createMessageRouter({
+      controller: ctrl, chrome: chr, api: {}, extensionId: EXT_ID,
+      presentAction: async (_tabId, _url, state) => { presented.push(state.connected); },
+    });
+    router.start();
+    const reply = await chr.fire({ op: 'TICK' }, sender(42));
+    assert.equal(reply.state.connected, true);
+    assert.deepEqual(presented, [true]);
   } finally { await cleanup(); }
 });
 

@@ -17,6 +17,8 @@ import { createCrawlController, createControllerStorage } from './controller/con
 import type { CrawlController, StorageArea } from './controller/controller.js';
 import { createMessageRouter } from './controller/messageRouter.js';
 import type { MessageRouterChrome } from './controller/messageRouter.js';
+import { createRealActionChrome, createToolbarAction } from './action.js';
+import type { ToolbarAction } from './action.js';
 import {
   RECONCILIATION_ALARM_NAME,
   RECONCILIATION_PERIOD_MINUTES,
@@ -32,6 +34,7 @@ export interface WireDeps {
 export function wireBackground(deps: WireDeps): {
   navMonitor: NavMonitor;
   controller: CrawlController;
+  toolbarAction: ToolbarAction | null;
 } {
   const controller = createCrawlController({
     storage: createControllerStorage(chrome.storage.local as unknown as StorageArea),
@@ -68,14 +71,21 @@ export function wireBackground(deps: WireDeps): {
       );
     },
   };
+  const toolbarAction = (typeof chrome !== 'undefined' && chrome.action?.onClicked)
+    ? createToolbarAction({ controller, chrome: createRealActionChrome() })
+    : null;
   const router = createMessageRouter({
     controller,
     chrome: routerChrome,
     api: deps.api,
     extensionId: (typeof chrome !== 'undefined' && chrome.runtime?.id) ? chrome.runtime.id : 'dext',
+    presentAction: toolbarAction
+      ? (tabId, url, state) => toolbarAction.present(tabId, url, state)
+      : undefined,
   });
   router.start();
-  return { navMonitor, controller };
+  toolbarAction?.start();
+  return { navMonitor, controller, toolbarAction };
 }
 
 // Self-invoke on SW startup with real implementations, but skip in node tests where

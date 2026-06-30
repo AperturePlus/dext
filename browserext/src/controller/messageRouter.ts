@@ -22,6 +22,7 @@ import type { ChromeRuntime } from '../chrome.js';
 import type { ApiClient } from '../api.js';
 import type { CrawlController } from './controller.js';
 import type { CsToSw, MessageReceipt, PanelCommand } from '../shared/rpc.js';
+import type { ControllerState } from '../shared/state.js';
 import { buildPanelState } from './panelState.js';
 import { isAllowedFetchHost } from '../shared/hostPolicy.js';
 
@@ -50,6 +51,7 @@ export interface MessageRouterDeps {
   api: ApiClient;
   extensionId: string;
   now?: () => number;
+  presentAction?: (tabId: number, url: string | undefined, state: ControllerState) => Promise<unknown>;
 }
 
 export interface MessageRouter {
@@ -64,15 +66,16 @@ function hostOf(url?: string): string {
 export function createMessageRouter(deps: MessageRouterDeps): MessageRouter {
   const now = deps.now ?? (() => Date.now());
 
-  async function routeCommand(cmd: PanelCommand, tabId: number): Promise<void> {
+  async function routeCommand(cmd: PanelCommand, tabId: number, documentId?: string): Promise<void> {
     const c = deps.controller;
     switch (cmd.kind) {
-      case 'bind': await c.bind(tabId, now()); break;
+      case 'bind': await c.start(tabId, now()); break;
       case 'unbind': await c.unbind(now()); break;
       case 'set_auto': await c.setAutoMode(cmd.value, now()); break;
       case 'set_paused': await c.setPaused(cmd.value, now()); break;
-      case 'open': await c.setAutoMode(true, now()); break;   // open ⇒ ensure auto + next tick navigates
-      case 'submit': await c.manualComplete(now()); break;
+      case 'retry_capture': await c.retryCapture(documentId ?? '', now()); break;
+      case 'open': await c.reopenCurrentJob(now()); break;
+      case 'submit': await c.retryCapture(documentId ?? '', now()); break;
       case 'skip': await c.manualSkip(cmd.reason, now()); break;
       case 'fail': await c.manualFail(cmd.message, now()); break;
       case 'override': await c.overrideUrl(cmd.url, now()); break;
@@ -87,18 +90,25 @@ export function createMessageRouter(deps: MessageRouterDeps): MessageRouter {
     const tabId = sender.tab?.id;
     if (tabId === undefined) return false;
     if (!isAllowedFetchHost(hostOf(sender.tab?.url))) return false;
+    const senderTabId: number = tabId;
 
-    const state = await deps.controller.getState();
+    let state = await deps.controller.getState();
+
+    async function projectState(): Promise<ReturnType<typeof buildPanelState>> {
+      await deps.presentAction?.(senderTabId, sender.tab?.url, state);
+      return buildPanelState(state, { tabId: senderTabId });
+    }
 
     switch (message.op) {
       case 'REGISTER': {
-        const ps = buildPanelState(state, { tabId });
+        const ps = await projectState();
         return { received: true, state: ps };
       }
       case 'TICK': {
         // amend §7: bound-tab TICK reconciles; non-bound TICK is read-only.
         if (tabId === state.boundTabId) await deps.controller.tick(now());
-        const ps = buildPanelState(state, { tabId });
+        state = await deps.controller.getState();
+        const ps = await projectState();
         return { received: true, state: ps };
       }
       case 'PAGE_READY': {
@@ -125,7 +135,9 @@ export function createMessageRouter(deps: MessageRouterDeps): MessageRouter {
         // amend §4.7: unbound tab may ONLY bind; a non-bound tab cannot issue other commands while bound.
         if (bound === null && message.command.kind !== 'bind') return { received: true };
         if (bound !== null && tabId !== bound && message.command.kind !== 'bind') return { received: true };
-        await routeCommand(message.command, tabId);
+        await routeCommand(message.command, tabId, sender.documentId);
+        state = await deps.controller.getState();
+        await projectState();
         await deps.controller.broadcastPanelState({ tabId });
         return { received: true };
       }

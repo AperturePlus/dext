@@ -16,6 +16,33 @@ function fakeDoc(hostname) {
   return { el, hostname };
 }
 
+test('work RPC listener sends transport receipt synchronously before async work', async () => {
+  const { mod, cleanup } = await importTsModule('../src/content/index.ts', 'index.ts');
+  try {
+    const order = [];
+    let finishWork;
+    const router = {
+      handle() {
+        order.push('work-started');
+        return new Promise((resolve) => { finishWork = () => { order.push('work-finished'); resolve({ received: true }); }; });
+      },
+    };
+    const listener = mod.createWorkMessageListener(router);
+    const keepOpen = listener(
+      { op: 'CAPTURE', rpcId: 'rpc-1', jobId: 'job-1' },
+      { frameId: 0, documentId: 'DOC-1' },
+      (receipt) => { order.push('receipt'); assert.deepEqual(receipt, { received: true }); },
+    );
+    assert.equal(keepOpen, false, 'synchronous sendResponse does not keep the port open');
+    assert.deepEqual(order, ['receipt'], 'receipt is delivered before any DOM work starts');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(order, ['receipt', 'work-started']);
+    finishWork();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(order, ['receipt', 'work-started', 'work-finished']);
+  } finally { await cleanup(); }
+});
+
 test('gated ON: sets data-dext-extension-controller=v1 on allowed host', async () => {
   const { mod, cleanup } = await importTsModule('../src/content/index.ts', 'index.ts');
   try {
@@ -96,4 +123,72 @@ test('bootstrapContent (gate ON): slice-1/4 tests without document/chrome skip p
     assert.equal(doc.el._get('data-dext-extension-controller'), 'v1');
     assert.equal(proceeded, true);
   } finally { await cleanup(); }
+});
+
+test('bootstrapContent defers panel until DOMContentLoaded when document_start has no body', async () => {
+  const { mod, cleanup } = await importTsModule('../src/content/index.ts', 'index.ts');
+  try {
+    const sent = [];
+    let domReady = null;
+    let appended = 0;
+    const attrs = new Map();
+    const documentElement = { getAttribute: (n) => attrs.get(n) ?? null, setAttribute: (n, v) => attrs.set(n, v), removeAttribute: (n) => attrs.delete(n) };
+    const shadowRoot = { innerHTML: '', querySelector() { return null; }, querySelectorAll() { return []; }, addEventListener() {} };
+    const fakeDoc = {
+      readyState: 'loading', body: null, title: 't', links: { length: 0 }, forms: [], documentElement,
+      addEventListener(type, cb) { if (type === 'DOMContentLoaded') domReady = cb; },
+      querySelector() { return null; }, querySelectorAll() { return []; },
+      createElement: () => ({ attachShadow: () => shadowRoot, id: '' }),
+    };
+    const fakeChrome = {
+      runtime: {
+        sendMessage: async (m) => { sent.push(m); return { received: true, state: undefined }; },
+        onMessage: { addListener() {} }, id: 'ext-123',
+      },
+    };
+    await mod.bootstrapContent({ hostname: 'xjtu.edu.cn', documentElement, document: fakeDoc, chrome: fakeChrome });
+    assert.equal(sent.some((m) => m.op === 'REGISTER'), false);
+    fakeDoc.body = { innerText: 'x', appendChild() { appended += 1; } };
+    domReady();
+    domReady();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(appended, 1, 'panel host mounted once');
+    assert.equal(sent.filter((m) => m.op === 'REGISTER').length, 1);
+  } finally { await cleanup(); }
+});
+
+test('panel renders the fresh state returned by each TICK receipt', async () => {
+  const { mod, cleanup } = await importTsModule('../src/content/index.ts', 'index.ts');
+  const realSetInterval = globalThis.setInterval;
+  try {
+    let interval = null;
+    globalThis.setInterval = (cb) => { interval = cb; return { unref() {} }; };
+    const attrs = new Map();
+    const documentElement = { getAttribute: (n) => attrs.get(n) ?? null, setAttribute: (n, v) => attrs.set(n, v), removeAttribute: (n) => attrs.delete(n) };
+    const shadowRoot = { innerHTML: '', querySelector() { return null; }, querySelectorAll() { return []; }, addEventListener() {} };
+    const fakeDoc = {
+      readyState: 'complete', body: { innerText: 'x', appendChild() {} }, title: 't', links: { length: 1 }, forms: [], documentElement,
+      addEventListener() {}, querySelector() { return null; }, querySelectorAll() { return []; },
+      createElement: () => ({ attachShadow: () => shadowRoot, id: '' }),
+    };
+    const panelState = (connected) => ({
+      isBoundTab: true, bound: true, connected, autoMode: true, paused: false,
+      phase: 'idle', currentJob: null, navigationAttempt: 0, lastError: null, pendingDecision: null,
+    });
+    const fakeChrome = {
+      runtime: {
+        sendMessage: async (m) => ({ received: true, state: panelState(m.op === 'TICK') }),
+        onMessage: { addListener() {} }, id: 'ext-123',
+      },
+    };
+    await mod.bootstrapContent({ hostname: 'xjtu.edu.cn', documentElement, document: fakeDoc, chrome: fakeChrome });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.match(shadowRoot.innerHTML, /后端离线/);
+    interval();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.match(shadowRoot.innerHTML, /已连接/);
+  } finally {
+    globalThis.setInterval = realSetInterval;
+    await cleanup();
+  }
 });

@@ -11,6 +11,7 @@ export type PanelCommand =
   | { kind: 'unbind' }
   | { kind: 'set_auto'; value: boolean }
   | { kind: 'set_paused'; value: boolean }
+  | { kind: 'retry_capture' }
   | { kind: 'open' }
   | { kind: 'submit' }
   | { kind: 'skip'; reason?: string }

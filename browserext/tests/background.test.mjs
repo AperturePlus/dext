@@ -71,3 +71,34 @@ test('wireBackground registers a chrome.runtime.onMessage listener (slice 5 rout
     await cleanup();
   }
 });
+
+test('wireBackground registers the toolbar action click listener', async () => {
+  const previousChrome = globalThis.chrome;
+  delete globalThis.chrome;
+  const { mod, cleanup } = await importTsModule('../src/background.ts', 'background.ts');
+  globalThis.chrome = {};
+  globalThis.chrome.storage = {};
+  globalThis.chrome.runtime = { id: 'ext-123', onMessage: { addListener() {} } };
+  let actionListener = null;
+  globalThis.chrome.action = {
+    onClicked: { addListener(cb) { actionListener = cb; } },
+    async setBadgeText() {}, async setBadgeBackgroundColor() {}, async setTitle() {},
+  };
+  globalThis.chrome.storage.local = {
+    async get() { return {}; }, async set() {}, async remove() {},
+  };
+  try {
+    const fakeChrome = {
+      onNavCompleted() {}, onNavError() {}, onBeforeRequest() {}, onBeforeRedirect() {}, onCommitted() {}, onHistoryStateUpdated() {},
+      async updateTabUrl() {}, async getTab() { return null; }, async sendMessage() { return { received: true }; }, registerAlarm() {},
+    };
+    const fakeApi = { async getStatus() { return null; }, async claimNextJob() { return null; }, async failJob() {}, async skipJob() {}, async sendHeartbeat() {}, async getDecision() { return null; } };
+    const wired = mod.wireBackground({ chrome: fakeChrome, api: fakeApi });
+    assert.ok(wired.toolbarAction);
+    assert.equal(typeof actionListener, 'function');
+  } finally {
+    if (previousChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = previousChrome;
+    await cleanup();
+  }
+});

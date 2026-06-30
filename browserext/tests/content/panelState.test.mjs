@@ -7,31 +7,51 @@ test('formatError(null) → empty string', async () => {
   try { assert.equal(mod.formatError(null), ''); } finally { await cleanup(); }
 });
 
-test('formatError(nav_error) → nav_error:<error>', async () => {
+test('formatError(nav_error) → human-readable navigation failure', async () => {
   const { mod, cleanup } = await importTsModule('../src/content/panelState.ts', 'panelState.ts');
   try {
-    assert.equal(mod.formatError({ kind: 'nav_error', error: 'ERR_CONNECTION_RESET' }), 'nav_error:ERR_CONNECTION_RESET');
+    assert.match(mod.formatError({ kind: 'nav_error', error: 'ERR_CONNECTION_RESET' }), /页面导航失败/);
+    assert.match(mod.formatError({ kind: 'nav_error', error: 'ERR_CONNECTION_RESET' }), /ERR_CONNECTION_RESET/);
   } finally { await cleanup(); }
 });
 
-test('formatError(content_unavailable) → 人工处理 message with missing tag (amend §7)', async () => {
+test('capture_result becomes a human-readable capture recovery message', async () => {
   const { mod, cleanup } = await importTsModule('../src/content/panelState.ts', 'panelState.ts');
   try {
     const s = mod.formatError({
-      kind: 'content_unavailable', missing: 'page_ready', sourceDocumentId: 'DOC-1',
+      kind: 'content_unavailable', missing: 'capture_result', sourceDocumentId: 'DOC-1',
       since: 1000, recoveryAttempts: 3, nextRecoveryAt: null, recoveryExhausted: true,
     });
-    assert.match(s, /page_ready/);
-    assert.match(s, /人工/);
+    assert.match(s, /页面捕获未返回/);
+    assert.match(s, /目标页面已加载/);
   } finally { await cleanup(); }
 });
 
-test('formatError(gateway_5xx / rate_limited / unexpected_status) → stable labels', async () => {
+test('formatError(gateway_5xx / rate_limited / unexpected_status) → localized labels', async () => {
   const { mod, cleanup } = await importTsModule('../src/content/panelState.ts', 'panelState.ts');
   try {
-    assert.equal(mod.formatError({ kind: 'gateway_5xx' }), 'gateway_5xx');
-    assert.equal(mod.formatError({ kind: 'rate_limited' }), 'rate_limited');
-    assert.equal(mod.formatError({ kind: 'unexpected_status', statusCode: 403 }), 'unexpected_status:403');
+    assert.match(mod.formatError({ kind: 'gateway_5xx' }), /暂时不可用/);
+    assert.match(mod.formatError({ kind: 'rate_limited' }), /请求过于频繁/);
+    assert.match(mod.formatError({ kind: 'unexpected_status', statusCode: 403 }), /403/);
+  } finally { await cleanup(); }
+});
+
+test('panelProgress maps capture error and submitting onto the three-step track', async () => {
+  const { mod, cleanup } = await importTsModule('../src/content/panelState.ts', 'panelState.ts');
+  try {
+    const base = { phase: 'error', lastError: { kind: 'content_unavailable', missing: 'capture_result' } };
+    assert.deepEqual(mod.panelProgress(base), { navigation: 'complete', capture: 'error', submit: 'pending' });
+    assert.deepEqual(mod.panelProgress({ phase: 'submitting', lastError: null }), { navigation: 'complete', capture: 'complete', submit: 'active' });
+  } finally { await cleanup(); }
+});
+
+test('panelStateEqual notices target URL and school changes within the same job id', async () => {
+  const { mod, cleanup } = await importTsModule('../src/content/panelState.ts', 'panelState.ts');
+  try {
+    const job = (url, university_name) => ({ id: 'job-1', url, context: { university_name } });
+    const base = { isBoundTab: true, bound: true, connected: true, autoMode: true, paused: false, phase: 'assigned', navigationAttempt: 1, lastError: null, pendingDecision: null };
+    assert.equal(mod.panelStateEqual({ ...base, currentJob: job('https://a.edu.cn/x', 'A') }, { ...base, currentJob: job('https://a.edu.cn/y', 'A') }), false);
+    assert.equal(mod.panelStateEqual({ ...base, currentJob: job('https://a.edu.cn/x', 'A') }, { ...base, currentJob: job('https://a.edu.cn/x', 'B') }), false);
   } finally { await cleanup(); }
 });
 

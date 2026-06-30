@@ -6,10 +6,9 @@
  *  conditions), three-signal aggregation by documentId, the amend §3.2 retry
  *  funnel, the amend §2.4 two-level deadline, requestId binding + commit/http/
  *  documentId join, and the six deliver* event handlers (NavController). The
- *  gate constant EXCLUSIVE_CONTROL_ENABLED (injected by esbuild, default false)
- *  makes the official build a runtime no-op: tick/bind/deliver* load state and
- *  return before any network or chrome call. capture / formActions / CS RPC
- *  ledger are slice 4. */
+ *  gate constant EXCLUSIVE_CONTROL_ENABLED (injected by esbuild, default true
+ *  since slice 6) can still produce an explicit recovery/no-op build. capture /
+ *  formActions / CS RPC ledger are slice 4. */
 
 import { createMutex } from './mutex.js';
 import type { Mutex } from './mutex.js';
@@ -54,9 +53,12 @@ export interface CrawlControllerDeps {
 
 export interface CrawlController extends NavController {
   tick(now?: number): Promise<void>;
+  start(tabId: number, now?: number): Promise<StartResult>;
   bind(tabId: number, now?: number): Promise<void>;
   setAutoMode(mode: boolean, now?: number): Promise<void>;
   setPaused(paused: boolean, now?: number): Promise<void>;
+  retryCapture(documentId: string, now?: number): Promise<void>;
+  reopenCurrentJob(now?: number): Promise<void>;
   unbind(now?: number): Promise<void>;
   manualSkip(reason: string | undefined, now?: number): Promise<void>;
   manualFail(message: string | undefined, now?: number): Promise<void>;
@@ -70,6 +72,11 @@ export interface CrawlController extends NavController {
   deliverActionPrepared(prepared: ActionPrepared, sender: { tab?: { id: number }; frameId?: number; documentId?: string }): Promise<void>;
   deliverActionResult(result: ActionResult, sender: { tab?: { id: number }; frameId?: number; documentId?: string }): Promise<void>;
 }
+
+export type StartResult =
+  | { started: true }
+  | { started: false; reason: 'bound_elsewhere'; boundTabId: number }
+  | { started: false; reason: 'disabled' };
 
 export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlController {
   const storage: ControllerStorage = deps.storage ?? createControllerStorage(deps.area ?? inMemoryArea());
@@ -172,14 +179,18 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
   }
 
   /** Persist navigation intent BEFORE calling tabs.update (spec §3.1). */
-  async function navigateNow(s: ControllerState, now: number): Promise<void> {
+  async function navigateNow(
+    s: ControllerState,
+    now: number,
+    attempt: number = s.navigation?.attempt ?? 1,
+  ): Promise<void> {
     if (!s.currentJob || s.boundTabId === null || !deps.chrome?.updateTabUrl) return;
     if (s.paused || !s.autoMode) return;
     s.navigation = {
       jobId: s.currentJob.id,
       requestedUrl: s.currentJob.url,
       issuedAt: now,
-      attempt: s.navigation?.attempt ?? 1,
+      attempt,
       kind: 'navigate',
     };
     s.phase = 'navigating';
@@ -193,16 +204,14 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
    *  receipt. Runs UNDER the mutex (called from applyLandingVerdict's landed
    *  branch or from deliverActionResult's same-document branch) — do NOT
    *  re-acquire. */
-  async function dispatchCapture(s: ControllerState, now: number): Promise<void> {
+  async function dispatchCaptureFromDocument(
+    s: ControllerState,
+    now: number,
+    sourceDocumentId: string,
+  ): Promise<void> {
     if (!s.currentJob || s.boundTabId === null || !deps.chrome?.sendMessage) return;
-    // sourceDocumentId: prefer commit.documentId (navigate landing); fall back to
-    // navigation.action's sourceDocumentId (same-document form_action effect — the
-    // form_action navigation has no commit because it never re-navigated, but its
-    // source document is the list page that hosted the form).
-    const sourceDocumentId =
-      s.navigation?.commit?.documentId
-      ?? (s.navigation?.kind === 'form_action' ? s.navigation.sourceDocumentId : undefined);
     if (!sourceDocumentId) return;
+    s.lastError = null;
     const rpcId = (typeof crypto !== 'undefined' && crypto.randomUUID)
       ? crypto.randomUUID()
       : `cap-${now}-${Math.random().toString(36).slice(2)}`;
@@ -226,7 +235,6 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
         await persist();
       }
     } catch {
-      // sendMessage reject → amend §4.2: capture target doc gone → content_unavailable.
       s.phase = 'error';
       s.phaseStartedAt = now;
       s.lastError = {
@@ -236,6 +244,19 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
       s.pendingRpc = null;
       await persist();
     }
+  }
+
+  async function dispatchCapture(s: ControllerState, now: number): Promise<void> {
+    if (!s.currentJob || s.boundTabId === null || !deps.chrome?.sendMessage) return;
+    // sourceDocumentId: prefer commit.documentId (navigate landing); fall back to
+    // navigation.action's sourceDocumentId (same-document form_action effect — the
+    // form_action navigation has no commit because it never re-navigated, but its
+    // source document is the list page that hosted the form).
+    const sourceDocumentId =
+      s.navigation?.commit?.documentId
+      ?? (s.navigation?.kind === 'form_action' ? s.navigation.sourceDocumentId : undefined);
+    if (!sourceDocumentId) return;
+    await dispatchCaptureFromDocument(s, now, sourceDocumentId);
   }
 
   /** Dispatch PREPARE_ACTION for a form_submit job (amend §5.1–§5.2). The prepare
@@ -640,7 +661,7 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
     } finally { release(); }
   }
 
-  return {
+  const controller: CrawlController = {
     getNavScope,
     deliverBeforeRequest,
     deliverBeforeRedirect,
@@ -841,6 +862,40 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
       }
     },
 
+    async start(tabId: number, now: number = Date.now()): Promise<StartResult> {
+      const release = await mutex.acquire();
+      let result: StartResult;
+      try {
+        const s = await ensureLoaded();
+        if (!EXCLUSIVE_CONTROL_ENABLED) return { started: false, reason: 'disabled' };
+        if (s.boundTabId !== null && s.boundTabId !== tabId) {
+          return { started: false, reason: 'bound_elsewhere', boundTabId: s.boundTabId };
+        }
+
+        if (s.boundTabId === null) {
+          s.boundTabId = tabId;
+          s.boundAt = now;
+          s.phase = 'assigned';
+          s.phaseStartedAt = now;
+        }
+        s.autoMode = true;
+        s.paused = false;
+        if (s.phase === 'assigned' && s.currentJob === null) {
+          s.phase = 'idle';
+          s.phaseStartedAt = now;
+        }
+        await persist();
+        result = { started: true };
+      } finally {
+        release();
+      }
+
+      // Reconcile immediately after the desired state is durable. tick() owns
+      // backend backoff, claim, and persist-before-navigate.
+      await controller.tick(now);
+      return result;
+    },
+
     async bind(tabId: number, now: number = Date.now()): Promise<void> {
       const release = await mutex.acquire();
       try {
@@ -881,6 +936,33 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
         s.paused = paused;
         s.phaseStartedAt = now;
         await persist();
+      } finally {
+        release();
+      }
+    },
+
+    async retryCapture(documentId: string, now: number = Date.now()): Promise<void> {
+      const release = await mutex.acquire();
+      try {
+        const s = await ensureLoaded();
+        if (!EXCLUSIVE_CONTROL_ENABLED || !documentId || !s.currentJob || s.boundTabId === null) return;
+        await dispatchCaptureFromDocument(s, now, documentId);
+      } finally {
+        release();
+      }
+    },
+
+    async reopenCurrentJob(now: number = Date.now()): Promise<void> {
+      const release = await mutex.acquire();
+      try {
+        const s = await ensureLoaded();
+        if (!EXCLUSIVE_CONTROL_ENABLED || !s.currentJob || s.boundTabId === null) return;
+        const nextAttempt = (s.navigation?.attempt ?? 0) + 1;
+        s.autoMode = true;
+        s.paused = false;
+        s.pendingRpc = null;
+        s.lastError = null;
+        await navigateNow(s, now, nextAttempt);
       } finally {
         release();
       }
@@ -1000,6 +1082,7 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
       }
     },
   };
+  return controller;
 }
 
 /** Minimal in-memory StorageArea used when no chrome.storage is present. */
