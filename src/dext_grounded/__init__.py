@@ -10,4 +10,6 @@ Both consumer modules import this package but never import each other.
 
 __version__ = "0.1.0"
 
-__all__: list[str] = []
+from dext_grounded.content import ContentClass
+
+__all__ = ["ContentClass"]

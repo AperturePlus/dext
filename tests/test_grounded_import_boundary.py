@@ -21,3 +21,16 @@ def test_dext_grounded_does_not_import_dext_family():
         assert forbidden not in sys.modules, (
             f"dext_grounded must not import peer module {forbidden!r}"
         )
+
+
+def test_dext_grounded_submodules_do_not_import_dext_family():
+    # importing the package then its first submodule must not pull in any dext* peer.
+    for name in list(sys.modules):
+        if name in ("dext", "dext_graph", "dext_monitor", "dext_recommend", "dext_competition"):
+            del sys.modules[name]
+    importlib.import_module("dext_grounded")
+    importlib.import_module("dext_grounded.content")
+    for forbidden in ("dext", "dext_graph", "dext_monitor", "dext_recommend", "dext_competition"):
+        assert forbidden not in sys.modules, (
+            f"dext_grounded.content must not import peer module {forbidden!r}"
+        )
