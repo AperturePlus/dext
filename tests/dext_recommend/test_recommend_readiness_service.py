@@ -256,3 +256,61 @@ async def test_check_vector_exception_emits_single_error():
     # NOT a second generic "vector alias/collection unavailable" copy.
     assert unavailable[0].message == "boom"
     assert unavailable[0].retryable is True
+
+
+async def test_check_sample_reconciliation_profile_hash_mismatch_blocks_ready():
+    cat_sample = ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1")
+    vec_sample = ProfessorReleaseSample("e1", ("org-a",), profile_hash="h2")
+    graph_sample = ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1")
+    v = VectorReleaseObservation(
+        alias="dext_professors_current", target_collection="dext_professors__b1",
+        build_id="b1", payload_schema_version=2, embedding_fingerprint="fp-1",
+        embedding_dimension=1536, point_count=1, samples=(vec_sample,),
+    )
+    svc = _service(
+        FakeCatalogReleasePort(_catalog_obs(), [cat_sample]),
+        FakeVectorReleasePort(v),
+        FakeGraphReleasePort(GraphReleaseObservation("b1", (graph_sample,))),
+        FakeRankingProfilePort("ranking-v1"),
+    )
+    report = await svc.check()
+    assert report.ready is False
+    codes = {e.code for e in report.errors}
+    assert RecommendationErrorCode.ACTIVE_BUILD_INCONSISTENT in codes
+
+
+async def test_check_sample_reconciliation_org_unit_mismatch_blocks_ready():
+    cat_sample = ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1")
+    vec_sample = ProfessorReleaseSample("e1", ("org-b",), profile_hash="h1")
+    graph_sample = ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1")
+    v = VectorReleaseObservation(
+        alias="dext_professors_current", target_collection="dext_professors__b1",
+        build_id="b1", payload_schema_version=2, embedding_fingerprint="fp-1",
+        embedding_dimension=1536, point_count=1, samples=(vec_sample,),
+    )
+    svc = _service(
+        FakeCatalogReleasePort(_catalog_obs(), [cat_sample]),
+        FakeVectorReleasePort(v),
+        FakeGraphReleasePort(GraphReleaseObservation("b1", (graph_sample,))),
+        FakeRankingProfilePort("ranking-v1"),
+    )
+    report = await svc.check()
+    assert report.ready is False
+    codes = {e.code for e in report.errors}
+    assert RecommendationErrorCode.ACTIVE_BUILD_INCONSISTENT in codes
+
+
+async def test_check_sample_reconciliation_consistent_passes():
+    cat_sample = ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1")
+    v = _vector_obs()  # uses _sample() -> profile_hash="h1", org=("org-a",)
+    graph = _graph_obs()
+    svc = _service(
+        FakeCatalogReleasePort(_catalog_obs(), [cat_sample]),
+        FakeVectorReleasePort(v),
+        FakeGraphReleasePort(graph),
+        FakeRankingProfilePort("ranking-v1"),
+    )
+    report = await svc.check()
+    assert report.ready is True
+    codes = {e.code for e in report.errors}
+    assert RecommendationErrorCode.ACTIVE_BUILD_INCONSISTENT not in codes

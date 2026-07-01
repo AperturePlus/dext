@@ -92,7 +92,7 @@ def _coverage_passes(obs_vector, field, threshold):
     return True, 1.0
 
 
-def _reconcile_samples(catalog, vector, graph):
+def _reconcile_samples(catalog, vector, graph) -> list[RecommendationError]:
     """Compare profile_hash + org_unit_ids per entity_id across sources.
 
     An entity_id present in only one source contributes no error (a sample
@@ -277,6 +277,13 @@ class ReadinessService:
                 RecommendationErrorCode.ACTIVE_BUILD_INCONSISTENT,
                 f"three-way build id mismatch: {sorted(build_ids)}",
             )
+
+        if len(build_ids) == 1:
+            errors.extend(self._reconcile_samples(
+                catalog_samples,
+                vector_obs.samples if vector_obs is not None else (),
+                graph_obs.samples if graph_obs is not None else (),
+            ))
 
         if vector_obs is not None:
             if vector_obs.embedding_dimension != catalog_obs.embedding_dimension:
