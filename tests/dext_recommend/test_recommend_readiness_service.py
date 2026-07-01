@@ -386,10 +386,10 @@ async def test_check_eligibility_coverage_passes_when_master_eligible():
 
 
 async def test_concurrent_new_old_build_do_not_corrupt():
-    # build b1 is the OLD build (already cached); a second check targeting b2
-    # (NEWER) must end with the b2 snapshot cached, never overwritten by a
-    # late-finishing b1 check. The asyncio.Lock serializes so completion order
-    # follows dispatch order.
+    # Smoke pin: after priming b1, ports flip to b2 and two concurrent checks
+    # are dispatched. Both checks actually read b2 (ports are flipped), so the
+    # test only guarantees the lock does not corrupt dispatch-order caching;
+    # it does NOT prove a stale b1 read cannot overwrite a newer b2 snapshot.
 
     # NOTE: this is a smoke-test regression pin (both checks read b2). A
     # failing-without-lock contention test is not constructible because the
@@ -439,9 +439,9 @@ async def test_concurrent_new_old_build_do_not_corrupt():
     # flip all ports to b2 (newer build)
     cat._build = vec._build = graph._build = "b2"
 
-    # dispatch a b2 check and a delayed b1-style check; because the lock
-    # serializes, the b2 check completes and caches b2 before any stale
-    # overwite could occur
+    # dispatch two concurrent checks; both read b2 (the old name is purely
+    # for naming symmetry). The lock serializes them, so completion order follows
+    # dispatch order and the cached snapshot remains consistent.
     async def _check_b2():
         await asyncio.sleep(0)  # yield so ordering is realistic
         return await svc.check()
@@ -452,6 +452,6 @@ async def test_concurrent_new_old_build_do_not_corrupt():
 
     r2, r1 = await asyncio.gather(_check_b2(), _check_b1_stale())
     assert r2.ready is True and r1.ready is True
-    # the cached snapshot is whichever check ran last under the lock; both
-    # read b2, so the cached snapshot must be b2, never a stale b1.
+    # because both concurrent checks read b2, the cached snapshot after the
+    # serialized lock pass must still be b2.
     assert svc.get_snapshot().build_id == "b2"
