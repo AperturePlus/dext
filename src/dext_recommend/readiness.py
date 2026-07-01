@@ -352,7 +352,7 @@ class ReadinessService:
             build_id=catalog_obs.build_id,
             catalog_schema_version=catalog_obs.catalog_schema_version,
             neo4j_active_build_id=graph_obs.build_id if graph_obs else "",
-            qdrant_alias_target=vector_obs.alias if vector_obs else "",
+            qdrant_alias_target=vector_obs.target_collection if vector_obs else "",
             qdrant_payload_schema_version=catalog_obs.qdrant_payload_schema_version,
             embedding_provider=catalog_obs.embedding_provider,
             embedding_model=catalog_obs.embedding_model,

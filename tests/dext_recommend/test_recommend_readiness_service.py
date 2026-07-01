@@ -314,3 +314,17 @@ async def test_check_sample_reconciliation_consistent_passes():
     assert report.ready is True
     codes = {e.code for e in report.errors}
     assert RecommendationErrorCode.ACTIVE_BUILD_INCONSISTENT not in codes
+
+
+async def test_snapshot_qdrant_alias_target_is_physical_collection():
+    svc = _service(
+        FakeCatalogReleasePort(_catalog_obs(), [_sample()]),
+        FakeVectorReleasePort(_vector_obs()),
+        FakeGraphReleasePort(_graph_obs()),
+        FakeRankingProfilePort("ranking-v1"),
+    )
+    report = await svc.check()
+    assert report.ready is True
+    # _vector_obs() sets target_collection="dext_professors__b1", alias="dext_professors_current"
+    assert report.snapshot.qdrant_alias_target == "dext_professors__b1"
+    assert report.snapshot.qdrant_alias_target != "dext_professors_current"
