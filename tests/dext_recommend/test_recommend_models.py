@@ -40,10 +40,12 @@ def test_active_build_snapshot_is_frozen():
         snap.build_id = "other"
 
 
-def test_readiness_service_check_placeholder():
-    svc = ReadinessService()
-    with pytest.raises(NotImplementedError):
-        svc.check()
+async def test_readiness_service_requires_deps_and_settings():
+    # ReadinessService is now a real two-phase orchestrator (R2); it requires
+    # ReadinessDeps + RecommendSettings. Detailed behavior is covered by
+    # tests/dext_recommend/test_recommend_readiness_service.py.
+    with pytest.raises(TypeError):
+        ReadinessService()  # type: ignore[call-arg]
 
 
 def test_coverage_stat_accepts_valid_range():
