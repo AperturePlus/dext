@@ -1,7 +1,5 @@
 import asyncio
 
-import pytest
-
 from dext_recommend.adapters._readback_call import ReadbackCall, gather_safe
 from dext_recommend.errors import ErrorSeverity, RecommendationErrorCode
 from dext_recommend.ports.release_readback import ReadinessSourceError
