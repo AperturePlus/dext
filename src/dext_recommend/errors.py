@@ -24,6 +24,12 @@ class RecommendationErrorCode(str, Enum):
     INSUFFICIENT_FACTS = "insufficient_facts"
     UNAUTHORIZED_CONTACT = "unauthorized_contact"
     GENERATION_UNAVAILABLE = "generation_unavailable"
+    ORG_UNIT_IDS_COVERAGE_INSUFFICIENT = "org_unit_ids_coverage_insufficient"
+    PROFILE_HASH_COVERAGE_INSUFFICIENT = "profile_hash_coverage_insufficient"
+    ROLE_STATUS_COVERAGE_INSUFFICIENT = "role_status_coverage_insufficient"
+    ELIGIBILITY_COVERAGE_INSUFFICIENT = "eligibility_coverage_insufficient"
+    ORG_UNIT_FILTER_UNAVAILABLE = "org_unit_filter_unavailable"
+    RANKING_PROFILE_UNAVAILABLE = "ranking_profile_unavailable"
 
 
 @dataclass(frozen=True, slots=True)

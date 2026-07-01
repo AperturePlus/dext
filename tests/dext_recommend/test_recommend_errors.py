@@ -17,6 +17,12 @@ def test_error_code_enum_has_all_foundations_codes():
         "embedding_fingerprint_mismatch", "no_candidates_after_filters",
         "payload_prefilter_degraded", "insufficient_facts",
         "unauthorized_contact", "generation_unavailable",
+        "org_unit_ids_coverage_insufficient",
+        "profile_hash_coverage_insufficient",
+        "role_status_coverage_insufficient",
+        "eligibility_coverage_insufficient",
+        "org_unit_filter_unavailable",
+        "ranking_profile_unavailable",
     }
 
 
@@ -57,3 +63,13 @@ def test_recommendation_error_to_dict_for_response():
     assert d["severity"] == "error"
     assert d["build_id"] == "b-1"
     assert d["retryable"] is False
+
+
+def test_new_readiness_error_codes_registered():
+    from dext_recommend.errors import RecommendationErrorCode as C
+    assert C.ORG_UNIT_IDS_COVERAGE_INSUFFICIENT.value == "org_unit_ids_coverage_insufficient"
+    assert C.PROFILE_HASH_COVERAGE_INSUFFICIENT.value == "profile_hash_coverage_insufficient"
+    assert C.ROLE_STATUS_COVERAGE_INSUFFICIENT.value == "role_status_coverage_insufficient"
+    assert C.ELIGIBILITY_COVERAGE_INSUFFICIENT.value == "eligibility_coverage_insufficient"
+    assert C.ORG_UNIT_FILTER_UNAVAILABLE.value == "org_unit_filter_unavailable"
+    assert C.RANKING_PROFILE_UNAVAILABLE.value == "ranking_profile_unavailable"
