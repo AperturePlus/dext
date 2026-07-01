@@ -6,7 +6,6 @@ weak_explanation warning + missing_reason. LLM never rewrites facts.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 
 from dext_grounded import SourceRef

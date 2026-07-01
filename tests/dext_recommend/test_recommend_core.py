@@ -15,6 +15,7 @@ from dext_recommend.core.service import RecommendDeps, RecommendationCore
 from dext_recommend.ports._fakes import (
     FakeActiveSnapshotProvider, FakeRankingProfilePort,
 )
+from dext_recommend.models import ConversationContext
 
 from tests.dext_recommend._recfixtures import (
     coverage_flags_case, fake_llm_for_understanding, professor_details_case,
@@ -194,3 +195,27 @@ async def test_response_validation_runs():
     # validate is called inside recommend; a valid response is returned
     assert resp.build_id == "b-1"
     assert resp.ranking_profile_version == "r1"
+
+
+async def test_recommend_refine_direction_merge():
+    """spec §8.1 #11: refine_direction merges QU preferred_* into effective
+    filters when request.filters leaves them empty."""
+    core = _core(
+        llm_output=_output(
+            preferred_universities=["u_demo"],
+            mentor_eligibility_requirement="confirmed",
+        ),
+    )
+    resp = await core.recommend(RecommendRequest(
+        query_text="换方向",
+        filters=RecommendationFilters(),  # all defaults: empty + any
+        conversation_context=ConversationContext(intent="refine_direction"),
+    ))
+    # the merge happened: hybrid_recall saw the merged filters
+    assert core._deps.vector_port.hybrid_recall_calls
+    eff = core._deps.vector_port.hybrid_recall_calls[0]["filters"]
+    assert eff.university_ids == ("u_demo",)
+    assert eff.master_eligibility == "confirmed"
+    # response is well-formed (success or clean no_candidates)
+    assert isinstance(resp, RecommendResponse)
+

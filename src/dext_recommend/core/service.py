@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 from dext_recommend.config import RecommendSettings
 from dext_recommend.errors import RecommendationErrorCode
 from dext_recommend.models import (
-    QueryDiagnostics, RecommendRequest, RecommendResponse, RecommendationWarning,
+    QueryDiagnostics, QueryUnderstanding, RecommendRequest, RecommendResponse,
+    RecommendationFilters, RecommendationWarning,
 )
 from dext_recommend.ports import (
     ActiveSnapshotProvider, LLMGenerationPort, ProfessorFactPort,
@@ -129,6 +130,10 @@ class RecommendationCore:
             validate(resp)
             return resp
 
+        # spec §6.2: refine_direction merges QU preferred_* into the effective
+        # filters used downstream. Explicit request.filters always win.
+        effective_filters = _effective_filters(request, qu, route)
+
         embedding = await self._deps.embedding_port.embed(snapshot, request.query_text)
         if embedding.embedding_fingerprint != snapshot.embedding_fingerprint:
             return _error_response(
@@ -141,19 +146,19 @@ class RecommendationCore:
         coverage_flags = self._deps.coverage_flags_by_build_id.get(snapshot.build_id, {})
         hits_pool, steps_used = await recall_loop(
             snapshot, self._deps.vector_port, list(embedding.vector),
-            request.filters, profile,
+            effective_filters, profile,
             oversample_max=self._settings.oversample_max,
             request_oversample=request.oversample, limit=request.limit,
         )
         # final filter is applied per-step in service (hydrated facts needed)
         # Simpler: do one final filter on the largest pool (the last step's hits)
-        prefiltered = payload_prefilter(hits_pool, request.filters)
+        prefiltered = payload_prefilter(hits_pool, effective_filters)
         fact_map = await self._deps.facts_port.hydrate(
             snapshot, [h.entity_id for h in prefiltered],
         )
         review_policy = request.review_policy
         survivors, filter_diag = final_filter(
-            prefiltered, fact_map, request.filters, route, coverage_flags,
+            prefiltered, fact_map, effective_filters, route, coverage_flags,
             review_policy=review_policy,
         )
         recall_count = len(hits_pool)
@@ -169,7 +174,7 @@ class RecommendationCore:
             diag = QueryDiagnostics(
                 query_length=len(request.query_text),
                 language_summary=_language_summary(request.query_text),
-                filter_summary=_filter_summary(request.filters),
+                filter_summary=_filter_summary(effective_filters),
                 recall_count=recall_count, post_filter_count=0, returned_count=0,
             )
             object.__setattr__(resp, "query", diag)
@@ -221,7 +226,7 @@ class RecommendationCore:
         diag = QueryDiagnostics(
             query_length=len(request.query_text),
             language_summary=_language_summary(request.query_text),
-            filter_summary=_filter_summary(request.filters),
+            filter_summary=_filter_summary(effective_filters),
             recall_count=recall_count, post_filter_count=len(survivors),
             returned_count=len(results),
         )
@@ -259,6 +264,50 @@ def _filter_summary(filters) -> str:
     if filters.phd_eligibility == "confirmed":
         parts.append("phd=confirmed")
     return ", ".join(parts) or "none"
+
+
+def _effective_filters(
+    request: RecommendRequest, qu: QueryUnderstanding, route,
+) -> RecommendationFilters:
+    """spec §6.2: refine_direction merges QU preferred_* into the effective
+    filters used by recall_loop / payload_prefilter / final_filter. Explicit
+    request.filters always win — preferred_* only fill empty slots.
+    """
+    f = request.filters
+    if not getattr(route, "refine_merge", False):
+        return f
+
+    university_ids = f.university_ids
+    if not university_ids and qu.preferred_universities:
+        university_ids = tuple(qu.preferred_universities)
+
+    city_names = f.city_names
+    if not city_names and qu.preferred_cities:
+        city_names = tuple(qu.preferred_cities)
+
+    org_unit_ids = f.org_unit_ids
+    if not org_unit_ids and qu.preferred_org_units:
+        org_unit_ids = tuple(qu.preferred_org_units)
+
+    master_eligibility = f.master_eligibility
+    phd_eligibility = f.phd_eligibility
+    if qu.mentor_eligibility_requirement == "confirmed":
+        if master_eligibility == "any":
+            master_eligibility = "confirmed"
+        if phd_eligibility == "any":
+            phd_eligibility = "confirmed"
+
+    return RecommendationFilters(
+        university_ids=university_ids,
+        city_names=city_names,
+        org_unit_ids=org_unit_ids,
+        title_families=f.title_families,
+        master_eligibility=master_eligibility,
+        phd_eligibility=phd_eligibility,
+        topic_ids=f.topic_ids,
+        topic_filter_mode=f.topic_filter_mode,
+    )
+
 
 
 def _suggested_followups(qu, route) -> list[str]:
