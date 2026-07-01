@@ -37,7 +37,30 @@ def test_unauthorized_contact_stripped():
     assert any(w.code == "unauthorized_contact" for w in res.warnings)
 
 
-def test_stale_fact_downgraded_to_uncertain():
+def test_unauthorized_contact_warning_emitted_even_when_strip_fails():
+    # Spec §6: 剥离失败时降级为拒绝整个输出 + unauthorized_contact warning.
+    # The warning MUST fire whenever a contact pattern MATCHED the original
+    # output, independent of whether stripping succeeded. Simulate strip-failure
+    # by monkeypatching one contact pattern's sub to leave the match in place.
+    guard = SafetyGuard()
+
+    class _UnstrippablePattern:
+        def search(self, text):
+            return "foo@bar.com" in text
+
+        def sub(self, repl, text):
+            # pretend stripping failed — output unchanged
+            return text
+
+    guard._contact_patterns = [_UnstrippablePattern()]
+    res = guard.inspect(
+        GenerationResult(output="email: foo@bar.com", claims=[]),
+        domain="recommend", include_contacts=False,
+    )
+    # output downgraded to refusal template ...
+    assert res.output == "[output rejected: unsafe advice]"
+    # ... AND the unauthorized_contact warning still emitted (the Finding 1 fix)
+    assert any(w.code == "unauthorized_contact" for w in res.warnings)
     claim = Claim(
         text="2024 年报名时间是 3 月", content_class=ContentClass.FACT,
         # fact_refs omitted → already uncertain at Claim level, but guard should

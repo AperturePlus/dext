@@ -29,14 +29,17 @@ from dext_grounded.student_context import StudentContext
 def _ref_content_hash(ref: SourceRef) -> str:
     """Stable hash of the ref's content fields (spec §5.2 canonical identity).
 
-    Two refs with the same (doc_path, heading_path, chunk_hash) triple but
-    different content (quote_or_summary/official_url/last_verified) are NOT the
-    same ref — the LLM one is "冒充真实引用" (impersonating a real ref).
+    The impersonation discriminator is `quote_or_summary` + `official_url` ONLY.
+    `last_verified` is intentionally excluded: the bundle's object carries the
+    authoritative `last_verified` and replaces the LLM's, so the LLM (which has
+    no way to know `last_verified`) must hash-match a bundle ref that does carry
+    it. Two refs with the same (doc_path, heading_path, chunk_hash) triple but
+    different quote/url are NOT the same ref — the LLM one is "冒充真实引用"
+    (impersonating a real ref).
     """
     payload = "\x1f".join((
         ref.quote_or_summary or "",
         ref.official_url or "",
-        ref.last_verified or "",
     ))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 

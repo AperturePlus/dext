@@ -125,27 +125,31 @@ class SafetyGuard:
                     )
             # 3. strip unauthorized contact matches from the output
             if not include_contacts:
-                for pattern in self._contact_patterns:
-                    if pattern.search(sanitized):
-                        stripped = pattern.sub("", sanitized)
-                        if pattern.search(stripped):
-                            # stripping failed to remove — downgrade to refusal
-                            sanitized = self._refusal_template()
-                            break
-                        sanitized = stripped
-                if sanitized != self._refusal_template():
-                    # emit the unauthorized_contact warning once if any contact
-                    # pattern matched the ORIGINAL output (pre-strip), so the
-                    # caller knows a contact was elided
+                # Detect whether ANY contact pattern matched the ORIGINAL output
+                # (pre-strip). The unauthorized_contact warning MUST fire on
+                # detection, independent of whether stripping succeeded — spec §6
+                # requires the warning even on the strip-failure downgrade path.
+                contact_detected = any(
+                    pattern.search(result.output) for pattern in self._contact_patterns
+                )
+                if contact_detected:
                     for pattern in self._contact_patterns:
-                        if pattern.search(result.output):
-                            warnings.append(GenerationWarning(
-                                code=GenerationWarningCode.UNAUTHORIZED_CONTACT.value,
-                                message=warning_messages[
-                                    GenerationWarningCode.UNAUTHORIZED_CONTACT.value
-                                ],
-                            ))
-                            break
+                        if pattern.search(sanitized):
+                            stripped = pattern.sub("", sanitized)
+                            if pattern.search(stripped):
+                                # stripping failed to remove — downgrade to refusal
+                                sanitized = self._refusal_template()
+                                break
+                            sanitized = stripped
+                    # emit the unauthorized_contact warning once — fires whether
+                    # stripping succeeded (contacts elided) or failed (output
+                    # downgraded to the refusal template)
+                    warnings.append(GenerationWarning(
+                        code=GenerationWarningCode.UNAUTHORIZED_CONTACT.value,
+                        message=warning_messages[
+                            GenerationWarningCode.UNAUTHORIZED_CONTACT.value
+                        ],
+                    ))
 
         return replace(
             result, claims=kept_claims, warnings=warnings, output=sanitized,
