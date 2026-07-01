@@ -143,6 +143,7 @@ class FakeVectorSearchPort:
         self._hits = tuple(hits or ())
         self._alias = alias
         self._count = int(count)
+        self.hybrid_recall_calls: list[dict] = []
 
     async def hybrid_recall(
         self,
@@ -152,6 +153,12 @@ class FakeVectorSearchPort:
         oversample: int,
         profile_version: str,
     ) -> list[VectorHit]:
+        self.hybrid_recall_calls.append({
+            "oversample": oversample,
+            "filters": filters,
+            "profile_version": profile_version,
+            "snapshot_build_id": snapshot.build_id,
+        })
         return list(self._hits)
 
     async def alias_readback(self, snapshot: ActiveBuildSnapshot) -> AliasReadback:
@@ -176,6 +183,8 @@ class FakeProfessorFactPort:
     ) -> None:
         self._details = dict(details or {})
         self._facts = dict(facts or {})
+        self.hydrate_calls: list[dict] = []
+        self.get_detail_calls: list[dict] = []
 
     async def get_detail(
         self,
@@ -184,6 +193,10 @@ class FakeProfessorFactPort:
         include_contacts: bool,
         viewer_permissions: ViewerPermissions,
     ) -> ProfessorDetail:
+        self.get_detail_calls.append({
+            "entity_id": entity_id, "include_contacts": include_contacts,
+            "snapshot_build_id": snapshot.build_id,
+        })
         return self._details[entity_id]
 
     async def hydrate(
@@ -191,6 +204,9 @@ class FakeProfessorFactPort:
         snapshot: ActiveBuildSnapshot,
         entity_ids: list[str],
     ) -> dict[str, ProfessorFact]:
+        self.hydrate_calls.append({
+            "entity_ids": list(entity_ids), "snapshot_build_id": snapshot.build_id,
+        })
         return {eid: self._facts[eid] for eid in entity_ids if eid in self._facts}
 
 
