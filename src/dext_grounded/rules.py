@@ -28,11 +28,36 @@ class SafetyRules:
 
 
 @dataclass(frozen=True, slots=True)
+class CompletenessBuckets:
+    """Coarse profile-completeness bucket thresholds (spec §2.1).
+
+    ``thresholds`` maps bucket name -> lower-bound float; the highest bucket
+    whose threshold the raw float meets is selected by ``bucket_for()``.
+    Ordering is enforced at parse time so ``bucket_for`` need not sort.
+    """
+
+    thresholds: tuple[tuple[str, float], ...]
+
+    def bucket_for(self, completeness: float | None) -> str:
+        if completeness is None:
+            return "none"
+        # thresholds are sorted descending; the first bucket whose threshold
+        # the raw float meets is the coarse bucket (highest match wins).
+        for name, threshold in self.thresholds:
+            if completeness >= threshold:
+                return name
+        return "none"
+
+
+@dataclass(frozen=True, slots=True)
 class GroundedRules:
     version: str
     domains: tuple[str, ...]
     warning_messages: dict[str, str]
     student_context_fields: tuple[str, ...]
+    gpa_buckets: frozenset[str]
+    rank_buckets: frozenset[str]
+    completeness_buckets: CompletenessBuckets
     safety: SafetyRules
     trim_token_budget: int
     quote_max_len: int
@@ -57,9 +82,39 @@ def _as_tuple(raw: object, key: str) -> tuple[str, ...]:
     return tuple(str(item) for item in raw)
 
 
+def _as_frozenset(raw: object, key: str) -> frozenset[str]:
+    if not isinstance(raw, list):
+        raise ValueError(f"grounded rules {key} must be a list")
+    return frozenset(str(item) for item in raw)
+
+
+def _parse_completeness_buckets(raw: object) -> CompletenessBuckets:
+    if not isinstance(raw, dict):
+        raise ValueError("grounded rules completeness_buckets must be a mapping")
+    pairs: list[tuple[str, float]] = []
+    for name, value in raw.items():
+        try:
+            threshold = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"grounded rules completeness_buckets {name!r} threshold must be numeric"
+            ) from exc
+        if threshold < 0.0 or threshold > 1.0:
+            raise ValueError(
+                f"grounded rules completeness_buckets {name!r} threshold must be in [0,1]"
+            )
+        pairs.append((str(name), threshold))
+    # sort by threshold descending so bucket_for picks the highest matching bucket
+    pairs.sort(key=lambda item: item[1], reverse=True)
+    if not any(name == "none" for name, _ in pairs):
+        pairs.append(("none", 0.0))
+    return CompletenessBuckets(thresholds=tuple(pairs))
+
+
 def parse_grounded_rules(raw: dict[str, Any]) -> GroundedRules:
     required = {
         "version", "defaults", "domains", "student_context_fields",
+        "gpa_buckets", "rank_buckets", "completeness_buckets",
         "warning_messages", "safety",
     }
     missing = sorted(required - raw.keys())
@@ -104,6 +159,9 @@ def parse_grounded_rules(raw: dict[str, Any]) -> GroundedRules:
         student_context_fields=_as_tuple(
             raw["student_context_fields"], "student_context_fields"
         ),
+        gpa_buckets=_as_frozenset(raw["gpa_buckets"], "gpa_buckets"),
+        rank_buckets=_as_frozenset(raw["rank_buckets"], "rank_buckets"),
+        completeness_buckets=_parse_completeness_buckets(raw["completeness_buckets"]),
         safety=SafetyRules(
             probability_patterns=_as_tuple(
                 safety["probability_patterns"], "safety.probability_patterns"
@@ -135,6 +193,7 @@ def load_grounded_rules() -> GroundedRules:
 
 
 __all__ = [
+    "CompletenessBuckets",
     "CompetitionWhitelistMislabelRule",
     "GroundedRules",
     "SafetyRules",

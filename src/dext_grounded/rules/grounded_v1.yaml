@@ -19,6 +19,31 @@ student_context_fields:
   - competition_experience_summary
   - research_interests
 
+# Legal bucket enums — values outside these sets are rejected by
+# StudentContext.__post_init__ as raw-value leakage (spec §2.1).
+gpa_buckets:
+  - top10
+  - top25
+  - high
+  - medium
+  - unknown
+
+rank_buckets:
+  - top5
+  - top10
+  - top25
+  - high
+  - medium
+  - unknown
+
+# Coarse completeness buckets emitted by safe_log_summary() — the raw float
+# MUST NOT be serialized into any log/manifest path (spec §2.1).
+completeness_buckets:
+  high: 0.66
+  medium: 0.33
+  low: 0.01
+  none: 0.0
+
 warning_messages:
   fact_ref_missing: fact claim had no refs; downgraded to uncertain
   uncertain_claim_with_refs: uncertain claim carried fact_refs; stripped

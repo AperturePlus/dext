@@ -26,6 +26,9 @@ def test_grounded_rules_missing_required_key_is_clear():
                 "version": "grounded-v1",
                 "defaults": {"trim_token_budget": 4096, "quote_max_len": 500},
                 "student_context_fields": [],
+                "gpa_buckets": [],
+                "rank_buckets": [],
+                "completeness_buckets": {"high": 0.66},
                 "warning_messages": {},
                 "safety": {},
             }
@@ -38,6 +41,9 @@ def test_grounded_rule_hash_is_stable():
         "defaults": {"trim_token_budget": 1, "quote_max_len": 2},
         "domains": ["generic"],
         "student_context_fields": ["school"],
+        "gpa_buckets": ["top10"],
+        "rank_buckets": ["top5"],
+        "completeness_buckets": {"high": 0.5, "medium": 0.2, "low": 0.01, "none": 0.0},
         "warning_messages": {"fact_ref_missing": "message"},
         "safety": {
             "probability_patterns": [],
