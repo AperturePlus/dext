@@ -67,6 +67,12 @@ class SafetyGuard:
         # Contacts are stripped in a separate pass below.
         fragments_to_remove: list[str] = []
         stale_fragments: list[str] = []
+        # warning codes already emitted keyed by pattern, to avoid duplicate
+        # warnings when the same fragment is carried by both a claim and output
+        # prose (spec §6 requires the output scan be ADDITIONAL to the claim
+        # scan, but the same pattern must not warn twice).
+        warned_prob_patterns: set[str] = set()
+        warned_stale_patterns: set[str] = set()
 
         for claim in result.claims:
             text = claim.text
@@ -94,6 +100,7 @@ class SafetyGuard:
                 for p in self.rules.safety.probability_patterns:
                     if p in text:
                         fragments_to_remove.append(p)
+                        warned_prob_patterns.add(p)
                 continue
             if domain == "competition" and any(
                 p in text for p in self.rules.safety.stale_patterns
@@ -107,9 +114,43 @@ class SafetyGuard:
                 for p in self.rules.safety.stale_patterns:
                     if p in text:
                         stale_fragments.append(p)
+                        warned_stale_patterns.add(p)
                 kept_claims.append(replace(claim, content_class=ContentClass.UNCERTAIN))
                 continue
             kept_claims.append(claim)
+
+        # spec §6: sanitization must act on the final delivery object, not just
+        # claims. Scan result.output directly for probability and stale
+        # patterns so prose-only occurrences (no matching structured claim) are
+        # still stripped/annotated. This is ADDITIONAL to the claim scan above;
+        # dedupe warnings by pattern so a fragment carried by both a claim and
+        # output prose warns once.
+        if isinstance(result.output, str):
+            for p in self.rules.safety.probability_patterns:
+                if p in result.output:
+                    fragments_to_remove.append(p)
+                    if p not in warned_prob_patterns:
+                        warnings.append(GenerationWarning(
+                            code=GenerationWarningCode.NO_PROBABILITY_CLAIM.value,
+                            message=warning_messages[
+                                GenerationWarningCode.NO_PROBABILITY_CLAIM.value
+                            ],
+                            claim_text=p,
+                        ))
+                        warned_prob_patterns.add(p)
+            if domain == "competition":
+                for p in self.rules.safety.stale_patterns:
+                    if p in result.output:
+                        stale_fragments.append(p)
+                        if p not in warned_stale_patterns:
+                            warnings.append(GenerationWarning(
+                                code=GenerationWarningCode.STALE_FACT.value,
+                                message=warning_messages[
+                                    GenerationWarningCode.STALE_FACT.value
+                                ],
+                                claim_text=p,
+                            ))
+                            warned_stale_patterns.add(p)
 
         # Build the sanitized str output (only when output is a str).
         sanitized = result.output
@@ -118,10 +159,12 @@ class SafetyGuard:
             for frag in fragments_to_remove:
                 sanitized = sanitized.replace(frag, "")
             # 2. annotate stale plaintext fragments as uncertain
+            # (generic reason — the matched fragment may be 去年/上一届/2024年报名,
+            # not specifically 往届, so don't mislabel it)
             for frag in stale_fragments:
                 if frag in sanitized:
                     sanitized = sanitized.replace(
-                        frag, f"{frag}[uncertain: 往届]",
+                        frag, f"{frag}[uncertain: 往届信息]",
                     )
             # 3. strip unauthorized contact matches from the output
             if not include_contacts:

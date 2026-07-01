@@ -96,3 +96,26 @@ def test_competition_2024_dir_as_whitelist_rejected():
         domain="competition",
     )
     assert any(w.code == "unsafe_advice" and w.message == "ERROR" for w in res.warnings)
+
+
+def test_probability_phrase_only_in_output_still_stripped():
+    # Spec §6: sanitization must act on output, not just claims. A probability
+    # phrase in output prose with NO matching claim must still be removed.
+    res = SafetyGuard().inspect(
+        GenerationResult(output="根据录取概率 90% 判断", claims=[]),
+        domain="recommend", include_contacts=False,
+    )
+    assert "录取概率" not in (res.output if isinstance(res.output, str) else "")
+    assert any(w.code == "no_probability_claim" for w in res.warnings)
+
+
+def test_stale_phrase_only_in_output_annotated():
+    # Spec §6: stale fact in output prose (competition) must be downgraded/
+    # annotated even with no FACT claim carrying it.
+    res = SafetyGuard().inspect(
+        GenerationResult(output="参考 2024 年报名信息", claims=[]),
+        domain="competition", include_contacts=False,
+    )
+    out = res.output if isinstance(res.output, str) else ""
+    assert "[uncertain" in out  # annotated as downgraded
+    assert any(w.code == "stale_fact" for w in res.warnings)
