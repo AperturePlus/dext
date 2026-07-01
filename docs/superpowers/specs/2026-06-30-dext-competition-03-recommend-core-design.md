@@ -64,7 +64,7 @@ CompetitionQueryUnderstanding
 ## 4. 候选召回与过滤
 
 - 从阶段 2 目录召回，v1 用 BM25/关键词匹配 + 结构化过滤（category、资格、组队偏好、时间窗口）。
-- 召回基于阶段 1 索引，每条候选附 `SourceRef`。
+- 召回基于阶段 1 索引，每条候选在后端内部绑定 `SourceRef`，用于引用校验、评测和排查。
 - 召回不足时不从训练记忆补编赛事，返回结构化 warning 并提示用户补充 query。
 - 目录内外赛事都可推荐，但必须标明 `in_2024_catalog` 与“学校认定需另查本校文件”。
 
@@ -104,13 +104,16 @@ preparation_effort
 short_reasons
 risk_flags
 official_links
-source_refs
+evidence_status: "grounded|partial|uncertain"
+freshness_notice: optional
+internal_source_refs: list[SourceRef]  # diagnostics/debug/admin 模式可返回；公开 API 默认隐藏
 available_actions: detail|create_plan|ask_rules|compare
 ```
 
-- 每条推荐至少 1 个 `SourceRef`；确实缺来源时显式标注 `uncertain`。
+- 每条推荐的事实性理由在后端内部至少绑定 1 个 `SourceRef`；确实缺来源时显式标注 `uncertain`。
 - 推荐理由区分 `fact`/`advice`/`uncertain` 三类（共享 `ContentClass`）。
 - 时效性字段（报名日期、赛道、费用、AI 规则）附复核提示，不当届确定事实。
+- 公开 API 默认只返回面向用户的 `reason`、`limitations`、`official_url`、复核提示等字段；不暴露 Markdown 路径或 chunk hash。
 
 ## 7. 安全边界
 
@@ -120,7 +123,7 @@ available_actions: detail|create_plan|ask_rules|compare
 
 - `CompetitionRecommendRequest -> CompetitionRecommendResponse` 全链路可用。
 - 排序权重配置化并进入 `competition_ranking_profile_version`；无“含金量/获奖概率/保研加分”作为排序事实。
-- 每条推荐至少 1 个 `SourceRef`；缺来源显式标注 `uncertain`。
+- 每条推荐的事实性理由后端内部至少绑定 1 个 `SourceRef`；缺来源显式标注 `uncertain`。
 - 时效性字段附复核提示；`in_2024_catalog` 不被写成“教育部白名单”。
 - 安全边界由共享 `SafetyGuard` 拦截违规建议。
 - 评测样本覆盖 overview §8：30-50 条竞赛推荐 query，跨计算机/电子信息/数学建模/机器人/工学/经管/综合创业/语言艺术/医学生命科学。

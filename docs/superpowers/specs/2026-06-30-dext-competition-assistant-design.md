@@ -4,7 +4,7 @@
 >
 > 日期：2026-06-30
 >
-> 设计版本：competition-assistant-design-v1.0-knowledge-base
+> 设计版本：competition-assistant-design-v1.1-openapi-grounded-internal
 >
 > 目标模块：`dext_competition`，与 `dext_recommend` 平级
 >
@@ -50,13 +50,12 @@ data/竞赛助手/
   常见问题.md
   答辩问题库.md
   网站及工具.md
-  *.docx
 ```
 
 数据口径：
 
 - Markdown 是 v1 主要事实来源，必须保留文件名、章节路径、核验日期和引用片段。
-- `.docx` 文件先作为待规范化资料，不直接进入线上回答；上线前应转成 Markdown 或抽取为带来源的片段，并经过人工复核。
+- v1 知识库只纳入 Markdown。若后续新增非 Markdown 资料，必须先规范化为 Markdown 或结构化片段并经人工复核，不能直接进入线上回答。
 - 具体报名日期、赛道、资格和费用具有时效性。除知识库明确写明年份和来源的事实外，响应必须提示用户回到当届官方通知和本校文件复核。
 - `dext_competition` 不 import `dext_recommend`、`dext_graph` 或爬虫内部 API；如后续需要向量索引，应建立独立的 competition document index。
 
@@ -107,7 +106,9 @@ preparation_effort
 short_reasons
 risk_flags
 official_links
-source_refs
+evidence_status: "grounded|partial|uncertain"
+freshness_notice: optional
+internal_source_refs: list[SourceRef]  # 内部校验/评测；公开 API 默认不返回
 available_actions: detail|create_plan|ask_rules|compare
 ```
 
@@ -117,7 +118,7 @@ available_actions: detail|create_plan|ask_rules|compare
 get_competition_detail(competition_id) -> CompetitionDetail
 answer_competition_question(question, competition_id?, context?) -> GroundedAnswer
 generate_preparation_plan(competition_id, student_context, plan_constraints) -> PreparationPlanDraft
-diagnose_preparation_level(competition_id, student_context) -> LevelDiagnosis
+diagnose_preparation_level(competition, answers, profile?) -> LevelDiagnosis
 suggest_plan_changes(plan, user_message) -> list[PlanChangeCard]
 compare_competitions(competition_ids[2..4], student_context?) -> CompetitionComparison
 ```
@@ -137,11 +138,11 @@ v1 可以从 Markdown 直接构建轻量只读索引：
 知识库版本：
 
 ```text
-knowledge_base_version
+KnowledgeBaseManifest
+version_id                         # 对外 knowledge_base_version
 source_root
 file_count
 markdown_file_count
-docx_file_count
 content_hash
 generated_at
 ```
@@ -192,7 +193,7 @@ optional_tasks
 milestones
 calendar_items
 risk_register
-source_refs
+internal_source_refs
 warnings
 ```
 
@@ -204,6 +205,17 @@ warnings
 - 初学者计划必须补基础；高级用户可增加模拟赛、论文/代码复现、答辩和验收任务。
 - LLM 个性化只能调整已知 phase/task schema，不能生成不受校验的自由日历。
 
+水平诊断：
+
+```text
+LevelDiagnosis
+  level: "beginner|intermediate|experienced"
+  rationale
+  suggestion
+```
+
+水平诊断输入与 `docs/appside/openapi.yaml` 的 `PreparationDiagnoseRequest` 对齐：`competition` 快照、问卷 `answers` 和可选 `profile`。诊断结果只作为计划向导的经验等级建议，不写入竞赛事实库，也不承诺获奖概率、校内认定或升学收益。
+
 AI 助手只输出改动卡：
 
 ```text
@@ -212,15 +224,21 @@ PlanChangeCard
   target_task_id: optional
   proposed_fields
   rationale
-  source_refs
+  internal_source_refs
   validation_status: "pending|passed|rejected"      # 机器校验
   approval_status: "pending|accepted|declined"      # 用户审批
   application_status: "not_applied|applied|failed"   # 实际落地
 ```
 
-三状态轴独立：validator 先跑（`passed` 才进审批），用户对 `passed` 的卡 `accept`/`decline`，仅 `passed`+`accepted` 的卡由 applier 原子应用。详见 [plan-assistant 子 spec](2026-06-30-dext-competition-06-plan-assistant-design.md)。
+三状态轴是核心内部状态；公开 API 按 `docs/appside/openapi.yaml` 映射为单一 `status: pending|rejected|applied|declined|stale`。validator 先跑（`passed` 才进审批），用户对可用卡片 `accept`/`decline`，实际落地由应用层在计划快照上执行。详见 [plan-assistant 子 spec](2026-06-30-dext-competition-06-plan-assistant-design.md)。
 
 所有改动必须先经过 validator，用户 accept 后才应用。越界日期、删除必做任务、违反时间模型、缺少依据或与考试/不可用时间冲突的卡片必须拒绝或降级为建议。
+
+备赛计划持久化边界：
+
+- `dext_competition` 核心只生成计划草案、水平诊断和改动卡，不直接写用户数据。
+- App/API 应用层把用户拥有的 plan snapshot、revision、助手历史和改动卡审批状态持久化到 PostgreSQL（本地开发由 `docker/compose.yaml` 的 `postgres:16-alpine` 提供，通过 `DEXT_APP_DATABASE_URL` 连接）。
+- plan、助手历史和审批结果必须按 `owner_id + plan_id` 隔离；用户清理远端资料时删除 PostgreSQL 中的相关行，不修改 Markdown 知识库或内部 source refs。
 
 ## 7. 解释、引用与安全边界
 
@@ -238,10 +256,10 @@ PlanChangeCard
 - 生成代做、挂名、伪造数据、赛中泄题、绕过查重或规避 AI 披露的建议。
 - 上传或记录用户未脱敏个人数据、赛题保密材料、企业合同、密钥或未公开专利。
 
-每条推荐和规则回答至少返回 1 个 `source_ref`：
+每条推荐和规则回答的事实性断言必须在后端内部绑定至少 1 个 `SourceRef`。公开 API 默认不暴露文件路径、章节路径或 `chunk_hash`；用户只看到 `reason`、`limitations`、`freshness_notice` 等产品字段。`source_refs` 仅在 diagnostics/debug/admin 模式下返回，用于评测、运营排查和回归测试。
 
 ```text
-source_ref
+SourceRef
   doc_path
   heading_path
   chunk_hash
@@ -274,24 +292,24 @@ source_ref
 上线门禁：
 
 - Markdown 知识库索引可复现生成，content hash 稳定。
-- `.docx` 资料不直接进入线上回答，除非已规范化并带 source refs。
-- 所有推荐、详情、规则问答和计划建议能回溯到知识库片段或明确标注需要外部复核。
+- 所有推荐、详情、规则问答和计划建议在后端内部能回溯到知识库片段，或明确标注需要外部复核。
+- 公开 API 默认不暴露 `source_refs`，但 diagnostics/debug/admin 模式可返回内部引用用于评测和排查。
 - 竞赛模块不依赖导师 ACTIVE build、教师 Qdrant collection 或导师事实图。
 
 ## 9. 落地步骤与子 spec 拆分
 
-竞赛模块按依赖序拆为 7 个子 spec，每个子 spec 自带 spec → plan → TDD 执行周期。阶段编号表示实施依赖。HTTP 契约（阶段 7）是最后实现的一步，且必须等待 App 侧补齐 `docs/api-contract.md` 与 `docs/openapi.yaml` 后才能定字段。竞赛模块不依赖上游 ACTIVE build，知识库已就绪，可端到端推进。
+竞赛模块按依赖序拆为 7 个子 spec，每个子 spec 自带 spec → plan → TDD 执行周期。阶段编号表示实施依赖。HTTP 契约（阶段 7）是最后实现的一步，字段与路径以 `docs/appside/openapi.yaml` 为准。竞赛模块不依赖上游 ACTIVE build，知识库已就绪，可端到端推进。
 
 | 阶段 | 子 spec | 入口条件 | 退出门禁 |
 |---:|---|---|---|
-| 1 | [Knowledge index](2026-06-30-dext-competition-01-knowledge-index-design.md) | `data/竞赛助手/*.md` 可读 | Markdown 扫描、chunk、source refs、content hash、轻量 structured index 可复现生成 |
+| 1 | [Knowledge index](2026-06-30-dext-competition-01-knowledge-index-design.md) | `data/竞赛助手/*.md` 可读 | Markdown 扫描、chunk、内部 source refs、content hash、轻量 structured index 可复现生成 |
 | 2 | [Competition catalog](2026-06-30-dext-competition-02-competition-catalog-design.md) | 阶段 1 索引就绪 | 稳定 `competition_id`、category/tag、资格/赛制/组队/材料/AI/合规字段抽取完成 |
 | 3 | [Recommend core](2026-06-30-dext-competition-03-recommend-core-design.md) | 阶段 2 目录可用 | `CompetitionRecommendRequest -> CompetitionRecommendResponse` 全链路可用，含理解、召回、排序、解释、风险 |
-| 4 | [Detail and grounded QA](2026-06-30-dext-competition-04-detail-qa-design.md) | 阶段 2 目录 + 阶段 1 索引可用 | 竞赛详情与规则问答可用，强制 source refs 与时效/复核 warning |
-| 5 | [Plan generator](2026-06-30-dext-competition-05-plan-generator-design.md) | 阶段 2 模板 + 备赛流程文档可用 | 提交型/窗口型时间模型计划生成可用，含模板兜底与必做任务保留 |
-| 6 | [Plan assistant](2026-06-30-dext-competition-06-plan-assistant-design.md) | 阶段 5 计划 + 共享 grounded-generation 可用 | 改动卡生成、校验、accept/decline 应用边界可用 |
-| 7 | [HTTP adapter and contract tests](2026-06-30-dext-competition-07-http-contract-design.md) | App 侧补齐 OpenAPI 契约 + 阶段 3/4/5/6 可用 | 竞赛推荐、详情、备赛计划、AI 助手接口对齐与端到端契约测试通过 |
+| 4 | [Detail and grounded QA](2026-06-30-dext-competition-04-detail-qa-design.md) | 阶段 2 目录 + 阶段 1 索引可用 | 竞赛详情与规则问答可用，内部 source refs 与时效/复核 warning 强制校验 |
+| 5 | [Plan generator](2026-06-30-dext-competition-05-plan-generator-design.md) | 阶段 2 模板 + 备赛流程文档可用 | 提交型/窗口型时间模型计划生成可用，水平诊断可用，含模板兜底与必做任务保留 |
+| 6 | [Plan assistant](2026-06-30-dext-competition-06-plan-assistant-design.md) | 阶段 5 计划 + 共享 grounded-generation 可用 | 改动卡生成、校验、OpenAPI 状态映射与应用层落地边界可用 |
+| 7 | [HTTP adapter and contract tests](2026-06-30-dext-competition-07-http-contract-design.md) | `docs/appside/openapi.yaml` + 阶段 3/4/5/6 可用 | 竞赛推荐、详情、备赛计划、AI 助手接口对齐与端到端契约测试通过 |
 
 ### 9.1 上游前置
 
-竞赛模块 v1 只读消费 `data/竞赛助手/` 本地知识库，不依赖导师 ACTIVE build、教师 Qdrant collection 或导师事实图，也不 import `dext_recommend`、`dext_graph` 或爬虫内部 API。`.docx` 文件先作为待规范化资料，不直接进入线上回答；上线前应转成 Markdown 或抽取为带来源的片段，并经过人工复核。具体报名日期、赛道、资格和费用具有时效性，除知识库明确写明年份和来源的事实外，响应必须提示用户回到当届官方通知和本校文件复核。
+竞赛模块 v1 只读消费 `data/竞赛助手/` 本地 Markdown 知识库，不依赖导师 ACTIVE build、教师 Qdrant collection 或导师事实图，也不 import `dext_recommend`、`dext_graph` 或爬虫内部 API。具体报名日期、赛道、资格和费用具有时效性，除知识库明确写明年份和来源的事实外，响应必须提示用户回到当届官方通知和本校文件复核。

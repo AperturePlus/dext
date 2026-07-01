@@ -35,12 +35,12 @@ CompetitionCard
   preparation_focus: list[str]
   risk_flags: list[str]
   official_links: list[str]
-  source_refs: list[SourceRef]
+  internal_source_refs: list[SourceRef]
   in_2024_catalog: bool
   last_verified: str | null
 ```
 
-`summary`、`eligibility`、`schedule` 等字段值直接来自知识库片段，附带 `SourceRef`；不从训练记忆补编。
+`summary`、`eligibility`、`schedule` 等字段值直接来自知识库片段，后端内部附带 `SourceRef`；不从训练记忆补编。公开 API 默认不返回 `doc_path`、`heading_path` 或 `chunk_hash`。
 
 ## 4. 字段抽取规则
 
@@ -56,12 +56,12 @@ CompetitionCard
 
 ## 6. 与共享契约对齐
 
-`CompetitionCard` 可映射为共享 `FactBundle`（`build_id`=`knowledge_base_version`，`subject_id`=`competition_id`，`facts` 由各字段映射为 `FactItem`，`source_refs` 复用共享结构），供阶段 4/6 的受约束生成消费。
+`CompetitionCard` 可映射为共享 `FactBundle`（`build_id`=`knowledge_base_version`，`subject_id`=`competition_id`，`facts` 由各字段映射为 `FactItem`，`source_refs` 来自内部引用集合），供阶段 4/6 的受约束生成消费。
 
 ## 7. 验收标准
 
 - 84 项目录赛事各有稳定 `competition_id`，知识库 `content_hash` 不变时 ID 可复现。
-- 赛事卡片字段覆盖 §3 全部字段；每张卡片至少 1 个 `SourceRef`。
+- 赛事卡片字段覆盖 §3 全部字段；每张卡片后端内部至少绑定 1 个 `SourceRef`。
 - 时效性字段未写明当届年份/来源时标记 `uncertain` 并附复核提示。
 - `in_2024_catalog` 不被写成“教育部白名单”或“所有学校同等级认定”。
 - 冲突字段保留并标记，不静默选边。

@@ -8,7 +8,7 @@
 
 ## 1. 目标
 
-实现竞赛详情与规则问答。强制 source refs 与时效/复核 warning，LLM 回答只能基于知识库片段，不编造赛事规则。本阶段不实现备赛计划（阶段 5）。
+实现竞赛详情与规则问答。后端内部强制 source refs 与时效/复核 warning，LLM 回答只能基于知识库片段，不编造赛事规则；公开 API 默认不暴露文件路径或 chunk hash。本阶段不实现备赛计划（阶段 5）。
 
 ## 2. 接口
 
@@ -37,13 +37,13 @@ CompetitionDetail
   ai_compliance
   preparation_focus
   official_links
-  source_refs: list[SourceRef]
+  internal_source_refs: list[SourceRef]
   risk_flags
   freshness_warnings       # 时效复核提示
   available_actions: detail|create_plan|ask_rules|compare
 ```
 
-每条规则摘要附 `SourceRef`；时效性字段附 `freshness_warnings` 提示用户回到当届官方通知与本校文件复核。
+每条规则摘要在后端内部附 `SourceRef`；时效性字段附 `freshness_warnings` 提示用户回到当届官方通知与本校文件复核。公开 API 默认只返回产品化的规则摘要、限制和复核提示。
 
 ## 4. 规则问答
 
@@ -63,7 +63,7 @@ CompetitionDetail
 - `stale_fact` warning：把往届时间、奖项比例、赛道、费用、AI 规则当成当届确定事实时降级 `uncertain`。
 - 信息核验顺序：当届官网 → 主办单位 → 省级赛区/承办高校/本校教务处 → 聚合平台只用于发现线索。
 
-## 6. 导师对比
+## 6. 竞赛对比
 
 `compare_competitions` 输入 2-4 位 `competition_id` 与可选 `StudentContext`，输出横向对比报告。每个结论可回溯到至少一个赛事事实或用户背景字段；某赛事证据不足时显式标注，不用流畅文案掩盖缺口。
 
@@ -73,7 +73,7 @@ CompetitionDetail
 
 ## 8. 验收标准
 
-- `CompetitionDetail` 字段覆盖 §3，每条规则摘要附 `SourceRef`。
+- `CompetitionDetail` 字段覆盖 §3，每条规则摘要后端内部附 `SourceRef`。
 - 规则问答每条断言可回溯 `SourceRef`；无法回溯的断言由 `CitationValidator` 降级 `uncertain` 或剔除。
 - 时效性字段附 `freshness_warnings`；往届信息当当届事实时降级 `uncertain`。
 - 评测样本覆盖 20 条规则问答，`groundedness precision` 与 `rule freshness warning rate` 达标。
