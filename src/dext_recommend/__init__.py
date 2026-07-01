@@ -21,9 +21,11 @@ from dext_recommend.models import (
     RecommendedProfessor,
 )
 from dext_recommend.ports import (
-    AliasReadback, BuildSnapshotPort, EmbeddingResult, FakeLLMGenerationPort,
-    LLMGenerationPort, ProfessorDetail, ProfessorFact, ProfessorFactPort,
-    QueryEmbeddingPort, VectorHit, VectorSearchPort, ViewerPermissions,
+    AliasReadback, BuildSnapshotPort, EmbeddingResult, FakeBuildSnapshotPort,
+    FakeLLMGenerationPort, FakeProfessorFactPort, FakeQueryEmbeddingPort,
+    FakeVectorSearchPort, LLMGenerationPort, ProfessorDetail, ProfessorFact,
+    ProfessorFactPort, QueryEmbeddingPort, VectorHit, VectorSearchPort,
+    ViewerPermissions,
 )
 from dext_recommend.readiness import (
     ActiveBuildSnapshot, CoverageStat, ReadinessReport, ReadinessService,
@@ -39,7 +41,11 @@ __all__: list[str] = [
     "CoverageStat",
     "EmbeddingResult",
     "ErrorSeverity",
+    "FakeBuildSnapshotPort",
     "FakeLLMGenerationPort",
+    "FakeProfessorFactPort",
+    "FakeQueryEmbeddingPort",
+    "FakeVectorSearchPort",
     "LLMGenerationPort",
     "ProfessorDetail",
     "ProfessorFact",
