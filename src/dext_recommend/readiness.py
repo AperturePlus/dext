@@ -92,6 +92,42 @@ def _coverage_passes(obs_vector, field, threshold):
     return True, 1.0
 
 
+def _reconcile_samples(catalog, vector, graph):
+    """Compare profile_hash + org_unit_ids per entity_id across sources.
+
+    An entity_id present in only one source contributes no error (a sample
+    may legitimately not have landed in Qdrant/Neo4j yet). Only entities
+    present in >=2 sources are compared, and only conflicting values fail.
+    None vs non-None on the same field is a mismatch; None vs None is fine.
+    """
+    by_source = {
+        "catalog": {s.entity_id: s for s in (catalog or ())},
+        "vector": {s.entity_id: s for s in (vector or ())},
+        "graph": {s.entity_id: s for s in (graph or ())},
+    }
+    all_ids = set()
+    for src in by_source.values():
+        all_ids.update(src)
+    errors: list[RecommendationError] = []
+    for eid in sorted(all_ids):
+        present = {name: by_source[name][eid] for name in by_source if eid in by_source[name]}
+        if len(present) < 2:
+            continue
+        for field in ("profile_hash", "org_unit_ids"):
+            values = {name: getattr(s, field) for name, s in present.items()}
+            distinct = {v for v in values.values()}
+            # None vs None collapses to one value; None vs value does not
+            if len(distinct) > 1:
+                names = sorted(values)
+                detail = ", ".join(f"{n}={values[n]!r}" for n in names)
+                errors.append(RecommendationError(
+                    code=RecommendationErrorCode.ACTIVE_BUILD_INCONSISTENT,
+                    severity=ErrorSeverity.ERROR,
+                    message=f"sample {eid} {field} mismatch: {detail}",
+                ))
+    return errors
+
+
 class ReadinessService:
     """Two-phase ACTIVE-build construction + consistency checks (R2 readiness).
 
@@ -102,6 +138,8 @@ class ReadinessService:
     ERROR-severity failure (or a missing snapshot) ``self._snapshot`` is preserved;
     it is replaced only on a fully-ready check.
     """
+
+    _reconcile_samples = staticmethod(_reconcile_samples)
 
     def __init__(self, deps: ReadinessDeps, settings: RecommendSettings) -> None:
         self._deps = deps

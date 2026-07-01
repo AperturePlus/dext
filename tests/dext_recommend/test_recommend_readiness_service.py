@@ -51,6 +51,56 @@ def _service(catalog, vector, graph, ranking, **settings):
     return ReadinessService(ReadinessDeps(catalog, vector, graph, ranking), s)
 
 
+def _reconcile(catalog, vector, graph):
+    return ReadinessService._reconcile_samples(catalog, vector, graph)
+
+
+def test_reconcile_profile_hash_mismatch_returns_inconsistent():
+    cat = (ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1"),)
+    vec = (ProfessorReleaseSample("e1", ("org-a",), profile_hash="h2"),)
+    graph = (ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1"),)
+    errors = _reconcile(cat, vec, graph)
+    codes = {e.code for e in errors}
+    assert RecommendationErrorCode.ACTIVE_BUILD_INCONSISTENT in codes
+
+
+def test_reconcile_org_unit_mismatch_returns_inconsistent():
+    cat = (ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1"),)
+    vec = (ProfessorReleaseSample("e1", ("org-b",), profile_hash="h1"),)
+    graph = (ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1"),)
+    errors = _reconcile(cat, vec, graph)
+    codes = {e.code for e in errors}
+    assert RecommendationErrorCode.ACTIVE_BUILD_INCONSISTENT in codes
+
+
+def test_reconcile_consistent_returns_no_errors():
+    s = ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1")
+    errors = _reconcile((s,), (s,), (s,))
+    assert errors == []
+
+
+def test_reconcile_missing_in_one_source_not_mismatch():
+    # e1 only in catalog; e2 in catalog+vector with agreeing facts
+    cat = (
+        ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1"),
+        ProfessorReleaseSample("e2", ("org-b",), profile_hash="h2"),
+    )
+    vec = (ProfessorReleaseSample("e2", ("org-b",), profile_hash="h2"),)
+    graph = ()
+    errors = _reconcile(cat, vec, graph)
+    assert errors == []
+
+
+def test_reconcile_none_vs_value_is_mismatch():
+    # same entity in two sources; one has profile_hash, other has None
+    cat = (ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1"),)
+    vec = (ProfessorReleaseSample("e1", ("org-a",), profile_hash=None),)
+    graph = ()
+    errors = _reconcile(cat, vec, graph)
+    codes = {e.code for e in errors}
+    assert RecommendationErrorCode.ACTIVE_BUILD_INCONSISTENT in codes
+
+
 async def test_check_happy_path_returns_ready_snapshot():
     svc = _service(
         FakeCatalogReleasePort(_catalog_obs(), [_sample()]),
