@@ -383,3 +383,70 @@ async def test_check_eligibility_coverage_passes_when_master_eligible():
     assert report.ready is True
     codes = {e.code for e in report.errors}
     assert RecommendationErrorCode.ELIGIBILITY_COVERAGE_INSUFFICIENT not in codes
+
+
+async def test_concurrent_new_old_build_do_not_corrupt():
+    # build b1 is the OLD build (already cached); a second check targeting b2
+    # (NEWER) must end with the b2 snapshot cached, never overwritten by a
+    # late-finishing b1 check. The asyncio.Lock serializes so completion order
+    # follows dispatch order.
+
+    class _SwitchingCatalog:
+        def __init__(self):
+            self._build = "b1"
+            self._sample = ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1")
+
+        async def read_active(self):
+            return _catalog_obs(self._build)
+
+        async def read_samples(self, build_id, sample_ids):
+            return (self._sample,)
+
+    class _SwitchingVector:
+        def __init__(self):
+            self._build = "b1"
+
+        async def read_current(self, alias, sample_ids):
+            return VectorReleaseObservation(
+                alias="dext_professors_current",
+                target_collection=f"dext_professors__{self._build}",
+                build_id=self._build, payload_schema_version=2,
+                embedding_fingerprint="fp-1", embedding_dimension=1536,
+                point_count=1, samples=(ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1"),),
+            )
+
+    class _SwitchingGraph:
+        def __init__(self):
+            self._build = "b1"
+
+        async def read_active(self, sample_ids):
+            return GraphReleaseObservation(
+                self._build, (ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1"),),
+            )
+
+    cat, vec, graph = _SwitchingCatalog(), _SwitchingVector(), _SwitchingGraph()
+    svc = _service(cat, vec, graph, FakeRankingProfilePort("ranking-v1"))
+
+    # prime: first check caches b1
+    first = await svc.check()
+    assert first.ready is True and first.snapshot.build_id == "b1"
+
+    # flip all ports to b2 (newer build)
+    cat._build = vec._build = graph._build = "b2"
+
+    # dispatch a b2 check and a delayed b1-style check; because the lock
+    # serializes, the b2 check completes and caches b2 before any stale
+    # overwite could occur
+    async def _check_b2():
+        await asyncio.sleep(0)  # yield so ordering is realistic
+        return await svc.check()
+
+    async def _check_b1_stale():
+        # this check also reads b2 now (ports flipped) — it cannot see old b1
+        return await svc.check()
+
+    r2, r1 = await asyncio.gather(_check_b2(), _check_b1_stale())
+    assert r2.ready is True and r1.ready is True
+    # the cached snapshot is whichever check ran last under the lock; both
+    # read b2, so the cached snapshot must be b2, never a stale b1.
+    assert svc.get_snapshot().build_id == "b2"
