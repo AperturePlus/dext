@@ -1,0 +1,72 @@
+version: grounded-v1
+
+defaults:
+  trim_token_budget: 4096
+  quote_max_len: 500
+
+domains:
+  - recommend
+  - competition
+  - generic
+
+student_context_fields:
+  - education_stage
+  - school
+  - major
+  - gpa_bucket
+  - rank_bucket
+  - achievements_summary
+  - competition_experience_summary
+  - research_interests
+
+warning_messages:
+  fact_ref_missing: fact claim had no refs; downgraded to uncertain
+  uncertain_claim_with_refs: uncertain claim carried fact_refs; stripped
+  fabricated_ref: dropped claim with fabricated refs
+  fabricated_user_context: stripped user_context_ref for absent field
+  no_grounded_output: all claims dropped by citation validation; no grounded output
+  no_probability_claim: dropped probability claim
+  unsafe_advice: ERROR
+  unauthorized_contact: output contained contact info without include_contacts
+  stale_fact: downgraded stale fact to uncertain
+  generation_unavailable: generation unavailable
+  generation_parse_error: generation parse error
+  insufficient_facts: insufficient facts
+
+safety:
+  probability_patterns:
+    - 录取概率
+    - 保研概率
+    - 奖学金概率
+    - 综测加分
+    - Offer 概率
+    - 获奖概率
+    - 导师接收意愿
+    - 导师接收你的意愿
+    - 录用意愿
+    - 导师愿意接收
+
+  unsafe_advice_patterns:
+    - 代做
+    - 挂名
+    - 伪造数据
+    - 赛中泄题
+    - 绕过查重
+    - 规避 AI 披露
+    - 规避AI披露
+
+  contact_regexes:
+    - '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+    - '1[3-9]\d{9}'
+
+  stale_patterns:
+    - 2024 年报名
+    - 2024年报名
+    - 往届
+    - 去年
+    - 上一届
+
+  competition_report_dir_whitelist_mislabel:
+    report_dir: 2024 竞赛分析报告目录
+    fake_whitelist_label: 教育部白名单
+    claim_text: 2024 report dir mislabelled as 教育部白名单
