@@ -176,3 +176,33 @@ async def test_concurrent_check_serialized_does_not_overwrite_newer():
     # both completed
     assert ("b2", "done") in calls and ("b1", "done") in calls
     assert svc.get_snapshot() is not None
+
+
+async def test_check_vector_exception_emits_single_error():
+    # vector port raises ReadinessSourceError (real exception path, not None
+    # passthrough). gather_safe converts it to a RecommendationError placed in
+    # phase2_results. The fix in _unpack_phase2 normalizes that error to None so
+    # _assemble emits exactly ONE ACTIVE_BUILD_UNAVAILABLE for vector instead of
+    # two (one from _check_locked's errors.extend, one from _assemble's _err).
+    from dext_recommend.ports.release_readback import ReadinessSourceError
+
+    svc = _service(
+        FakeCatalogReleasePort(_catalog_obs(), [_sample()]),
+        FakeVectorReleasePort(
+            error=ReadinessSourceError("vector", "boom", retryable=True),
+        ),
+        FakeGraphReleasePort(_graph_obs()),
+        FakeRankingProfilePort("ranking-v1"),
+    )
+    report = await svc.check()
+    assert report.ready is False
+    # exactly one ACTIVE_BUILD_UNAVAILABLE error attributable to vector
+    unavailable = [
+        e for e in report.errors
+        if e.code is RecommendationErrorCode.ACTIVE_BUILD_UNAVAILABLE
+    ]
+    assert len(unavailable) == 1
+    # the single entry carries the real gather_safe detail (boom, retryable),
+    # NOT a second generic "vector alias/collection unavailable" copy.
+    assert unavailable[0].message == "boom"
+    assert unavailable[0].retryable is True

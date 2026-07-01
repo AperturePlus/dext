@@ -206,18 +206,27 @@ class ReadinessService:
 
         catalog_samples, vector_obs, graph_obs = self._unpack_phase2(phase2_results)
 
-        # normalize: error objects and None both mean "unavailable"
-        if isinstance(vector_obs, RecommendationError) or vector_obs is None:
+        # A RecommendationError value for vector/graph means gather_safe
+        # already collected the real timeout/exception detail into `errors`
+        # (via _check_locked's errors.extend). Emit the generic
+        # ACTIVE_BUILD_UNAVAILABLE ONLY for the genuine None (pointer missing)
+        # case, then normalize both error and None to None for the build_ids
+        # block so a RecommendationError can never leak into build_ids.add(...).
+        if vector_obs is None:
             _err(
                 RecommendationErrorCode.ACTIVE_BUILD_UNAVAILABLE,
                 "vector alias/collection unavailable",
             )
             vector_obs = None
-        if isinstance(graph_obs, RecommendationError) or graph_obs is None:
+        elif isinstance(vector_obs, RecommendationError):
+            vector_obs = None
+        if graph_obs is None:
             _err(
                 RecommendationErrorCode.ACTIVE_BUILD_UNAVAILABLE,
                 "graph active pointer unavailable",
             )
+            graph_obs = None
+        elif isinstance(graph_obs, RecommendationError):
             graph_obs = None
 
         build_ids = {catalog_obs.build_id}
@@ -320,9 +329,12 @@ class ReadinessService:
         graph_obs = phase2_results[2] if len(phase2_results) > 2 else None
         if isinstance(catalog_samples, RecommendationError):
             catalog_samples = ()
-        # keep vector_obs / graph_obs error objects intact; _assemble normalizes
-        # them to None before the build_ids block so a RecommendationError can
-        # never leak into a set of build-id strings.
+        # Keep vector_obs / graph_obs error objects intact; _assemble checks
+        # isinstance(..., RecommendationError) to distinguish "source raised /
+        # timed out" (already collected into `errors` by _check_locked's
+        # errors.extend) from "pointer genuinely missing" (None, needs a fresh
+        # ACTIVE_BUILD_UNAVAILABLE). This avoids a duplicate _err() call when
+        # gather_safe already recorded the real timeout/exception detail.
         return catalog_samples, vector_obs, graph_obs
 
 
