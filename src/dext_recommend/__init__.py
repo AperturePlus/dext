@@ -20,6 +20,11 @@ from dext_recommend.models import (
     RecommendResponse, RecommendationFilters, RecommendationWarning,
     RecommendedProfessor,
 )
+from dext_recommend.ports import (
+    AliasReadback, BuildSnapshotPort, EmbeddingResult, FakeLLMGenerationPort,
+    LLMGenerationPort, ProfessorDetail, ProfessorFact, ProfessorFactPort,
+    QueryEmbeddingPort, VectorHit, VectorSearchPort, ViewerPermissions,
+)
 from dext_recommend.readiness import (
     ActiveBuildSnapshot, CoverageStat, ReadinessReport, ReadinessService,
 )
@@ -28,10 +33,19 @@ __version__ = "0.1.0"
 
 __all__: list[str] = [
     "ActiveBuildSnapshot",
+    "AliasReadback",
+    "BuildSnapshotPort",
     "ConversationContext",
     "CoverageStat",
+    "EmbeddingResult",
     "ErrorSeverity",
+    "FakeLLMGenerationPort",
+    "LLMGenerationPort",
+    "ProfessorDetail",
+    "ProfessorFact",
+    "ProfessorFactPort",
     "QueryDiagnostics",
+    "QueryEmbeddingPort",
     "QueryUnderstanding",
     "ReadinessReport",
     "ReadinessService",
@@ -43,4 +57,7 @@ __all__: list[str] = [
     "RecommendationFilters",
     "RecommendationWarning",
     "RecommendedProfessor",
+    "VectorHit",
+    "VectorSearchPort",
+    "ViewerPermissions",
 ]

@@ -1,0 +1,61 @@
+"""Every port data method must take an ActiveBuildSnapshot as an explicit param."""
+from __future__ import annotations
+
+import inspect
+
+from dext_recommend import ActiveBuildSnapshot
+from dext_recommend.ports import (
+    BuildSnapshotPort, EmbeddingResult, ProfessorFactPort, ProfessorDetail,
+    QueryEmbeddingPort, VectorHit, VectorSearchPort,
+)
+
+
+def _sig_params(protocol_method):
+    return list(inspect.signature(protocol_method).parameters)
+
+
+def test_vector_search_hybrid_recall_takes_snapshot():
+    params = _sig_params(VectorSearchPort.hybrid_recall)
+    assert "snapshot" in params
+    assert "query_vector" in params
+    assert "filters" in params
+    assert "oversample" in params
+    assert "profile_version" in params
+
+
+def test_vector_search_alias_readback_takes_snapshot():
+    assert "snapshot" in _sig_params(VectorSearchPort.alias_readback)
+
+
+def test_vector_search_count_readback_takes_snapshot():
+    assert "snapshot" in _sig_params(VectorSearchPort.count_readback)
+
+
+def test_professor_fact_get_detail_takes_snapshot():
+    params = _sig_params(ProfessorFactPort.get_detail)
+    assert params[1] == "snapshot"
+    assert "entity_id" in params
+    assert "include_contacts" in params
+    assert "viewer_permissions" in params
+
+
+def test_professor_fact_hydrate_takes_snapshot():
+    params = _sig_params(ProfessorFactPort.hydrate)
+    assert params[1] == "snapshot"
+    assert "entity_ids" in params
+
+
+def test_query_embedding_embed_takes_snapshot():
+    params = _sig_params(QueryEmbeddingPort.embed)
+    assert params[1] == "snapshot"
+    assert "query_text" in params
+
+
+def test_embedding_result_carries_fingerprint():
+    r = EmbeddingResult(vector=[0.1, 0.2], embedding_fingerprint="fp-x")
+    assert r.embedding_fingerprint == "fp-x"
+
+
+def test_build_snapshot_port_has_get_and_refresh():
+    assert hasattr(BuildSnapshotPort, "get_snapshot")
+    assert hasattr(BuildSnapshotPort, "refresh")
