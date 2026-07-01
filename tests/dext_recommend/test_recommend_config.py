@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from dext_recommend import RecommendSettings
 
 
@@ -45,12 +48,6 @@ def test_recommend_settings_accepts_legacy_neo4j_uri(monkeypatch):
     monkeypatch.setenv("DEXT_RECOMMEND_NEO4J_URI", "bolt://legacy:7687")
     settings = RecommendSettings(_env_file=None)
     assert settings.neo4j_uri == "bolt://legacy:7687"
-
-
-import pytest
-from pydantic import ValidationError
-
-from dext_recommend.config import RecommendSettings
 
 
 def test_readiness_thresholds_have_defaults():
