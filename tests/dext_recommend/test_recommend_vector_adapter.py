@@ -139,3 +139,37 @@ async def test_read_current_raises_when_collection_unparseable():
     adapter = VectorReleaseAdapter(reader)
     with pytest.raises(ReadinessSourceError):
         await adapter.read_current("dext_professors_current", ("e1",))
+
+
+def _coverage_field(rows, field):
+    for r in rows:
+        if r["field"] == field:
+            return r
+    return None
+
+
+async def test_coverage_rows_include_eligibility_from_master_eligibility():
+    client = FakeAsyncQdrantClient(
+        alias_target="dext_professors__b1", count=2,
+        points=[
+            {"entity_id": "e1", "master_eligibility": "confirmed"},
+            {"entity_id": "e2", "master_eligibility": None},
+        ],
+    )
+    reader = QdrantReader(client, embedding_dimension=1536, embedding_fingerprint="fp-1")
+    raw = await reader.read_current("dext_professors_current", ("e1", "e2"))
+    elig = _coverage_field(raw["coverage"], "eligibility")
+    assert elig is not None
+    assert elig["covered"] == 0.5
+    assert elig["sample_size"] == 2
+
+
+async def test_coverage_rows_eligibility_full_when_all_master_eligible():
+    client = FakeAsyncQdrantClient(
+        alias_target="dext_professors__b1", count=1,
+        points=[{"entity_id": "e1", "master_eligibility": "confirmed"}],
+    )
+    reader = QdrantReader(client, embedding_dimension=1536, embedding_fingerprint="fp-1")
+    raw = await reader.read_current("dext_professors_current", ("e1",))
+    elig = _coverage_field(raw["coverage"], "eligibility")
+    assert elig["covered"] == 1.0

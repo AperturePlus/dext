@@ -114,6 +114,7 @@ def _coverage_rows(samples: list[dict]) -> list[dict]:
         {"field": "org_unit_ids", "covered": _frac("org_unit_ids"), "sample_size": n, "invalid_count": 0, "mismatch_count": 0},
         {"field": "profile_hash", "covered": _frac("profile_hash"), "sample_size": n, "invalid_count": 0, "mismatch_count": 0},
         {"field": "role_status", "covered": _frac("role_status"), "sample_size": n, "invalid_count": 0, "mismatch_count": 0},
+        {"field": "eligibility", "covered": _frac("master_eligibility"), "sample_size": n, "invalid_count": 0, "mismatch_count": 0},
     ]
 
 
