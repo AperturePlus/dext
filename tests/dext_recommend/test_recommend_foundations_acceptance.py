@@ -92,18 +92,38 @@ def test_all_four_fakes_satisfy_protocols():
     assert isinstance(FakeProfessorFactPort(), ProfessorFactPort)
 
 
-async def test_core_wired_with_fakes_does_not_touch_real_services():
+def test_core_wired_with_fakes_does_not_touch_real_services():
     snap = _snap()
+    from dext_grounded import FakeLLMGenerationPort, GenerationResult
+    from dext_recommend import FakeRankingProfilePort, RecommendSettings
+    from dext_recommend.core.ranking_profile import RankingProfile
+    prof = RankingProfile.from_dict({
+        "version": "r1",
+        "weights": {
+            "semantic_score": 0.50, "topic_statement_score": 0.18,
+            "student_fit_score": 0.12, "eligibility_score": 0.08,
+            "provenance_score": 0.08, "completeness_score": 0.04,
+        },
+        "rrf_k": 60, "oversample_steps": (200, 400, 800, 1000),
+        "detail_rerank_window": 50, "detail_fetch_concurrency": 8,
+        "detail_rerank_window_max": 100,
+        "match_level_thresholds": {"excellent": 0.75, "strong": 0.55, "possible": 0.35},
+        "tie_break": ("score", "semantic_score", "evidence_count", "entity_id"),
+    })
     deps = RecommendDeps(
         snapshot_port=FakeActiveSnapshotProvider(snap),
         embedding_port=FakeQueryEmbeddingPort([0.1], snap.embedding_fingerprint),
         vector_port=FakeVectorSearchPort(),
         facts_port=FakeProfessorFactPort(),
+        llm_port=FakeLLMGenerationPort(preset=GenerationResult(output={})),
+        ranking_port=FakeRankingProfilePort(profile=prof),
+        coverage_flags_by_build_id={snap.build_id: {"org_unit_ids": True}},
     )
-    core = RecommendationCore(deps)
-    # placeholder recommend raises NotImplementedError, but construction is clean
-    with pytest.raises(NotImplementedError):
-        await core.recommend(RecommendRequest(query_text="x"))
+    core = RecommendationCore(deps, RecommendSettings())
+    # construction is clean and does not touch real services; the full pipeline
+    # is exercised end-to-end in test_recommend_core.py (Task 11).
+    assert core is not None
+    assert core.deps is deps
 
 
 def test_error_codes_complete():

@@ -150,32 +150,62 @@ def test_recommended_professor_minimum():
 # appended to tests/test_recommend_models.py
 from dext_recommend import RecommendationCore, RecommendDeps
 from dext_recommend import (
-    FakeActiveSnapshotProvider, FakeProfessorFactPort, FakeQueryEmbeddingPort,
-    FakeVectorSearchPort,
+    FakeActiveSnapshotProvider, FakeLLMGenerationPort, FakeProfessorFactPort,
+    FakeQueryEmbeddingPort, FakeRankingProfilePort, FakeVectorSearchPort,
+    RecommendSettings,
 )
+from dext_recommend.core.ranking_profile import RankingProfile
+
+
+def _profile():
+    return RankingProfile.from_dict({
+        "version": "rank-v1",
+        "weights": {
+            "semantic_score": 0.50, "topic_statement_score": 0.18,
+            "student_fit_score": 0.12, "eligibility_score": 0.08,
+            "provenance_score": 0.08, "completeness_score": 0.04,
+        },
+        "rrf_k": 60, "oversample_steps": (200, 400, 800, 1000),
+        "detail_rerank_window": 50, "detail_fetch_concurrency": 8,
+        "detail_rerank_window_max": 100,
+        "match_level_thresholds": {"excellent": 0.75, "strong": 0.55, "possible": 0.35},
+        "tie_break": ("score", "semantic_score", "evidence_count", "entity_id"),
+    })
 
 
 def test_recommendation_core_constructs_from_fake_ports():
+    from dext_grounded import FakeLLMGenerationPort, GenerationResult
     snap = _make_snapshot()
     deps = RecommendDeps(
         snapshot_port=FakeActiveSnapshotProvider(snap),
         embedding_port=FakeQueryEmbeddingPort([0.1], snap.embedding_fingerprint),
         vector_port=FakeVectorSearchPort(),
         facts_port=FakeProfessorFactPort(),
+        llm_port=FakeLLMGenerationPort(preset=GenerationResult(output={})),
+        ranking_port=FakeRankingProfilePort(profile=_profile()),
+        coverage_flags_by_build_id={snap.build_id: {"org_unit_ids": True}},
     )
-    core = RecommendationCore(deps)
+    core = RecommendationCore(deps, RecommendSettings())
     assert core is not None
+    assert core.deps is deps
 
 
-async def test_recommendation_core_recommend_placeholder():
-    import pytest
+async def test_recommendation_core_recommend_runs_pipeline():
+    # The placeholder NotImplementedError is gone in R3; the real pipeline
+    # runs end-to-end against fakes and returns a validated RecommendResponse.
+    from dext_grounded import FakeLLMGenerationPort, GenerationResult
     snap = _make_snapshot()
     deps = RecommendDeps(
         snapshot_port=FakeActiveSnapshotProvider(snap),
         embedding_port=FakeQueryEmbeddingPort([0.1], snap.embedding_fingerprint),
         vector_port=FakeVectorSearchPort(),
         facts_port=FakeProfessorFactPort(),
+        llm_port=FakeLLMGenerationPort(preset=GenerationResult(output={})),
+        ranking_port=FakeRankingProfilePort(profile=_profile()),
+        coverage_flags_by_build_id={snap.build_id: {"org_unit_ids": True}},
     )
-    core = RecommendationCore(deps)
-    with pytest.raises(NotImplementedError):
-        await core.recommend(RecommendRequest(query_text="x"))
+    core = RecommendationCore(deps, RecommendSettings())
+    resp = await core.recommend(RecommendRequest(query_text="x"))
+    from dext_recommend import RecommendResponse
+    assert isinstance(resp, RecommendResponse)
+    assert resp.build_id == "b-1"
