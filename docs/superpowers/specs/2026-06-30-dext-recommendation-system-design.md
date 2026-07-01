@@ -8,7 +8,7 @@
 >
 > 目标模块：`dext_recommend`，与 `dext`、`dext_graph`、`dext_monitor` 平级
 >
-> 前置产物：存在经 READY/ACTIVE 发布的 build manifest、catalog 只读库、Neo4j active pointer 和 Qdrant current alias
+> 前置产物：catalog 只读库存在经 READY/ACTIVE 发布的唯一指针与 validation manifest，并具备 Neo4j active pointer 和 Qdrant current alias
 >
 > 本文是 `dext_recommend` 的 **overview spec**：只定义跨子 spec 的架构、模块边界、共享不变量、语义与依赖序。每个落地步骤的详细数据结构、算法、接口与验收标准见对应子 spec。共享的受约束生成与事实引用契约见 [dext-grounded-generation](2026-06-30-dext-grounded-generation-design.md)。
 
@@ -22,7 +22,7 @@
 - 匹配分析、套磁邮件和导师对比都必须基于导师事实与用户档案生成，不能产生无来源事实，也不能预测录取概率。
 - 收藏、历史、个人档案属于 App/API 应用层能力；推荐核心可以消费脱敏后的用户背景，但不应把用户画像写入建图事实层。
 - `dext_recommend` 必须与 `dext`、`dext_graph`、`dext_monitor` 保持平级关系，不 import、不调用、不复用这些模块的内部 Python API，只消费已发布的 ACTIVE 产物契约。
-- App 侧文档提到 `docs/api-contract.md` 和 `docs/openapi.yaml`，但当前工作区不存在这两个文件；本文先固化后端能力面与语义，正式字段名仍以补齐后的 OpenAPI 为准。
+- App 侧 OpenAPI 契约已提供在 `docs/appside/openapi.yaml`。本文固化推荐核心能力面与语义；HTTP adapter 的正式字段名与精确路径以该 OpenAPI 为准。
 
 本文定义推荐核心、HTTP 适配能力、会话语义、发布产物契约和质量门禁。后续 OpenAPI 只能做字段映射和权限包装，不应改变推荐核心逻辑。
 
@@ -90,25 +90,25 @@ dext -> published source snapshots -> build artifacts -> dext_recommend -> App/A
 - Qdrant professor payload 的 `org_unit_ids` 当前为空数组，无法做稳定院系过滤和院系级解释。
 - 当前向量发布侧只验证了 create/upsert/count 类能力，尚未形成推荐侧可依赖的标准 recall/alias/readback 协议；阶段 0 query 只是临时实验 collection。
 - append-only source observation 增强仍是可选设计；这不是推荐首次上线的绝对阻断项，但会影响 provenance 粒度和解释质量评测。
-- `docs/appside` 当前为未跟踪目录，且其引用的 `docs/api-contract.md`、`docs/openapi.yaml` 在工作区缺失；后续需要补齐契约文件并做 contract test。
+- `docs/appside/openapi.yaml` 当前提供 `/api/v1` 契约；后续需要以该文件做 contract test。若 OpenAPI 后续移动或拆分，阶段 7 spec 必须同步更新。
 
 推荐模块可以先开发内部接口和离线测试，但线上服务必须等 ACTIVE build、Qdrant alias、Neo4j active pointer 和必要 payload 对账能力补齐后才能放量。
 
 ## 5. App 侧能力契约
 
-App 当前有 `DataSource.llm` 与 `DataSource.http` 两种接线方式。HTTP 模式下，后端需要提供与以下产品能力等价的服务。路径是 App 侧文档描述的能力面，正式字段和精确路径以后续 OpenAPI 为准。
+App 当前有 `DataSource.llm` 与 `DataSource.http` 两种接线方式。HTTP 模式下，后端需要提供与以下产品能力等价的服务。路径以 `docs/appside/openapi.yaml` 为准；OpenAPI `servers.url=/api/v1`，下表省略该前缀。
 
 | 能力 | 后端责任 | 推荐核心参与度 |
 |---|---|---|
-| 首页导师推荐 `/api/v1/recommendations/mentors` | 接收自然语言、用户背景摘要和筛选条件，返回需求理解、推荐卡片、warning | 核心 |
-| 对话 `/api/v1/chat/...` | 管理或接收 session/turn/fork 上下文，路由更多导师、同领域、换方向、细节追问 | 核心提供推荐与事实工具，应用层管理会话 |
-| 导师详情 `/api/v1/professors/{id}` | 返回事实包、研究方向、简介、数据来源、可用动作 | 核心 |
-| 匹配分析 `/api/v1/match-analysis` | 基于用户档案和导师事实生成维度分析，不预测录取概率 | 核心提供事实包，LLM 文案受约束 |
-| 套磁邮件 `/api/v1/outreach-email` | 基于用户档案和导师事实生成可编辑草稿，不自动发送 | 核心提供事实包，LLM 文案受约束 |
-| 导师对比 `/api/v1/compare` | 对 2-3 位导师输出横向对比，必须基于事实包 | 核心提供事实包，LLM 文案受约束 |
-| 个人档案 `/api/v1/profile` | 保存、更新、删除用户背景，给推荐提供脱敏摘要 | App/API 应用层 |
-| 收藏 `/api/v1/favorites` | 保存导师收藏列表，支持后续对比和套磁入口 | App/API 应用层 |
-| 历史 `/api/v1/history` | 保存搜索与对话历史，可回到推荐结果和追问上下文 | App/API 应用层 |
+| 首页导师推荐 `POST /recommendations/mentors` | 接收自然语言、用户背景摘要和筛选条件，返回需求理解、推荐卡片、warning | 核心 |
+| 对话 `/chat/...` | 管理或接收 session/turn/fork 上下文，路由更多导师、同领域、换方向、细节追问 | 核心提供推荐与事实工具，应用层管理会话 |
+| 导师详情 `GET /professors/{professor_id}` | 返回事实包、研究方向、简介、数据来源、可用动作 | 核心 |
+| 匹配分析 `POST /professors/{professor_id}/match-analysis` | 基于用户档案和导师事实生成维度分析，不预测录取概率 | 核心提供事实包，LLM 文案受约束 |
+| 套磁邮件 `POST /professors/{professor_id}/outreach-email` | 基于用户档案和导师事实生成可编辑草稿，不自动发送 | 核心提供事实包，LLM 文案受约束 |
+| 导师对比 `POST /professors/compare` | 对 2-3 位导师输出横向对比，必须基于事实包 | 核心提供事实包，LLM 文案受约束 |
+| 个人档案 `/profile` | 保存、更新、删除用户背景，给推荐提供脱敏摘要 | App/API 应用层 |
+| 收藏 `/favorites` | 保存导师收藏列表，支持后续对比和套磁入口 | App/API 应用层 |
+| 历史 `/history` | 保存搜索与对话历史，可回到推荐结果和追问上下文 | App/API 应用层 |
 
 推荐卡片最小展示语义：
 
@@ -152,7 +152,7 @@ available_actions
 
 1. `dext_recommend` 核心不保存用户会话、收藏、历史或 profile，只消费调用方传入的脱敏上下文。
 2. API 应用层负责认证、权限、session/fork、profile、收藏、历史、远端资料删除和 OpenAPI 字段适配。
-3. 推荐核心每次请求绑定一个 `ActiveBuildSnapshot`，但核心只依赖 `BuildSnapshotPort`、`VectorSearchPort`、`ProfessorFactPort` 等接口，不直接认识 catalog/Qdrant/Neo4j 客户端。
+3. 推荐核心每次请求绑定一个 `ActiveBuildSnapshot`，但核心只依赖 `ActiveSnapshotProvider`、`VectorSearchPort`、`ProfessorFactPort` 等接口，不直接认识 catalog/Qdrant/Neo4j 客户端。
 4. LLM 只作为受约束的语言与推理组件，用于需求理解、追问路由、匹配分析、套磁邮件和对比文案；教师事实仍来自事实包。
 5. 向量 payload filter 只做召回加速，最终过滤和解释证据以事实端口 hydration 结果为准。
 6. 所有排序、解释、生成 prompt、阈值和输出策略必须版本化，进入 `ranking_profile_version` 或独立 generation profile。
@@ -163,7 +163,7 @@ available_actions
 ```mermaid
 flowchart LR
   App[Flutter App] --> API[HTTP API adapter]
-  API --> AppState[(Application state DB)]
+  API --> AppState[(PostgreSQL application state DB)]
   API --> RecAPI[dext_recommend.api]
 
   RecAPI --> Readiness[ReadinessService]
@@ -193,10 +193,10 @@ flowchart LR
   Recall --> Ports
   Query --> Embedding[Embedding client]
 
-  AppState -. profile/session/favorites/history .-> API
+  AppState -. profile/session/favorites/history/remote-delete .-> API
 ```
 
-`Ports` 是 `dext_recommend` 自己定义的抽象协议，不是 `dext_graph` 的内部 API。`Application state DB` 可以是现有 App 后端数据库或后续新增服务库，但不得与 catalog 混用。catalog 是 build 事实库，应用状态库是用户数据与会话库。
+`Ports` 是 `dext_recommend` 自己定义的抽象协议，不是 `dext_graph` 的内部 API。`Application state DB` 明确使用 PostgreSQL（本地开发由 `docker/compose.yaml` 的 `postgres:16-alpine` 提供，通过 `DEXT_APP_DATABASE_URL` 连接），不得与 catalog 混用。catalog 是 build 事实库；PostgreSQL 是用户数据与会话库，owner scope 由 `owner_id` 绑定。
 
 ### 6.3 建议包结构
 
@@ -215,14 +215,15 @@ src/dext_recommend/
     auth.py                 # viewer permissions 与 include_contacts 控制
 
   ports/
-    build_snapshot.py       # BuildSnapshotPort，读取 ACTIVE build 发布状态
+    active_snapshot.py      # ActiveSnapshotProvider，只暴露已验证 snapshot
+    release_readback.py     # R2 catalog/vector/graph 原始发布 readback
     vector_search.py        # VectorSearchPort，召回与 alias/count readback
     professor_facts.py      # ProfessorFactPort，按 entity_id 读取事实包
     embedding.py            # QueryEmbeddingPort，按 ACTIVE fingerprint 编码 query
     generation.py           # LLMGenerationPort，受约束生成
 
   adapters/
-    manifest_reader.py      # 读取 build manifest / release manifest
+    catalog_release.py      # 只读读取 catalog ACTIVE/validation/promotion 元数据
     catalog_sqlite.py       # 面向 catalog 发布 schema 的只读 SQL adapter
     vector_qdrant.py        # 面向 Qdrant alias/payload 协议的 adapter
     graph_neo4j.py          # 面向 Neo4j active pointer/graph schema 的 adapter
@@ -312,12 +313,12 @@ entity_id(s) + authorized StudentContext
 
 v1 推荐采用“一个 HTTP 服务进程 + 外部发布产物”的部署形态：
 
-- HTTP 服务：承载 `/api/v1/recommendations/mentors`、`/api/v1/professors/{id}`、chat adapter、match/email/compare adapter。
-- build manifest：推荐服务从 manifest 或 release pointer 读取 ACTIVE build 元数据，不调用建图模块命令。
+- HTTP 服务：承载 `POST /recommendations/mentors`、`GET /professors/{professor_id}`、chat adapter、match/email/compare adapter（均挂在 `/api/v1` server 下）。
+- catalog release metadata：推荐服务从 catalog 唯一 ACTIVE 行及 validation/promotion 记录读取发布元数据，不调用建图模块命令。
 - catalog SQLite：作为发布产物只读挂载，推荐服务不得执行 migration 或写入。
 - Qdrant：通过 `VectorSearchPort` 只访问 `dext_professors_current` alias，启动和健康检查必须 readback alias target。
 - Neo4j：通过 `ProfessorFactPort` 只读访问 active pointer 和当前 build 子图。
-- App state DB：由 API 应用层管理 profile、session、fork、favorites、history；推荐核心只通过 DTO 获取必要上下文。
+- App state DB：PostgreSQL，由 API 应用层管理 anonymous identity、profile、session、fork、turn/message/feedback、favorites、history 和远端资料删除；推荐核心只通过 DTO 获取必要上下文。
 - LLM/Embedding provider：独立 client、独立超时、重试和脱敏日志；embedding 配置必须与 ACTIVE build fingerprint 对齐。
 
 HTTP adapter 可使用 FastAPI 或 aiohttp；框架选择不得进入 `core`。若后续已有 App 后端服务，则优先把 `dext_recommend` 作为平级库嵌入该服务，嵌入方式只装配 `dext_recommend` 自己的 ports/adapters，不导入 `dext_graph` 内部代码；当负载或部署隔离需要时，再拆成独立推荐服务。
@@ -496,7 +497,7 @@ OpenAPI 适配层只负责：
 
 ## 9. ACTIVE build 一致性
 
-推荐服务必须通过 `ActiveBuildSnapshot` 读取数据。snapshot 由 `BuildSnapshotPort` 从发布产物契约构建，至少包含：
+推荐服务必须通过 `ActiveBuildSnapshot` 读取数据。R2 从 raw release ports 构建 snapshot，再由 `ActiveSnapshotProvider` 暴露，至少包含：
 
 ```text
 build_id
@@ -525,7 +526,7 @@ snapshot 构建规则：
 
 允许的发布产物：
 
-- release/build manifest：build ID、schema version、embedding settings、taxonomy version、ranking/generation profile。
+- catalog ACTIVE/validation metadata：build ID、schema version、embedding settings、taxonomy version；ranking/generation profile 由各自版本文件提供。
 - catalog SQLite 只读发布 schema：canonical professor、profile metadata、ResearchStatement、PublicationMention、quality findings。
 - vector store current alias：dense/sparse 召回和 payload filter。
 - graph store active pointer：Topic 路径、院系/学校关系、可解释子图和图关系 readback。
@@ -725,7 +726,7 @@ build_id/profile_hash
 
 - catalog schema migration 到推荐要求的最低版本后，可明确表达旧 build 是否兼容；不兼容时要求重新 build。
 - Topic stage 和 vector stage 对同一 build 完成，并进入可发布状态。
-- release/build manifest 记录 build ID、catalog schema version、graph schema version、vector payload schema version、embedding settings、taxonomy version、profile template version 和 expected counts。
+- catalog ACTIVE/validation metadata 记录 build ID、catalog/graph/vector schema version、embedding settings、taxonomy version、profile template version 和 expected counts。
 - promotion 原子发布 catalog ACTIVE/release pointer、graph active pointer 和 vector current alias。
 - vector professor payload 填充稳定 `org_unit_ids`、`profile_hash`、`embedding_fingerprint` 和 approved Topic IDs。
 - graph professor export 填充真实 `profile_hash`。
@@ -833,7 +834,8 @@ user_action: optional
 
 - `dext_recommend` 不直接写用户收藏、历史和 profile；由 App/API 应用层负责。
 - 应用层写历史时保存 response snapshot 所需的最小字段，避免把完整证据包和用户档案重复落库。
-- 用户请求清理远端资料时，应用层必须删除 profile、收藏、历史和匿名凭证；推荐事实图不受影响。
+- PostgreSQL 是 profile、收藏、历史、会话/fork/turn/message/feedback 和匿名凭证的权威远端存储；所有行必须按 `owner_id` 隔离。
+- 用户请求清理远端资料时，应用层必须删除该 `owner_id` 下的 profile、收藏、历史、会话/fork/turn/message/feedback 和匿名凭证；推荐事实图不受影响。
 - AI trace 或演示追踪只能在显式开关下采样记录，并进行脱敏和长度截断。
 
 ## 19. 非目标
@@ -853,7 +855,7 @@ v1 不做：
 
 ## 20. 落地步骤与子 spec 拆分
 
-推荐模块按依赖序拆为 7 个子 spec，每个子 spec 自带 spec → plan → TDD 执行周期。阶段编号表示实施依赖，不等同于运行时状态机。HTTP 契约（阶段 7）是最后实现的一步，且必须等待 App 侧补齐 `docs/api-contract.md` 与 `docs/openapi.yaml` 后才能定字段。
+推荐模块按依赖序拆为 7 个子 spec，每个子 spec 自带 spec → plan → TDD 执行周期。阶段编号表示实施依赖，不等同于运行时状态机。HTTP 契约（阶段 7）是最后实现的一步，字段与路径以 `docs/appside/openapi.yaml` 为准。
 
 | 阶段 | 子 spec | 入口条件 | 退出门禁 |
 |---:|---|---|---|
@@ -863,7 +865,7 @@ v1 不做：
 | 4 | [Professor facts](2026-06-30-dext-recommendation-04-professor-facts-design.md) | 阶段 3 候选可解释 | `ProfessorDetail` 事实包可组装，供详情、追问、匹配、套磁、对比复用 |
 | 5 | [Conversation adapter](2026-06-30-dext-recommendation-05-conversation-design.md) | 阶段 4 事实包稳定 | session/turn/fork 上下文与 explicit/implicit intent 路由可用 |
 | 6 | [Auxiliary generation](2026-06-30-dext-recommendation-06-auxiliary-generation-design.md) | 阶段 4 事实包 + 共享 grounded-generation 可用 | 匹配分析、套磁邮件、导师对比受约束生成可用，禁无来源事实与概率承诺 |
-| 7 | [HTTP/OpenAPI adapter](2026-06-30-dext-recommendation-07-http-contract-design.md) | App 侧补齐 OpenAPI 契约 + 阶段 3/4/5/6 可用 | `/api/v1` adapter、权限、profile/favorites/history 应用层接线与端到端契约测试通过 |
+| 7 | [HTTP/OpenAPI adapter](2026-06-30-dext-recommendation-07-http-contract-design.md) | `docs/appside/openapi.yaml` + 阶段 3/4/5/6 可用 | `/api/v1` adapter、权限、profile/favorites/history 应用层接线与端到端契约测试通过 |
 
 ### 20.1 上游阻断
 

@@ -23,7 +23,8 @@ src/dext_recommend/
   readiness.py            # 仅占位与类型签名，阶段 2 填充
   ports/
     __init__.py
-    build_snapshot.py
+    active_snapshot.py       # 已验证 snapshot 的下游 provider
+    release_readback.py      # R2 使用的 catalog/vector/graph 原始 readback
     vector_search.py
     professor_facts.py
     embedding.py
@@ -54,6 +55,10 @@ src/dext_recommend/
 - `QueryUnderstanding`、`RecommendationWarning`
 
 字段名与 overview §8、§10 严格一致；`StudentContext`、`SourceRef` 从共享契约 import，不重复定义。
+
+**re-export（必须）**：`StudentContext` 与 `SourceRef` 必须在 `dext_recommend` 顶层 `__init__.py` re-export（即 `from dext_recommend import StudentContext` 可用且 `dext_recommend.StudentContext is dext_grounded.StudentContext` 为真），不得仅在 `models.py` 内部 import。验收测试必须断言这一身份等价（`rec.StudentContext is grounded.StudentContext`），不得用“`RecommendRequest` 接受 grounded StudentContext”的行为断言替代——行为等价不能证明 re-export 契约。
+
+**深度不可变（必须）**：`RecommendationFilters.university_ids`、`ConversationContext.prior_result_entity_ids`、`RecommendedProfessor.matched_topics`/`evidence_refs`/`short_reasons`、`RecommendResponse.results`/`warnings` 等集合字段必须以只读视图（`tuple` 或 `frozenset`）暴露，就地 `.append()` 必须报错；仅冻结 dataclass 本身（字段重赋值报错）不满足“标称不可变”。
 
 ## 4. 错误码
 
@@ -86,9 +91,21 @@ RecommendationError
 每个 port 是 `dext_recommend` 自己定义的抽象协议，方法签名稳定但本阶段无实现：
 
 ```text
-BuildSnapshotPort
-  get_snapshot() -> ActiveBuildSnapshot
-  refresh() -> ActiveBuildSnapshot | null      # 刷新失败返回 null，不污染当前已验证 snapshot
+ActiveSnapshotProvider
+  get_snapshot() -> ActiveBuildSnapshot | null # 只返回最后一次完整验证的 snapshot
+
+CatalogReleasePort
+  read_active() -> CatalogReleaseObservation | null
+  read_samples(build_id, sample_ids) -> tuple[ProfessorReleaseSample]
+
+VectorReleasePort
+  read_current(alias, sample_ids) -> VectorReleaseObservation | null
+
+GraphReleasePort
+  read_active(sample_ids) -> GraphReleaseObservation | null
+
+RankingProfilePort
+  read_version(path) -> str
 
 VectorSearchPort
   hybrid_recall(snapshot, query_vector, filters, oversample, profile_version) -> list[VectorHit]
@@ -106,9 +123,9 @@ LLMGenerationPort
   # re-export 共享契约，不在本模块重复定义
 ```
 
-**snapshot 显式入参**：`hybrid_recall`/`hydrate`/`get_detail`/`alias_readback`/`count_readback`/`embed` 都显式接收 `ActiveBuildSnapshot`（或其稳定句柄 `build_id` + 物理 collection/子图标识）。这样把“单次请求共享同一 snapshot”从约定提升为接口契约——Qdrant alias 或 Neo4j pointer 在请求中途切换时，各端口用的是请求开始时固定的物理资源，不会混用新旧 build。
+**两层端口边界**：R2 原始 readback ports 不得接收 `ActiveBuildSnapshot`，否则会形成“先有 snapshot 才能验证 snapshot”的循环依赖。R2 校验完成后通过 `ActiveSnapshotProvider` 暴露缓存 snapshot。业务数据端口 `hybrid_recall`/`hydrate`/`get_detail`/`alias_readback`/`count_readback`/`embed` 仍显式接收 `ActiveBuildSnapshot`，保证单次请求不混用新旧 build。
 
-调用方（recommend core / detail service / 生成服务）在请求入口取一次 snapshot 并固定，全程传同一份；端口不得在内部自行 `get_snapshot()` 或 `refresh()`，避免隐式刷新导致混合版本。`refresh()` 失败返回 `null`，调用方据此保持旧 snapshot 或返回 `active_build_inconsistent`，绝不把半刷新状态并入旧 snapshot。
+调用方（recommend core / detail service / 生成服务）在请求入口从 provider 取一次 snapshot 并固定，全程传同一份；业务数据端口不得在内部自行刷新。R2 刷新失败时 provider 继续保留旧的已验证 snapshot，绝不合并半刷新状态。
 
 `ProfessorDetail` 在本阶段定义为只读容器（阶段 4 填充组装逻辑）；`EmbeddingResult` 必须携带与 `ActiveBuildSnapshot.embedding_fingerprint` 比对所需的字段。
 
@@ -116,7 +133,8 @@ LLMGenerationPort
 
 每个 port 提供一个 fake 实现，供后续阶段单测使用，不依赖真实外部服务：
 
-- `FakeBuildSnapshotPort`：可注入预设 snapshot，可模拟缺 ACTIVE / 三端不一致。
+- `FakeActiveSnapshotProvider`：可注入预设 snapshot 或 `null`。
+- `FakeCatalogReleasePort` / `FakeVectorReleasePort` / `FakeGraphReleasePort` / `FakeRankingProfilePort`：可独立模拟缺 pointer/alias、三端 build 不一致、embedding 不一致、覆盖率不足与安全的 readback error。
 - `FakeVectorSearchPort`：可注入预设 hits 与 readback 结果。
 - `FakeProfessorFactPort`：可注入预设 detail bundle。
 - `FakeQueryEmbeddingPort`：返回固定向量与一致 fingerprint。
@@ -128,7 +146,6 @@ fake ports 只用于测试，不进入运行时 composition root。
 `config.py` 从环境读取，所有超时、limit、ranking profile 路径配置化：
 
 ```text
-DEXT_RECOMMEND_BUILD_MANIFEST_PATH
 DEXT_RECOMMEND_CATALOG_PATH
 DEXT_RECOMMEND_QDRANT_URL
 DEXT_RECOMMEND_QDRANT_ALIAS=dext_professors_current
@@ -143,6 +160,12 @@ DEXT_RECOMMEND_OVERSAMPLE_MAX=1000
 
 API key 只从环境读取，不进入配置对象的可序列化表示、日志或 manifest。
 
+**密钥字段类型（必须）**：`embedding_api_key`、`llm_api_key`、`neo4j_password` 必须用 `pydantic.SecretStr`（或等价的不序列化明文的类型），而不是普通 `str` + `Field(repr=False)`。`repr=False` 只影响 `repr()`，`model_dump()` 仍会输出明文，不能满足“API key 不出现在任何可序列化结构”。具体要求：
+
+- `model_dump()`（含 `mode="json"`）、`model_dump_json()`、`dict(settings)` 等**任意**序列化路径都不得输出密钥明文；`SecretStr` 在这些路径下输出 `**********` 或被 `exclude` 掉。
+- 不得仅依赖可选的 `safe_snapshot()` 辅助方法——`safe_snapshot()` 是便利方法，不是唯一防线；默认 `model_dump()` 本身就必须脱敏。
+- 仅在显式取值（`settings.llm_api_key.get_secret_value()`）时才可拿到明文，且该取值不得出现在日志、exception repr、generation profile 或 manifest 中。
+
 ## 8. import 边界
 
 `dext_recommend` 与 `dext`、`dext_graph`、`dext_monitor` 平级，**不 import** 这三者任何内部模块、ORM model、service class 或 CLI command。`dext_recommend` 与 `dext_competition` 互不 import，但都可 import 共享 grounded-generation 契约。
@@ -152,7 +175,16 @@ API key 只从环境读取，不进入配置对象的可序列化表示、日志
 - 包结构按 §2 创建，`__init__.py` re-export 公开接口，模块形成无环 import DAG。
 - §3 内部模型字段与 overview §8/§10 严格一致；`StudentContext`/`SourceRef` 从共享契约 import。
 - §4 错误码枚举注册完成，结构化字段稳定。
-- §5 五个 port 接口签名稳定，可被 fake 实现。
-- §6 四个 fake port（除 LLMGeneration 共享）可支撑后续阶段核心逻辑单测。
+- §5 已验证 snapshot provider、四个 R2 raw readback ports 与业务数据 ports 签名稳定，可被 fake 实现；raw ports 不接收 snapshot。
+- §6 fake ports 可支撑 R2 缺 ACTIVE/alias/pointer/不一致/覆盖率不足测试以及后续核心逻辑单测。
 - `test_import_boundary.py` 通过静态检查或 import 探针确认：`dext_recommend` 不 import `dext.*`、`dext_graph.*`、`dext_monitor.*`，且不 import `dext_competition.*`。
 - 配置 key 命名稳定，API key 不出现在任何可序列化结构中。
+
+**以下为面向序列化与可变性的攻击性测试（必须）**：
+
+- **re-export 身份等价（必须）**：`assert dext_recommend.StudentContext is dext_grounded.StudentContext` 与 `assert dext_recommend.SourceRef is dext_grounded.SourceRef`，不得用“`RecommendRequest` 接受 grounded `StudentContext`”的行为断言替代。
+- **配置默认序列化脱敏（必须）**：设了 `embedding_api_key`/`llm_api_key`/`neo4j_password` 后，`settings.model_dump()`、`settings.model_dump(mode="json")`、`settings.model_dump_json()` 的输出中都不得包含明文密钥（`SecretStr` 应序列化为 `**********` 或被排除）；不得仅断言 `safe_snapshot()` 脱敏。
+- **深度不可变（必须）**：`RecommendedProfessor.matched_topics.append(...)`、`RecommendResponse.results.append(...)`、`ConversationContext.prior_result_entity_ids.append(...)`、`QueryUnderstanding.research_interests.append(...)` 及嵌套 payload/mapping 修改都必须报错，不是仅字段重赋值报错。
+- **模块内全绿**：`uv run pytest tests/dext_recommend/ -q` 必须全绿。不要求全项目 `uv run pytest -q` 全绿（全项目超时属已知约束，不作为本阶段阻塞条件），但本模块内不得有失败或跳过。
+
+`ReadinessService.check/get_snapshot` 与 `RecommendationCore.recommend` 的 `NotImplementedError` 是显式延后到 R2/R3 的占位，不计为本阶段缺陷。

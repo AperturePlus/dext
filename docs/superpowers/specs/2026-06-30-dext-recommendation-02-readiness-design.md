@@ -34,13 +34,15 @@ snapshot 不可变；一次推荐请求、详情请求、匹配分析、套磁�
 
 ## 3. 构建规则
 
-`ReadinessService` 通过 `BuildSnapshotPort` 构建snapshot：
+`ReadinessService` 通过 R1 固化的 raw readback ports 构建 snapshot，并实现 `ActiveSnapshotProvider`：
 
-1. 从 release manifest 或 catalog release pointer 读取唯一 ACTIVE build ID。
-2. 读取 vector current alias 指向的 physical collection，readback payload 中的 build ID。
-3. 读取 graph active pointer 指向的 build。
+1. `CatalogReleasePort.read_active()` 从 catalog SQLite 唯一 `ACTIVE` 行读取权威 build ID、schema、embedding、taxonomy 和确定性抽样 ID；不新增外部 manifest JSON。
+2. `VectorReleasePort.read_current(alias, sample_ids)` 读取 current alias、physical collection、payload build/schema、embedding、count、coverage 与样本。
+3. `GraphReleasePort.read_active(sample_ids)` 读取 graph active pointer 与样本事实；`RankingProfilePort` 读取 ranking profile 版本。
 4. 三者 build ID 必须一致，embedding dimension/fingerprint 必须一致。
 5. 校验通过后生成不可变 snapshot；任一校验失败返回对应结构化错误。
+
+raw ports 不得接收 `ActiveBuildSnapshot`，不得 import `dext_graph.*`；真实 SQLite/Qdrant/Neo4j adapters 在 R2 实现。pointer/alias 缺失返回 `null`，连接、格式或歧义问题抛出无敏感信息的 `ReadinessSourceError`，由 service 转换为结构化 `RecommendationError`。
 
 允许后台定期刷新 snapshot，也允许每次请求前刷新；无论实现选择如何，刷新失败不得污染当前已验证 snapshot。
 
@@ -92,8 +94,9 @@ readiness 不读取用户数据、不调用 LLM。`ActiveBuildSnapshot` 是后�
 
 ## 8. 验收标准
 
-- `ReadinessService` 可从真实发布产物契约构建 snapshot（阶段 6/7 ACTIVE 就绪前用 fixture manifest + fake catalog/Qdrant/Neo4j 验证）。
+- `ReadinessService` 可从 catalog ACTIVE 发布契约构建 snapshot（真实产物就绪前用 fake raw ports 验证，不依赖外部 manifest 文件）。
 - 缺 ACTIVE、alias 缺失、Neo4j pointer 缺失、三端不一致、embedding 不一致五种情况各自返回对应结构化错误，不抛未捕获异常。
 - 关键 payload 覆盖率检查可执行，`org_unit_ids` 不达标时正确标记 `org_unit_filter_unavailable`。
 - snapshot 不可变，刷新失败不污染当前 snapshot；单次请求内不会拿到混合版本的 snapshot。
 - 单测可完全用 fake ports 覆盖，不依赖真实外部服务。
+- raw readback port 的签名不包含 `ActiveBuildSnapshot`，import boundary 继续禁止 `dext_recommend` 导入 `dext_graph.*`。

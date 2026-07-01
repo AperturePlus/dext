@@ -67,7 +67,7 @@ ProfessorDetail
 
 ## 7. 缓存
 
-允许热门 `ProfessorDetail` 只读缓存，key 必须包含 `build_id` 和 `profile_hash`；snapshot 切换时缓存失效，不混合版本。
+允许热门 `ProfessorDetail` 只读缓存，key 必须包含 `build_id`、`entity_id` 和 `profile_hash`；`profile_hash=null` 时必须禁用该条缓存或使用短 TTL 降级缓存，避免不同导师详情碰撞。snapshot 切换时缓存失效，不混合版本。
 
 ## 8. 验收标准
 
@@ -75,5 +75,5 @@ ProfessorDetail
 - 每条事实附 `SourceRef`，可回溯到 catalog/Neo4j 证据；缺证据显式标注 `uncertain`。
 - 联系方式默认不返回；`include_contacts` + 权限校验通过才返回；缺权限返回 `unauthorized_contact`。
 - `ProfessorDetail` 实现共享 `FactBundle` 接口，可被阶段 6 直接消费。
-- 缓存 key 基于 `build_id` + `profile_hash`，snapshot 切换不混合版本。
+- 缓存 key 基于 `build_id` + `entity_id` + `profile_hash`；`profile_hash=null` 不产生跨导师缓存碰撞，snapshot 切换不混合版本。
 - 单测可用 fake `ProfessorFactPort` 覆盖组装逻辑，不依赖真实 catalog。
