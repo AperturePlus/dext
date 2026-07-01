@@ -8,7 +8,9 @@ from dext.seed import (
     resolve_abbr,
 )
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve()
+while REPO_ROOT != REPO_ROOT.parent and not (REPO_ROOT / "pyproject.toml").exists():
+    REPO_ROOT = REPO_ROOT.parent
 REAL_SEED = REPO_ROOT / "entrances.yaml"
 
 

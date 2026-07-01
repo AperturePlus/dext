@@ -30,7 +30,9 @@ def test_subprocess_kill_and_resume_converges(
 ):
     settings = _settings(tmp_path, batch=1)
     _source_db(settings.source_data_dir / "test.db", count=3)
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve()
+    while root != root.parent and not (root / "pyproject.toml").exists():
+        root = root.parent
     env = os.environ.copy()
     env.update(
         {

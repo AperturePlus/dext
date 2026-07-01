@@ -15,7 +15,10 @@ def test_public_interface_is_reexported():
 
 
 def test_bridge_has_no_db_llm_or_page_imports():
-    bridge_dir = Path(__file__).resolve().parent.parent / "src" / "dext" / "bridge"
+    _repo_root = Path(__file__).resolve()
+    while _repo_root != _repo_root.parent and not (_repo_root / "pyproject.toml").exists():
+        _repo_root = _repo_root.parent
+    bridge_dir = _repo_root / "src" / "dext" / "bridge"
     forbidden = ("sqlalchemy", "aiosqlite", "openai", "html2text", "beautifulsoup", "bs4",
                  "dext.storage", "dext.llm", "dext.page")
     for py in sorted(bridge_dir.glob("*.py")):

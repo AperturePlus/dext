@@ -979,7 +979,9 @@ async def test_monitor_static_dir_resolves_relative_to_repo_root(
     run from outside the repo can't find the built UI."""
     catalog = tmp_path / "catalog.db"
     _write_catalog(catalog)
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve()
+    while repo_root != repo_root.parent and not (repo_root / "pyproject.toml").exists():
+        repo_root = repo_root.parent
     dist = repo_root / "webui" / "dist"
     created = False
     if not (dist / "index.html").is_file():

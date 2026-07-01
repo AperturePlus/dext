@@ -16,7 +16,10 @@ from dext.storage.db import create_all, create_engine_for_path
 from dext.storage.models import Base, EdgeType, GraphEdge, GraphNode, NodeStatus, NodeType
 from dext.storage.writer import DBWriter, NodeSpec, OrgUnitSpec
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "migrate_collapse_duplicate_nodes.py"
+_REPO_ROOT = Path(__file__).resolve()
+while _REPO_ROOT != _REPO_ROOT.parent and not (_REPO_ROOT / "pyproject.toml").exists():
+    _REPO_ROOT = _REPO_ROOT.parent
+SCRIPT = _REPO_ROOT / "scripts" / "migrate_collapse_duplicate_nodes.py"
 
 
 async def _seed_legacy_and_new_dup(db_path, tmp_path):
