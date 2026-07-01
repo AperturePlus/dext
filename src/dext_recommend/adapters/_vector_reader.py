@@ -10,6 +10,28 @@ from typing import Any, Protocol
 from dext_recommend.ports.release_readback import ReadinessSourceError
 
 CURRENT_PROFESSOR_ALIAS = "dext_professors_current"
+_COLLECTION_PREFIX = "dext_professors__"
+
+
+def parse_build_id_from_collection(target: str) -> str:
+    """Derive the ACTIVE build id from the alias-resolved physical collection name.
+
+    Qdrant has no native collection-level metadata, so the build pipeline encodes
+    the build id in the collection name as ``dext_professors__<build_id>``. This is
+    the authoritative vector-side build id — independent of sample presence.
+    """
+    if not target.startswith(_COLLECTION_PREFIX):
+        raise ReadinessSourceError(
+            "qdrant",
+            f"collection {target} does not encode build_id (missing prefix)",
+        )
+    build_id = target[len(_COLLECTION_PREFIX):]
+    if not build_id:
+        raise ReadinessSourceError(
+            "qdrant",
+            f"collection {target} has empty build_id suffix",
+        )
+    return build_id
 
 
 class VectorReleaseReader(Protocol):
@@ -94,4 +116,4 @@ def _coverage_rows(samples: list[dict]) -> list[dict]:
     ]
 
 
-__all__ = ["CURRENT_PROFESSOR_ALIAS", "QdrantReader", "VectorReleaseReader"]
+__all__ = ["CURRENT_PROFESSOR_ALIAS", "QdrantReader", "VectorReleaseReader", "parse_build_id_from_collection"]

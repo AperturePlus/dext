@@ -1,6 +1,6 @@
 import pytest
 
-from dext_recommend.adapters._vector_reader import QdrantReader
+from dext_recommend.adapters._vector_reader import QdrantReader, parse_build_id_from_collection
 from dext_recommend.adapters.vector_release import VectorReleaseAdapter
 from dext_recommend.ports.release_readback import ReadinessSourceError
 
@@ -76,3 +76,28 @@ async def test_read_current_raises_readiness_source_error_on_connection_failure(
     adapter = VectorReleaseAdapter(reader)
     with pytest.raises(ReadinessSourceError):
         await adapter.read_current("dext_professors_current", ("e1",))
+
+
+def test_parse_build_id_from_collection_suffix():
+    assert parse_build_id_from_collection("dext_professors__b1") == "b1"
+
+
+def test_parse_build_id_from_collection_multi_segment():
+    # build ids may contain underscores; only the dext_professors__ prefix is stripped
+    assert parse_build_id_from_collection("dext_professors__2026_07_01_b1") == "2026_07_01_b1"
+
+
+def test_parse_build_id_unparseable_collection_raises():
+    with pytest.raises(ReadinessSourceError) as raised:
+        parse_build_id_from_collection("dext_professors_current")
+    assert raised.value.source == "qdrant"
+
+
+def test_parse_build_id_missing_prefix_raises():
+    with pytest.raises(ReadinessSourceError):
+        parse_build_id_from_collection("random_name")
+
+
+def test_parse_build_id_empty_suffix_raises():
+    with pytest.raises(ReadinessSourceError):
+        parse_build_id_from_collection("dext_professors__")
