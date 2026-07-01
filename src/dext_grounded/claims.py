@@ -9,9 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from dext_grounded.codes import GenerationWarningCode
 from dext_grounded.content import ContentClass
-from dext_grounded.rules import GroundedRules, load_grounded_rules
 from dext_grounded.source_ref import SourceRef, UserContextRef
 
 
@@ -36,24 +34,19 @@ class Claim:
             tuple(self.fact_refs) if self.fact_refs is not None else (),
         )
 
-    def validate(self, rules: GroundedRules | None = None) -> list[GenerationWarning]:
+    def validate(self) -> list[GenerationWarning]:
         """Return warnings for this claim's citation shape (spec §5.2)."""
-        grounded_rules = rules or load_grounded_rules()
         warnings: list[GenerationWarning] = []
         if self.content_class == ContentClass.FACT and not self.fact_refs:
             warnings.append(GenerationWarning(
-                code=GenerationWarningCode.FACT_REF_MISSING.value,
-                message=grounded_rules.warning_messages[
-                    GenerationWarningCode.FACT_REF_MISSING.value
-                ],
+                code="fact_ref_missing",
+                message="fact claim must carry non-empty fact_refs",
                 claim_text=self.text,
             ))
         if self.content_class == ContentClass.UNCERTAIN and self.fact_refs:
             warnings.append(GenerationWarning(
-                code=GenerationWarningCode.UNCERTAIN_CLAIM_WITH_REFS.value,
-                message=grounded_rules.warning_messages[
-                    GenerationWarningCode.UNCERTAIN_CLAIM_WITH_REFS.value
-                ],
+                code="uncertain_claim_with_refs",
+                message="uncertain claim must not carry fact_refs as if certain",
                 claim_text=self.text,
             ))
         return warnings
