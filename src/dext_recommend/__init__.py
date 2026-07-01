@@ -15,6 +15,11 @@ from dext_recommend.config import RecommendSettings
 from dext_recommend.errors import (
     ErrorSeverity, RecommendationError, RecommendationErrorCode,
 )
+from dext_recommend.models import (
+    ConversationContext, QueryDiagnostics, QueryUnderstanding, RecommendRequest,
+    RecommendResponse, RecommendationFilters, RecommendationWarning,
+    RecommendedProfessor,
+)
 from dext_recommend.readiness import (
     ActiveBuildSnapshot, CoverageStat, ReadinessReport, ReadinessService,
 )
@@ -23,11 +28,19 @@ __version__ = "0.1.0"
 
 __all__: list[str] = [
     "ActiveBuildSnapshot",
+    "ConversationContext",
     "CoverageStat",
     "ErrorSeverity",
+    "QueryDiagnostics",
+    "QueryUnderstanding",
     "ReadinessReport",
     "ReadinessService",
+    "RecommendRequest",
+    "RecommendResponse",
     "RecommendSettings",
     "RecommendationError",
     "RecommendationErrorCode",
+    "RecommendationFilters",
+    "RecommendationWarning",
+    "RecommendedProfessor",
 ]

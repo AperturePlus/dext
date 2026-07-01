@@ -44,3 +44,80 @@ def test_readiness_service_check_placeholder():
     svc = ReadinessService()
     with pytest.raises(NotImplementedError):
         svc.check()
+
+
+# appended to tests/test_recommend_models.py
+from dext_recommend import (
+    ConversationContext, QueryDiagnostics, QueryUnderstanding, RecommendRequest,
+    RecommendationFilters, RecommendResponse, RecommendedProfessor,
+)
+from dext_grounded import StudentContext
+
+
+def test_recommendation_filters_defaults():
+    f = RecommendationFilters()
+    assert f.university_ids == []
+    assert f.master_eligibility == "any"
+    assert f.phd_eligibility == "any"
+    assert f.topic_filter_mode == "soft"
+
+
+def test_recommend_request_defaults():
+    req = RecommendRequest(query_text="NLP 导师")
+    assert req.limit == 10
+    assert req.oversample == 200
+    assert req.ranking_mode == "explainable_precision"
+    assert req.review_policy == "exclude"
+    assert req.include_contacts is False
+    assert req.diagnostics_level == "summary"
+    assert req.student_context is None
+    assert req.conversation_context is None
+
+
+def test_recommend_request_reexports_student_context():
+    # StudentContext comes from dext_grounded, not redefined here
+    req = RecommendRequest(
+        query_text="x",
+        student_context=StudentContext(school="X"),
+    )
+    assert req.student_context.school == "X"
+
+
+def test_conversation_context_fields():
+    ctx = ConversationContext(
+        session_id="s1", turn_id="t1",
+        intent="more_mentors", intent_source="explicit",
+        prior_result_entity_ids=["e1", "e2"],
+    )
+    assert ctx.anchor_entity_id is None
+    assert ctx.intent_confidence is None
+
+
+def test_query_understanding_fields():
+    qu = QueryUnderstanding(
+        research_interests=["NLP"],
+        preferred_universities=["A"],
+        preferred_cities=["北京"],
+        preferred_org_units=[],
+        degree_goal="phd",
+        mentor_eligibility_requirement="phd_confirmed",
+        missing_information=["gpa"],
+        needs_clarification=False,
+        confidence=0.8,
+    )
+    assert qu.research_interests == ["NLP"]
+    assert qu.confidence == 0.8
+
+
+def test_recommended_professor_minimum():
+    p = RecommendedProfessor(
+        entity_id="e1", display_name="Prof", university="U",
+        org_units=[], title="Professor", title_family="professor",
+        master_eligibility="confirmed", phd_eligibility="unknown",
+        role_status="included", profile_url="http://x",
+        research_summary="RAG", match_level="strong",
+        short_reasons=["works on RAG"], score=0.9, score_components={},
+        matched_topics=[], matched_statements=[], matched_publications=[],
+        evidence_refs=[], risk_flags=[], available_actions=["detail"],
+    )
+    assert p.entity_id == "e1"
