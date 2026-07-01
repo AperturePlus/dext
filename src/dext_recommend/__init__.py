@@ -11,6 +11,8 @@ dext_competition internals.
 
 import dext_grounded  # noqa: F401 — shared contract; asserted by import-boundary test
 
+from dext_recommend.config import RecommendSettings
+
 __version__ = "0.1.0"
 
-__all__: list[str] = []
+__all__: list[str] = ["RecommendSettings"]
