@@ -46,6 +46,28 @@ def test_readiness_service_check_placeholder():
         svc.check()
 
 
+def test_coverage_stat_accepts_valid_range():
+    from dext_recommend import CoverageStat
+    stat = CoverageStat(field="org_unit_ids", covered=0.0, sample_size=0, passes=False)
+    assert stat.covered == 0.0
+    stat_full = CoverageStat(field="profile_hash", covered=1.0, sample_size=100, passes=True)
+    assert stat_full.covered == 1.0
+
+
+def test_coverage_stat_rejects_covered_out_of_range():
+    from dext_recommend import CoverageStat
+    with pytest.raises(ValueError):
+        CoverageStat(field="org_unit_ids", covered=1.05, sample_size=10, passes=True)
+    with pytest.raises(ValueError):
+        CoverageStat(field="org_unit_ids", covered=-0.01, sample_size=10, passes=True)
+
+
+def test_coverage_stat_rejects_negative_sample_size():
+    from dext_recommend import CoverageStat
+    with pytest.raises(ValueError):
+        CoverageStat(field="org_unit_ids", covered=0.5, sample_size=-1, passes=True)
+
+
 # appended to tests/test_recommend_models.py
 from dext_recommend import (
     ConversationContext, QueryDiagnostics, QueryUnderstanding, RecommendRequest,

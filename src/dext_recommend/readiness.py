@@ -45,6 +45,16 @@ class CoverageStat:
     sample_size: int
     passes: bool
 
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.covered <= 1.0:
+            raise ValueError(
+                f"CoverageStat.covered must be in [0.0, 1.0], got {self.covered}"
+            )
+        if self.sample_size < 0:
+            raise ValueError(
+                f"CoverageStat.sample_size must be >= 0, got {self.sample_size}"
+            )
+
 
 class ReadinessService:
     """Placeholder; R2 implements real ACTIVE-build construction + checks."""
