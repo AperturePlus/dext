@@ -61,6 +61,9 @@ def test_unauthorized_contact_warning_emitted_even_when_strip_fails():
     assert res.output == "[output rejected: unsafe advice]"
     # ... AND the unauthorized_contact warning still emitted (the Finding 1 fix)
     assert any(w.code == "unauthorized_contact" for w in res.warnings)
+
+
+def test_stale_fact_downgraded_to_uncertain():
     claim = Claim(
         text="2024 年报名时间是 3 月", content_class=ContentClass.FACT,
         # fact_refs omitted → already uncertain at Claim level, but guard should
