@@ -30,8 +30,9 @@ from dext_recommend.ports import (
     FakeVectorReleasePort, FakeVectorSearchPort, GraphReleaseObservation,
     GraphReleasePort, LLMGenerationPort, PayloadCoverageObservation,
     ProfessorDetail, ProfessorFact, ProfessorFactPort, ProfessorReleaseSample,
-    QueryEmbeddingPort, RankingProfilePort, ReadinessSourceError, VectorHit,
-    VectorReleaseObservation, VectorReleasePort, VectorSearchPort, ViewerPermissions,
+    QueryEmbeddingPort, RankingProfile, RankingProfilePort, ReadinessSourceError,
+    VectorHit, VectorReleaseObservation, VectorReleasePort, VectorSearchPort,
+    ViewerPermissions,
 )
 from dext_recommend.readiness import (
     ActiveBuildSnapshot, CoverageStat, ReadinessReport, ReadinessService,
@@ -69,6 +70,7 @@ __all__: list[str] = [
     "QueryDiagnostics",
     "QueryEmbeddingPort",
     "QueryUnderstanding",
+    "RankingProfile",
     "RankingProfilePort",
     "ReadinessReport",
     "ReadinessService",

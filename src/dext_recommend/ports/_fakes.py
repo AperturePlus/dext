@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from typing import TYPE_CHECKING
+
 from dext_recommend.models import RecommendationFilters
 from dext_recommend.ports.embedding import EmbeddingResult
 from dext_recommend.ports.professor_facts import (
@@ -17,6 +19,9 @@ from dext_recommend.ports.release_readback import (
     ReadinessSourceError,
     VectorReleaseObservation,
 )
+
+if TYPE_CHECKING:
+    from dext_recommend.core.ranking_profile import RankingProfile
 from dext_recommend.ports.vector_search import AliasReadback, VectorHit
 from dext_recommend.readiness import ActiveBuildSnapshot
 
@@ -92,15 +97,26 @@ class FakeRankingProfilePort:
     def __init__(
         self,
         version: str = "ranking-v1",
+        profile: "RankingProfile | None" = None,
         error: ReadinessSourceError | None = None,
     ) -> None:
         self._version = version
+        self._profile = profile
         self._error = error
+        self.read_profile_calls: list[dict] = []
 
     async def read_version(self, path: Path) -> str:
         if self._error is not None:
             raise self._error
         return self._version
+
+    async def read_profile(self, path: Path) -> "RankingProfile":
+        if self._error is not None:
+            raise self._error
+        self.read_profile_calls.append({"path": path})
+        if self._profile is None:
+            raise ReadinessSourceError("ranking", "no profile preset")
+        return self._profile
 
 
 class FakeQueryEmbeddingPort:

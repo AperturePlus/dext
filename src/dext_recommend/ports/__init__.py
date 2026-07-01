@@ -1,4 +1,5 @@
 """Port protocols for validated snapshots and published artifact readback."""
+from dext_recommend.core.ranking_profile import RankingProfile
 from dext_recommend.ports.active_snapshot import ActiveSnapshotProvider
 from dext_recommend.ports.embedding import EmbeddingResult, QueryEmbeddingPort
 from dext_recommend.ports.generation import FakeLLMGenerationPort, LLMGenerationPort
@@ -56,6 +57,7 @@ __all__ = [
     "ProfessorFactPort",
     "ProfessorReleaseSample",
     "QueryEmbeddingPort",
+    "RankingProfile",
     "RankingProfilePort",
     "ReadinessSourceError",
     "VectorHit",

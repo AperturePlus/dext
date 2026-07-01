@@ -5,7 +5,10 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from dext_recommend.core.ranking_profile import RankingProfile
 
 
 class ReadinessSourceError(RuntimeError):
@@ -129,6 +132,8 @@ class GraphReleasePort(Protocol):
 @runtime_checkable
 class RankingProfilePort(Protocol):
     async def read_version(self, path: Path) -> str: ...
+
+    async def read_profile(self, path: Path) -> "RankingProfile": ...
 
 
 __all__ = [
