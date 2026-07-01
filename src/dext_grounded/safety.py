@@ -19,29 +19,18 @@ import re
 from dataclasses import replace
 
 from dext_grounded.claims import Claim, GenerationResult, GenerationWarning
+from dext_grounded.codes import GenerationWarningCode
 from dext_grounded.content import ContentClass
-
-_DOMAINS = {"recommend", "competition", "generic"}
-
-_PROBABILITY_PATTERNS = [
-    "录取概率", "保研概率", "奖学金概率", "综测加分", "Offer 概率", "获奖概率",
-    "导师接收意愿", "导师接收你的意愿", "录用意愿", "导师愿意接收",
-]
-_UNSAFE_ADVICE_PATTERNS = [
-    "代做", "挂名", "伪造数据", "赛中泄题", "绕过查重", "规避 AI 披露", "规避AI披露",
-]
-_CONTACT_PATTERNS = [
-    re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"),  # email
-    re.compile(r"1[3-9]\d{9}"),                                       # CN mobile
-]
-_STALE_PATTERNS = [
-    "2024 年报名", "2024年报名", "往届", "去年", "上一届",
-]
-_COMPETITION_WHITELIST_FAKE = "教育部白名单"
-_COMPETITION_REPORT_DIR = "2024 竞赛分析报告目录"
+from dext_grounded.rules import GroundedRules, load_grounded_rules
 
 
 class SafetyGuard:
+    def __init__(self, rules: GroundedRules | None = None) -> None:
+        self.rules = rules or load_grounded_rules()
+        self._contact_patterns = [
+            re.compile(pattern) for pattern in self.rules.safety.contact_regexes
+        ]
+
     def inspect(
         self,
         result: GenerationResult,
@@ -49,55 +38,122 @@ class SafetyGuard:
         domain: str = "generic",
         include_contacts: bool = False,
     ) -> GenerationResult:
-        if domain not in _DOMAINS:
+        if domain not in self.rules.domains:
             raise ValueError(f"unknown safety domain: {domain!r}")
 
         warnings: list[GenerationWarning] = list(result.warnings)
         kept_claims: list[Claim] = []
         output_text = result.output if isinstance(result.output, str) else ""
+        warning_messages = self.rules.warning_messages
+        mislabel = self.rules.safety.competition_report_dir_whitelist_mislabel
 
         # competition: fake-whitelist reject fires on output text first
-        if domain == "competition" and _COMPETITION_REPORT_DIR in output_text \
-                and _COMPETITION_WHITELIST_FAKE in output_text:
+        if domain == "competition" and mislabel.report_dir in output_text \
+                and mislabel.fake_whitelist_label in output_text:
             warnings.append(GenerationWarning(
-                code="unsafe_advice", message="ERROR",
-                claim_text="2024 report dir mislabelled as 教育部白名单",
+                code=GenerationWarningCode.UNSAFE_ADVICE.value,
+                message=warning_messages[GenerationWarningCode.UNSAFE_ADVICE.value],
+                claim_text=mislabel.claim_text,
             ))
-            return replace(result, claims=[], warnings=warnings)
+            # spec §6: reject the WHOLE output (blank), not just claims
+            return replace(
+                result, claims=[], warnings=warnings,
+                output=self._refusal_template(),
+            )
+
+        # Track fragments that must be sanitized from the str output.
+        # probability → remove the matched pattern plaintext from output
+        # stale_fact (competition) → annotate the matched fragment as uncertain
+        # Contacts are stripped in a separate pass below.
+        fragments_to_remove: list[str] = []
+        stale_fragments: list[str] = []
 
         for claim in result.claims:
             text = claim.text
-            if any(p in text for p in _UNSAFE_ADVICE_PATTERNS):
+            if any(p in text for p in self.rules.safety.unsafe_advice_patterns):
                 warnings.append(GenerationWarning(
-                    code="unsafe_advice", message="ERROR", claim_text=text,
-                ))
-                return replace(result, claims=[], warnings=warnings)
-            if any(p in text for p in _PROBABILITY_PATTERNS):
-                warnings.append(GenerationWarning(
-                    code="no_probability_claim", message="dropped probability claim",
+                    code=GenerationWarningCode.UNSAFE_ADVICE.value,
+                    message=warning_messages[GenerationWarningCode.UNSAFE_ADVICE.value],
                     claim_text=text,
                 ))
+                # spec §6: reject the WHOLE output regardless of type
+                return replace(
+                    result, claims=[], warnings=warnings,
+                    output=self._refusal_template(),
+                )
+            if any(p in text for p in self.rules.safety.probability_patterns):
+                warnings.append(GenerationWarning(
+                    code=GenerationWarningCode.NO_PROBABILITY_CLAIM.value,
+                    message=warning_messages[
+                        GenerationWarningCode.NO_PROBABILITY_CLAIM.value
+                    ],
+                    claim_text=text,
+                ))
+                # record every probability pattern appearing in this claim's
+                # text for removal from the str output
+                for p in self.rules.safety.probability_patterns:
+                    if p in text:
+                        fragments_to_remove.append(p)
                 continue
-            if domain == "competition" and any(p in text for p in _STALE_PATTERNS) \
+            if domain == "competition" and any(
+                p in text for p in self.rules.safety.stale_patterns
+            ) \
                     and claim.content_class == ContentClass.FACT:
                 warnings.append(GenerationWarning(
-                    code="stale_fact", message="downgraded stale fact to uncertain",
+                    code=GenerationWarningCode.STALE_FACT.value,
+                    message=warning_messages[GenerationWarningCode.STALE_FACT.value],
                     claim_text=text,
                 ))
+                for p in self.rules.safety.stale_patterns:
+                    if p in text:
+                        stale_fragments.append(p)
                 kept_claims.append(replace(claim, content_class=ContentClass.UNCERTAIN))
                 continue
             kept_claims.append(claim)
 
-        if not include_contacts and isinstance(result.output, str):
-            for pattern in _CONTACT_PATTERNS:
-                if pattern.search(result.output):
-                    warnings.append(GenerationWarning(
-                        code="unauthorized_contact",
-                        message="output contained contact info without include_contacts",
-                    ))
-                    break
+        # Build the sanitized str output (only when output is a str).
+        sanitized = result.output
+        if isinstance(sanitized, str):
+            # 1. remove probability-claim plaintext fragments
+            for frag in fragments_to_remove:
+                sanitized = sanitized.replace(frag, "")
+            # 2. annotate stale plaintext fragments as uncertain
+            for frag in stale_fragments:
+                if frag in sanitized:
+                    sanitized = sanitized.replace(
+                        frag, f"{frag}[uncertain: 往届]",
+                    )
+            # 3. strip unauthorized contact matches from the output
+            if not include_contacts:
+                for pattern in self._contact_patterns:
+                    if pattern.search(sanitized):
+                        stripped = pattern.sub("", sanitized)
+                        if pattern.search(stripped):
+                            # stripping failed to remove — downgrade to refusal
+                            sanitized = self._refusal_template()
+                            break
+                        sanitized = stripped
+                if sanitized != self._refusal_template():
+                    # emit the unauthorized_contact warning once if any contact
+                    # pattern matched the ORIGINAL output (pre-strip), so the
+                    # caller knows a contact was elided
+                    for pattern in self._contact_patterns:
+                        if pattern.search(result.output):
+                            warnings.append(GenerationWarning(
+                                code=GenerationWarningCode.UNAUTHORIZED_CONTACT.value,
+                                message=warning_messages[
+                                    GenerationWarningCode.UNAUTHORIZED_CONTACT.value
+                                ],
+                            ))
+                            break
 
-        return replace(result, claims=kept_claims, warnings=warnings)
+        return replace(
+            result, claims=kept_claims, warnings=warnings, output=sanitized,
+        )
+
+    @staticmethod
+    def _refusal_template() -> str:
+        return "[output rejected: unsafe advice]"
 
 
 __all__ = ["SafetyGuard"]

@@ -101,3 +101,53 @@ def test_all_dropped_yields_no_grounded_output_marker():
     validated = CitationValidator().validate(raw, bundle, StudentContext())
     assert validated.claims == []
     assert any(w.code == "no_grounded_output" for w in validated.warnings)
+
+
+# ---- §6 attack tests: final output must be sanitized, not just claims ----
+
+def test_safety_probability_claim_removed_from_output():
+    claim = Claim(text="录取概率 90%", content_class=ContentClass.ADVICE)
+    res = SafetyGuard().inspect(
+        GenerationResult(output="录取概率 90%", claims=[claim]),
+        domain="recommend", include_contacts=False,
+    )
+    assert "录取概率" not in (res.output if isinstance(res.output, str) else "")
+    assert any(w.code == "no_probability_claim" for w in res.warnings)
+
+
+def test_safety_unsafe_advice_blanks_output():
+    claim = Claim(text="我可以代做这个项目", content_class=ContentClass.ADVICE)
+    res = SafetyGuard().inspect(
+        GenerationResult(output="我可以代做这个项目", claims=[claim]),
+        domain="competition", include_contacts=False,
+    )
+    # output must NOT still carry the unsafe advice verbatim
+    assert "代做" not in (res.output if isinstance(res.output, str) else "")
+    assert any(w.code == "unsafe_advice" for w in res.warnings)
+
+
+def test_safety_unauthorized_contact_stripped_from_output():
+    res = SafetyGuard().inspect(
+        GenerationResult(output="联系：foo@bar.com 或 13800000000", claims=[]),
+        domain="recommend", include_contacts=False,
+    )
+    assert "foo@bar.com" not in res.output
+    assert "13800000000" not in res.output
+    assert any(w.code == "unauthorized_contact" for w in res.warnings)
+
+
+# ---- §5.2 advice fact_refs + canonical identity ----
+
+def test_advice_with_fabricated_fact_ref_dropped():
+    real = SourceRef(doc_path="catalog://e/p1", heading_path="rs",
+                     chunk_hash="c1", quote_or_summary="works on RAG")
+    bundle = FactBundle(build_id="b", subject_id="p1", facts=[], source_refs=[real])
+    fake = SourceRef(doc_path="catalog://e/p1", heading_path="rs",
+                     chunk_hash="c1", quote_or_summary="FAKED SUMMARY")  # same key, faked quote
+    claim = Claim(text="advice grounded in RAG", content_class=ContentClass.ADVICE,
+                  fact_refs=[fake])
+    res = CitationValidator().validate(
+        GenerationResult(output="x", claims=[claim]), bundle, StudentContext(),
+    )
+    assert all(r.quote_or_summary != "FAKED SUMMARY" for r in res.cited_refs)
+    assert any(w.code == "fabricated_ref" for w in res.warnings)
