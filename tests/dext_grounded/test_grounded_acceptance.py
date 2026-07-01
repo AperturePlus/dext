@@ -6,6 +6,8 @@ compose into one grounded pipeline that never returns un-cited output.
 """
 from __future__ import annotations
 
+import pytest
+
 from dext_grounded import (
     Claim, CitationValidator, ContentClass, FactBundle, FactItem,
     FakeLLMGenerationPort, GenerationResult, LLMGenerationPort, SafetyGuard,
@@ -81,7 +83,7 @@ def test_advice_with_user_context_refs_validated_against_student_context():
     raw = GenerationResult(output="advice", claims=[claim])
     validated = CitationValidator().validate(raw, bundle, ctx)
     assert validated.claims[0].user_context_ref is not None
-    assert validated.warnings == []
+    assert not validated.warnings
 
 
 def test_all_dropped_yields_no_grounded_output_marker():
@@ -99,7 +101,7 @@ def test_all_dropped_yields_no_grounded_output_marker():
         claims=[Claim(text="m", content_class=ContentClass.FACT, fact_refs=[fabricated])],
     )
     validated = CitationValidator().validate(raw, bundle, StudentContext())
-    assert validated.claims == []
+    assert not validated.claims
     assert any(w.code == "no_grounded_output" for w in validated.warnings)
 
 
@@ -151,3 +153,30 @@ def test_advice_with_fabricated_fact_ref_dropped():
     )
     assert all(r.quote_or_summary != "FAKED SUMMARY" for r in res.cited_refs)
     assert any(w.code == "fabricated_ref" for w in res.warnings)
+
+
+# ---- §3 deep immutability ----
+
+def test_fact_bundle_facts_is_readonly():
+    bundle = FactBundle(
+        build_id="b", subject_id="s", facts=[
+            FactItem(field="f", value="v", content_class=ContentClass.UNCERTAIN,
+                     source_refs=[]),
+        ], source_refs=[],
+    )
+    with pytest.raises((AttributeError, TypeError)):
+        bundle.facts.append(FactItem(field="x", value="y",
+                                     content_class=ContentClass.UNCERTAIN, source_refs=[]))
+
+
+def test_claim_fact_refs_is_readonly():
+    ref = SourceRef(doc_path="p", heading_path="h", chunk_hash="c", quote_or_summary="q")
+    claim = Claim(text="t", content_class=ContentClass.FACT, fact_refs=[ref])
+    with pytest.raises((AttributeError, TypeError)):
+        claim.fact_refs.append(ref)
+
+
+def test_generation_result_claims_is_readonly():
+    res = GenerationResult(output="x")
+    with pytest.raises((AttributeError, TypeError)):
+        res.claims.append(Claim(text="t", content_class=ContentClass.ADVICE))

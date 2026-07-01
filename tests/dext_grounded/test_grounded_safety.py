@@ -13,7 +13,7 @@ def test_probability_claim_dropped():
     res = SafetyGuard().inspect(
         GenerationResult(output="x", claims=[claim]), domain="recommend",
     )
-    assert res.claims == []
+    assert not res.claims
     assert any(w.code == "no_probability_claim" for w in res.warnings)
 
 
@@ -24,7 +24,7 @@ def test_unsafe_advice_rejects_whole_output():
     res = SafetyGuard().inspect(
         GenerationResult(output="x", claims=[claim]), domain="competition",
     )
-    assert res.claims == []
+    assert not res.claims
     assert any(w.code == "unsafe_advice" and w.message == "ERROR" for w in res.warnings)
 
 
@@ -83,7 +83,7 @@ def test_recommend_blocks_admission_probability():
     res = SafetyGuard().inspect(
         GenerationResult(output="x", claims=[claim]), domain="recommend",
     )
-    assert res.claims == []
+    assert not res.claims
     assert any(w.code == "no_probability_claim" for w in res.warnings)
 
 

@@ -21,8 +21,8 @@ def test_fact_claim_with_ref_in_bundle_kept():
     result = CitationValidator().validate(
         GenerationResult(output="x", claims=[claim]), bundle, StudentContext(),
     )
-    assert result.claims == [claim]
-    assert result.warnings == []
+    assert list(result.claims) == [claim]
+    assert not result.warnings
 
 
 def test_fact_claim_with_fabricated_ref_dropped():
@@ -33,7 +33,7 @@ def test_fact_claim_with_fabricated_ref_dropped():
     result = CitationValidator().validate(
         GenerationResult(output="x", claims=[claim]), bundle, StudentContext(),
     )
-    assert result.claims == []
+    assert not result.claims
     assert any(w.code == "fabricated_ref" for w in result.warnings)
 
 
@@ -72,7 +72,7 @@ def test_advice_claim_referencing_present_student_field_kept():
         GenerationResult(output="x", claims=[claim]), bundle, ctx,
     )
     assert result.claims[0].user_context_ref is not None
-    assert result.warnings == []
+    assert not result.warnings
 
 
 def test_fact_claim_missing_refs_downgraded_to_uncertain():
@@ -96,7 +96,7 @@ def test_all_claims_dropped_returns_no_grounded_output_marker():
     result = CitationValidator().validate(
         GenerationResult(output="x", claims=[fake_claim]), bundle, StudentContext(),
     )
-    assert result.claims == []
+    assert not result.claims
     assert any(w.code == "no_grounded_output" for w in result.warnings)
 
 
@@ -170,5 +170,5 @@ def test_fact_claim_same_triple_different_quote_still_flagged_fabricated():
     result = CitationValidator().validate(
         GenerationResult(output="x", claims=[claim]), bundle, StudentContext(),
     )
-    assert result.claims == []
+    assert not result.claims
     assert any(w.code == "fabricated_ref" for w in result.warnings)

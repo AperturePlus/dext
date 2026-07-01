@@ -27,7 +27,7 @@ def test_claim_advice_with_user_context_ref_ok():
             field="research_interests", value_bucket="advanced", quote_or_summary="NLP",
         ),
     )
-    assert claim.validate() == []
+    assert not claim.validate()
 
 
 def test_claim_uncertain_must_not_carry_fact_refs():
@@ -48,9 +48,9 @@ def test_claim_is_frozen():
 
 def test_generation_result_defaults():
     res = GenerationResult(output="hello")
-    assert res.claims == []
-    assert res.cited_refs == []
-    assert res.warnings == []
+    assert not res.claims
+    assert not res.cited_refs
+    assert not res.warnings
     assert res.output == "hello"
 
 

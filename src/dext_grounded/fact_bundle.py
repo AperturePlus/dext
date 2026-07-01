@@ -8,7 +8,7 @@ training memory. A FactItem without source_refs MUST be marked uncertain.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from dext_grounded.content import ContentClass
 from dext_grounded.source_ref import SourceRef
@@ -19,9 +19,11 @@ class FactItem:
     field: str                        # e.g. research_statement / eligibility / rule
     value: str
     content_class: ContentClass
-    source_refs: list[SourceRef] = field(default_factory=list)
+    source_refs: tuple[SourceRef, ...] = ()
 
     def __post_init__(self) -> None:
+        # accept list/tuple/generator input; store as tuple (spec §3 deep immutability)
+        object.__setattr__(self, "source_refs", tuple(self.source_refs))
         if not self.source_refs and self.content_class != ContentClass.UNCERTAIN:
             # spec §3: missing source_refs => must be uncertain
             object.__setattr__(self, "content_class", ContentClass.UNCERTAIN)
@@ -31,14 +33,15 @@ class FactItem:
 class FactBundle:
     build_id: str                     # recommend: ACTIVE build id; competition: kb version
     subject_id: str                   # recommend: entity_id; competition: competition_id
-    facts: list[FactItem]
-    source_refs: list[SourceRef]      # canonical lookup set for citation validation
+    facts: tuple[FactItem, ...]
+    source_refs: tuple[SourceRef, ...]      # canonical lookup set for citation validation
 
     def __post_init__(self) -> None:
-        if self.facts is None:
-            object.__setattr__(self, "facts", [])
-        if self.source_refs is None:
-            object.__setattr__(self, "source_refs", [])
+        object.__setattr__(self, "facts", tuple(self.facts) if self.facts is not None else ())
+        object.__setattr__(
+            self, "source_refs",
+            tuple(self.source_refs) if self.source_refs is not None else (),
+        )
 
 
 __all__ = ["FactBundle", "FactItem"]
