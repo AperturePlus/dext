@@ -11,6 +11,17 @@ def test_dext_recommend_is_importable():
     assert mod.__name__ == "dext_recommend"
 
 
+def test_dext_recommend_core_submodules_importable():
+    # the placeholder orchestrator lives in core.service and is re-exported
+    # by core; both submodule paths must import cleanly
+    core_pkg = importlib.import_module("dext_recommend.core")
+    svc = importlib.import_module("dext_recommend.core.service")
+    assert hasattr(core_pkg, "RecommendationCore")
+    assert hasattr(core_pkg, "RecommendDeps")
+    assert hasattr(svc, "RecommendationCore")
+    assert hasattr(svc, "RecommendDeps")
+
+
 def test_dext_recommend_does_not_import_dext_family():
     saved = dict(sys.modules)
     try:

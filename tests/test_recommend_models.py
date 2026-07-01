@@ -121,3 +121,37 @@ def test_recommended_professor_minimum():
         evidence_refs=[], risk_flags=[], available_actions=["detail"],
     )
     assert p.entity_id == "e1"
+
+
+# appended to tests/test_recommend_models.py
+from dext_recommend import RecommendationCore, RecommendDeps
+from dext_recommend import (
+    FakeBuildSnapshotPort, FakeProfessorFactPort, FakeQueryEmbeddingPort,
+    FakeVectorSearchPort,
+)
+
+
+def test_recommendation_core_constructs_from_fake_ports():
+    snap = _make_snapshot()
+    deps = RecommendDeps(
+        snapshot_port=FakeBuildSnapshotPort(snap),
+        embedding_port=FakeQueryEmbeddingPort([0.1], snap.embedding_fingerprint),
+        vector_port=FakeVectorSearchPort(),
+        facts_port=FakeProfessorFactPort(),
+    )
+    core = RecommendationCore(deps)
+    assert core is not None
+
+
+def test_recommendation_core_recommend_placeholder():
+    import pytest
+    snap = _make_snapshot()
+    deps = RecommendDeps(
+        snapshot_port=FakeBuildSnapshotPort(snap),
+        embedding_port=FakeQueryEmbeddingPort([0.1], snap.embedding_fingerprint),
+        vector_port=FakeVectorSearchPort(),
+        facts_port=FakeProfessorFactPort(),
+    )
+    core = RecommendationCore(deps)
+    with pytest.raises(NotImplementedError):
+        core.recommend(RecommendRequest(query_text="x"))

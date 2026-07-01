@@ -1,2 +1,4 @@
 """Recommendation pipeline orchestration."""
-__all__: list[str] = []
+from dext_recommend.core.service import RecommendDeps, RecommendationCore
+
+__all__ = ["RecommendDeps", "RecommendationCore"]
