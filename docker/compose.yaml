@@ -1,6 +1,33 @@
 name: dext-data
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    mem_limit: 1g
+    stop_grace_period: 1m
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_DB: ${DEXT_APP_POSTGRES_DB:-dext_app}
+      POSTGRES_USER: ${DEXT_APP_POSTGRES_USER:-dext}
+      POSTGRES_PASSWORD: ${DEXT_APP_POSTGRES_PASSWORD:-dext_dev_password}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - type: bind
+        source: ./data/postgres
+        target: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DEXT_APP_POSTGRES_USER:-dext} -d ${DEXT_APP_POSTGRES_DB:-dext_app}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   neo4j:
     image: neo4j:2026.05.0
     restart: unless-stopped
