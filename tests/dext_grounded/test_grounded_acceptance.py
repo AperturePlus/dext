@@ -180,3 +180,45 @@ def test_generation_result_claims_is_readonly():
     res = GenerationResult(output="x")
     with pytest.raises((AttributeError, TypeError)):
         res.claims.append(Claim(text="t", content_class=ContentClass.ADVICE))
+
+
+# ---- §5.1 trimmer hook ----
+
+def test_trim_keeps_query_hits_and_source_refs():
+    from dext_grounded import trim  # NEW: R0 must expose the trim hook
+    real = SourceRef(doc_path="catalog://e/p1", heading_path="rs",
+                     chunk_hash="c1", quote_or_summary="works on RAG")
+    hit = FactItem(field="research_statement", value="RAG",
+                   content_class=ContentClass.FACT, source_refs=[real])
+    miss = FactItem(field="bio", value="x" * 10000,
+                    content_class=ContentClass.UNCERTAIN, source_refs=[])
+    bundle = FactBundle(build_id="b", subject_id="p1", facts=[hit, miss],
+                        source_refs=[real])
+    trimmed = trim(bundle, token_budget=128, query_terms={"RAG"})
+    assert any(f.field == "research_statement" for f in trimmed.facts)
+    assert all(f.source_refs for f in trimmed.facts if f.content_class == ContentClass.FACT)
+
+
+# ---- §9 eval contract (precision / no-probability-claim / version binding) ----
+
+def test_eval_contract_samples_bind_profile_version():
+    from dext_grounded.eval import describe_metrics, load_acceptance_samples
+    metrics = describe_metrics()
+    assert "grounded_precision" in metrics and "no_probability_claim_rate" in metrics
+    samples = load_acceptance_samples()
+    assert samples  # non-empty built-in set
+    for s in samples:
+        assert s.generation_profile_version
+        assert s.grounded_rules_manifest_hash
+
+
+def test_trim_rejects_contact_bearing_fact_item():
+    from dext_grounded import trim
+    real = SourceRef(doc_path="catalog://e/p1", heading_path="rs",
+                     chunk_hash="c1", quote_or_summary="RAG contact foo@bar.com")
+    # FactItem whose value carries a contact (email) — must NOT survive into trimmed bundle
+    bad = FactItem(field="research_statement", value="email me foo@bar.com about RAG",
+                  content_class=ContentClass.FACT, source_refs=[real])
+    bundle = FactBundle(build_id="b", subject_id="p1", facts=[bad], source_refs=[real])
+    trimmed = trim(bundle, token_budget=4096, query_terms={"RAG"})
+    assert not any(f is bad or f.field == "research_statement" for f in trimmed.facts)

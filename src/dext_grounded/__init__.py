@@ -14,14 +14,18 @@ from dext_grounded.citation import CitationValidator
 from dext_grounded.claims import Claim, GenerationResult, GenerationWarning
 from dext_grounded.codes import GenerationWarningCode
 from dext_grounded.content import ContentClass
+from dext_grounded.eval import AcceptanceSample, describe_metrics, load_acceptance_samples
 from dext_grounded.fact_bundle import FactBundle, FactItem
 from dext_grounded.ports import FakeLLMGenerationPort, LLMGenerationPort
 from dext_grounded.profile import GenerationProfile, ProfileRegistry
+from dext_grounded.rules import GroundedRules, load_grounded_rules
 from dext_grounded.safety import SafetyGuard
 from dext_grounded.source_ref import QUOTE_MAX_LEN, SourceRef, UserContextRef
 from dext_grounded.student_context import StudentContext
+from dext_grounded.trim import trim
 
 __all__ = [
+    "AcceptanceSample",
     "CitationValidator",
     "Claim",
     "ContentClass",
@@ -32,6 +36,7 @@ __all__ = [
     "GenerationResult",
     "GenerationWarning",
     "GenerationWarningCode",
+    "GroundedRules",
     "LLMGenerationPort",
     "ProfileRegistry",
     "QUOTE_MAX_LEN",
@@ -39,4 +44,8 @@ __all__ = [
     "SourceRef",
     "StudentContext",
     "UserContextRef",
+    "describe_metrics",
+    "load_acceptance_samples",
+    "load_grounded_rules",
+    "trim",
 ]
