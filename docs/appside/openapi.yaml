@@ -1,0 +1,2132 @@
+openapi: 3.1.0
+info:
+  title: SchoNavi API
+  version: 1.0.0
+  description: Contract-first API for the Flutter client.
+servers:
+  - url: /api/v1
+x-dext-user-data-store:
+  engine: postgresql
+  docker_image: postgres:16-alpine
+  dsn_env: DEXT_APP_DATABASE_URL
+  owner_key: owner_id
+  owned_resources:
+    - anonymous_identity
+    - profile
+    - conversation_sessions
+    - conversation_turns
+    - conversation_messages
+    - message_feedback
+    - favorites
+    - search_history
+    - preparation_plans
+    - preparation_assistant_history
+  excluded_resources:
+    - catalog_sqlite
+    - neo4j_active_graph
+    - qdrant_indexes
+    - competition_knowledge_base
+paths:
+  /home/prompts:
+    get:
+      summary: Fetch suggested home prompts.
+      parameters:
+        - name: mode
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [mentor, competition]
+      responses:
+        '200':
+          description: Prompt list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HomePromptsEnvelope'
+  /home/config:
+    get:
+      summary: Fetch server-managed home screen copy and prompt chips.
+      parameters:
+        - name: mode
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [mentor, competition]
+      responses:
+        '200':
+          description: Home config.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HomeConfigEnvelope'
+  /competitions:
+    get:
+      summary: List competition catalog snapshots.
+      responses:
+        '200':
+          description: Competition catalog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompetitionCatalogEnvelope'
+  /competitions/{competition_id}:
+    get:
+      summary: Get one competition catalog snapshot.
+      parameters:
+        - name: competition_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Competition snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecommendedCompetitionEnvelope'
+  /recommendations/mentors:
+    post:
+      summary: Get mentor recommendations.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MentorRecommendationRequest'
+      responses:
+        '200':
+          description: Recommendation result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MentorRecommendationEnvelope'
+  /recommendations/competitions:
+    post:
+      summary: Get competition recommendations.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompetitionRecommendationRequest'
+      responses:
+        '200':
+          description: Competition recommendation result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompetitionRecommendationEnvelope'
+  /professors/{professor_id}:
+    get:
+      summary: Get professor detail.
+      parameters:
+        - $ref: '#/components/parameters/ProfessorId'
+      responses:
+        '200':
+          description: Professor detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfessorEnvelope'
+  /identity/anonymous:
+    post:
+      summary: Create an installation-level anonymous identity.
+      responses:
+        '200':
+          description: Anonymous bearer credential; also sets the secure Web cookie.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnonymousIdentityEnvelope'
+  /account/remote-data:
+    get:
+      summary: Inspect remote user data owned by the current identity.
+      description: Returns PostgreSQL application-state buckets for the authenticated anonymous identity; no profile, chat, history, favorite, or plan content is returned.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Remote user-data summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemoteUserDataSummaryEnvelope'
+    delete:
+      summary: Delete all remote user data owned by the current identity.
+      description: Deletes PostgreSQL application-state rows for profile, conversations, forks, turns, messages, feedback, favorites, history, preparation plans, and assistant history, then revokes the current anonymous credential. Catalog SQLite, Neo4j, Qdrant, and the competition knowledge base are not modified.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Remote user data deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemoteUserDataDeletionEnvelope'
+  /chat/sessions:
+    post:
+      summary: Create a general or professor-anchored conversation.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionCreateRequest'
+      responses:
+        '200':
+          description: Created session descriptor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+    get:
+      summary: List non-fork conversations owned by the current identity.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Active root conversations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionListEnvelope'
+  /chat/sessions/{session_id}:
+    get:
+      summary: Load the persisted aggregate for one conversation.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: Session, projected turns, and messages. Fork responses contain only fork-owned turns and messages; inherited source context is not exposed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionAggregateEnvelope'
+    delete:
+      summary: Delete a conversation; deleting a root cascades to its forks.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: Deletion result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletedEnvelope'
+  /chat/sessions/{session_id}/turns:
+    get:
+      summary: Load projected turns and messages for a conversation. Fork responses contain only fork-owned history.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: Turn and message projection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TurnListEnvelope'
+    post:
+      summary: Persist a user turn and stream its route and assistant attempt.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TurnCreateRequest'
+      responses:
+        '200':
+          description: SSE ack, route, delta, completed, and error events. Every event includes session_id, turn_id, attempt_id, and revision.
+          content:
+            text/event-stream:
+              schema: { type: string }
+  /chat/sessions/{session_id}/forks:
+    get:
+      summary: List forks below a root conversation.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: Fork descriptors.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionListEnvelope'
+    post:
+      summary: Create or reuse the unique fork at a recommendation source turn.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForkCreateRequest'
+      responses:
+        '200':
+          description: Created or reused fork descriptor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+  /chat/turns/{turn_id}/attempts:
+    post:
+      summary: Regenerate an existing turn without adding a user message.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TurnId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttemptCreateRequest'
+      responses:
+        '200':
+          description: SSE events with the same grammar as turn submission.
+          content:
+            text/event-stream:
+              schema: { type: string }
+  /chat/attempts/{attempt_id}/cancel:
+    post:
+      summary: Persist an active attempt as interrupted.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AttemptId'
+      responses:
+        '200':
+          description: Interruption result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InterruptedEnvelope'
+  /chat/messages/{message_id}/feedback:
+    patch:
+      summary: Persist assistant-message feedback.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/MessageId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FeedbackRequest'
+      responses:
+        '200':
+          description: Feedback update result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdatedEnvelope'
+  /chat/messages:
+    post:
+      deprecated: true
+      summary: Send a legacy non-streaming chat message.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatMessageRequest'
+      responses:
+        '200':
+          description: Chat response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatMessageEnvelope'
+  /chat/stream:
+    get:
+      summary: Stream chat reply through Server-Sent Events.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema: { type: string }
+        - name: message
+          in: query
+          required: true
+          schema: { type: string }
+        - name: professor_id
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: SSE stream with delta, related_recommendations, done, and error events.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /chat/route:
+    post:
+      summary: Decide whether a follow-up needs a new round of recommendations.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRouteRequest'
+      responses:
+        '200':
+          description: Routing decision.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatRouteEnvelope'
+  /chat/quick-actions:
+    post:
+      summary: Generate short quick-action labels for the chat composer.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuickActionsRequest'
+      responses:
+        '200':
+          description: Quick action labels.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuickActionsEnvelope'
+  /professors/compare:
+    post:
+      summary: Compare professors.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [professor_ids]
+              properties:
+                professor_ids:
+                  type: array
+                  minItems: 2
+                  maxItems: 3
+                  items: { type: string }
+      responses:
+        '200':
+          description: Comparison report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComparisonEnvelope'
+  /professors/{professor_id}/match-analysis:
+    post:
+      summary: Analyze profile-professor match.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProfessorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [profile]
+              properties:
+                profile:
+                  $ref: '#/components/schemas/UserProfile'
+      responses:
+        '200':
+          description: Match analysis.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchAnalysisEnvelope'
+  /professors/{professor_id}/outreach-email:
+    post:
+      summary: Generate outreach email.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProfessorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [profile]
+              properties:
+                profile:
+                  $ref: '#/components/schemas/UserProfile'
+      responses:
+        '200':
+          description: Email draft.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailDraftEnvelope'
+  /profile/achievements/extract:
+    post:
+      summary: Extract structured achievements.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [raw_text]
+              properties:
+                raw_text: { type: string }
+      responses:
+        '200':
+          description: Achievement draft.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AchievementDraftEnvelope'
+  /preparation-plans/generate:
+    post:
+      summary: Generate personalized optional tasks and advice for a preparation plan.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreparationPlanGenerateRequest'
+      responses:
+        '200':
+          description: Personalized preparation plan augmentation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreparationPlanGenerateEnvelope'
+  /preparation-plans:
+    get:
+      summary: List persisted preparation plans owned by the current identity.
+      description: Plans are PostgreSQL application-state records; competition knowledge-base facts remain external and read-only.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Preparation plans.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreparationPlanListEnvelope'
+    post:
+      summary: Persist a preparation plan snapshot for the current identity.
+      description: Creates or replaces the current identity's plan snapshot using the client-generated plan id and revision.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreparationAssistantPlanSnapshot'
+      responses:
+        '200':
+          description: Saved preparation plan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreparationPlanEnvelope'
+  /preparation-plans/{plan_id}:
+    get:
+      summary: Load one persisted preparation plan.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PreparationPlanId'
+      responses:
+        '200':
+          description: Preparation plan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreparationPlanEnvelope'
+    put:
+      summary: Save a new revision of one preparation plan.
+      description: The application layer owns plan revision checks and persistence; the competition core only generates plan content and change cards.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PreparationPlanId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreparationAssistantPlanSnapshot'
+      responses:
+        '200':
+          description: Saved preparation plan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreparationPlanEnvelope'
+    delete:
+      summary: Delete one persisted preparation plan and its assistant history.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PreparationPlanId'
+      responses:
+        '200':
+          description: Deletion result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletedEnvelope'
+  /preparation/config:
+    get:
+      summary: Fetch server-managed preparation lightweight configuration.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Preparation config.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreparationConfigEnvelope'
+  /preparation-templates:
+    get:
+      summary: Fetch merged preparation template for a competition context.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: timeline_type
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/CompetitionTimelineType'
+        - name: include_defense
+          in: query
+          required: true
+          schema: { type: boolean }
+        - name: category
+          in: query
+          required: true
+          schema: { type: string }
+        - name: competition_id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Merged template.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreparationTemplateEnvelope'
+  /preparation-plans/diagnose:
+    post:
+      summary: Diagnose the user's experience level for a competition category.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreparationDiagnoseRequest'
+      responses:
+        '200':
+          description: AI-suggested experience level with rationale.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreparationDiagnoseEnvelope'
+  /preparation-plans/{plan_id}/assistant:
+    post:
+      summary: Suggest structured plan-change cards for a preparation plan.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PreparationPlanId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreparationAssistantRequest'
+      responses:
+        '200':
+          description: Natural-language reply and at most five change cards.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreparationAssistantEnvelope'
+  /profile:
+    get:
+      summary: Load current profile.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: User profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfileEnvelope'
+    put:
+      summary: Save current profile.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserProfile'
+      responses:
+        '200':
+          description: Saved profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfileEnvelope'
+    delete:
+      summary: Clear current profile.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Clear result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClearedEnvelope'
+  /favorites:
+    get:
+      summary: List favorites.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Favorites.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FavoritesEnvelope'
+  /favorites/{professor_id}:
+    put:
+      summary: Add favorite professor snapshot.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProfessorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FavoriteItem'
+      responses:
+        '200':
+          description: Favorite status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FavoriteStatusEnvelope'
+    delete:
+      summary: Remove favorite.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProfessorId'
+      responses:
+        '200':
+          description: Favorite status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FavoriteRemovedEnvelope'
+  /history:
+    get:
+      summary: List search history.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: History.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryEnvelope'
+    post:
+      summary: Add search history entry.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchHistoryItem'
+      responses:
+        '200':
+          description: Saved history item.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryItemEnvelope'
+    delete:
+      summary: Clear all search history.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Clear result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClearedEnvelope'
+  /history/{session_id}:
+    delete:
+      summary: Remove one search history item.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Remove result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemovedEnvelope'
+components:
+  parameters:
+    ProfessorId:
+      name: professor_id
+      in: path
+      required: true
+      schema:
+        type: string
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    TurnId:
+      name: turn_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AttemptId:
+      name: attempt_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    MessageId:
+      name: message_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, format: uuid }
+    PreparationPlanId:
+      name: plan_id
+      in: path
+      required: true
+      description: Client-generated preparation-plan id; must equal plan_snapshot.id.
+      schema: { type: string }
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: scho_anonymous
+  schemas:
+    EnvelopeBase:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: integer }
+        message: { type: string }
+        data: true
+    RemoteUserDataBucket:
+      type: object
+      required: [name, row_count]
+      properties:
+        name:
+          type: string
+          enum:
+            - anonymous_identity
+            - profile
+            - conversation_sessions
+            - conversation_turns
+            - conversation_messages
+            - message_feedback
+            - favorites
+            - search_history
+            - preparation_plans
+            - preparation_assistant_history
+        row_count: { type: integer, minimum: 0 }
+        latest_updated_at: { type: [string, 'null'], format: date-time }
+    RemoteUserDataSummary:
+      type: object
+      required: [owner_id, storage_engine, dsn_env, buckets, excluded_resources]
+      properties:
+        owner_id: { type: string, format: uuid }
+        storage_engine:
+          type: string
+          enum: [postgresql]
+        dsn_env:
+          type: string
+          enum: [DEXT_APP_DATABASE_URL]
+        buckets:
+          type: array
+          items:
+            $ref: '#/components/schemas/RemoteUserDataBucket'
+        excluded_resources:
+          type: array
+          items:
+            type: string
+            enum: [catalog_sqlite, neo4j_active_graph, qdrant_indexes, competition_knowledge_base]
+    RemoteUserDataDeletionResult:
+      type: object
+      required: [deleted, revoked_anonymous_identity, buckets]
+      properties:
+        deleted: { type: boolean }
+        revoked_anonymous_identity: { type: boolean }
+        buckets:
+          type: array
+          items:
+            $ref: '#/components/schemas/RemoteUserDataBucket'
+    CompetitionRulesSummary:
+      type: object
+      required: [signup_time, contest_time, team_size, format, organizer]
+      properties:
+        signup_time: { type: string }
+        contest_time: { type: string }
+        team_size: { type: string }
+        format: { type: string }
+        organizer: { type: string }
+        official_url: { type: string }
+    CompetitionSnapshot:
+      type: object
+      required: [id, name, category, rules_summary]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        category: { type: string }
+        rules_summary:
+          $ref: '#/components/schemas/CompetitionRulesSummary'
+    WeeklyCommitment:
+      type: string
+      enum: [hours3to5, hours6to10, hours11to15, hours16plus]
+    ExperienceLevel:
+      type: string
+      enum: [beginner, intermediate, experienced]
+    CompetitionTimelineType:
+      type: string
+      enum: [eventWindow, submission]
+    HomeConfig:
+      type: object
+      required: [taglines, quick_tags, prompts]
+      properties:
+        taglines:
+          type: array
+          items: { type: string }
+        quick_tags:
+          type: array
+          items: { type: string }
+        prompts:
+          type: array
+          items:
+            $ref: '#/components/schemas/HomePrompt'
+    HomeConfigEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/HomeConfig'
+    PreparationConfig:
+      type: object
+      required: [category_aliases, timeline_defaults, prior_experience_options, domain_familiarity_options]
+      properties:
+        category_aliases:
+          type: object
+          additionalProperties: { type: string }
+        timeline_defaults:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/CompetitionTimelineType'
+        prior_experience_options:
+          type: array
+          items: { type: string }
+        domain_familiarity_options:
+          type: array
+          items: { type: string }
+    PreparationConfigEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PreparationConfig'
+    PreparationTemplateTask:
+      type: object
+      required: [template_key, title, estimated_hours]
+      properties:
+        template_key: { type: string }
+        title: { type: string }
+        estimated_hours: { type: number }
+    PreparationTemplatePhase:
+      type: object
+      required: [key, title, weight, required_tasks, optional_tasks]
+      properties:
+        key: { type: string }
+        title: { type: string }
+        weight: { type: number }
+        required_tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreparationTemplateTask'
+        optional_tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreparationTemplateTask'
+    PreparationTemplate:
+      type: object
+      required: [phases]
+      properties:
+        phases:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreparationTemplatePhase'
+    PreparationTemplateEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PreparationTemplate'
+    PreparationPlanGenerateRequest:
+      type: object
+      required:
+        [competition, calendar_today, target_date, timeline_type, weekly_commitment, experience_level, phase_keys]
+      properties:
+        competition:
+          $ref: '#/components/schemas/CompetitionSnapshot'
+        calendar_today:
+          type: string
+          format: date
+          description: Authoritative calendar basis for scheduling (spec §2.1).
+        target_date:
+          type: string
+          format: date
+          description: Event start (eventWindow) or submission DDL (submission).
+        timeline_type:
+          $ref: '#/components/schemas/CompetitionTimelineType'
+        event_end_date:
+          type: [string, 'null']
+          format: date
+          description: Event window end (eventWindow only); null for submission.
+        defense_date:
+          type: [string, 'null']
+          format: date
+          description: Defense/final date (submission only); null when absent.
+        weekly_commitment:
+          $ref: '#/components/schemas/WeeklyCommitment'
+        experience_level:
+          $ref: '#/components/schemas/ExperienceLevel'
+        phase_keys:
+          type: array
+          items: { type: string }
+        user_profile:
+          $ref: '#/components/schemas/UserProfile'
+    PreparationOptionalTaskSuggestion:
+      type: object
+      required: [title, estimated_hours]
+      properties:
+        template_key: { type: string }
+        title: { type: string, minLength: 1 }
+        estimated_hours: { type: number }
+    PreparationPhasePersonalization:
+      type: object
+      required: [key, optional_tasks]
+      properties:
+        key: { type: string }
+        optional_tasks:
+          type: array
+          maxItems: 3
+          items:
+            $ref: '#/components/schemas/PreparationOptionalTaskSuggestion'
+        personalized_advice: { type: string }
+    PreparationPlanGenerateResult:
+      type: object
+      required: [phases]
+      properties:
+        phases:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreparationPhasePersonalization'
+        global_advice: { type: string }
+    PreparationPlanGenerateEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PreparationPlanGenerateResult'
+    PreparationPlanEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PreparationAssistantPlanSnapshot'
+    PreparationPlanListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/PreparationAssistantPlanSnapshot'
+    PreparationDiagnoseAnswer:
+      type: object
+      required: [question_key, answer]
+      properties:
+        question_key: { type: string }
+        answer: { type: string }
+    PreparationDiagnoseRequest:
+      type: object
+      required: [competition, answers]
+      properties:
+        competition:
+          $ref: '#/components/schemas/CompetitionSnapshot'
+        profile:
+          $ref: '#/components/schemas/UserProfile'
+        answers:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreparationDiagnoseAnswer'
+    PreparationDiagnoseResult:
+      type: object
+      required: [level, rationale]
+      properties:
+        level:
+          $ref: '#/components/schemas/ExperienceLevel'
+        rationale: { type: string }
+        suggestion: { type: string }
+    PreparationDiagnoseEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PreparationDiagnoseResult'
+    PreparationAssistantHistoryTurn:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content: { type: string }
+        card_results:
+          type: array
+          items:
+            type: object
+            required: [card_id, status]
+            properties:
+              card_id: { type: string }
+              status:
+                type: string
+                enum: [pending, rejected, applied, declined, stale]
+    PreparationAssistantPlanSnapshot:
+      type: object
+      required:
+        [id, competition, target_date, timeline_type, weekly_commitment, experience_level, status, phases, created_at, updated_at, revision]
+      description: Full plan JSON sent as the server's single source of truth.
+      properties:
+        id: { type: string }
+        competition:
+          $ref: '#/components/schemas/CompetitionSnapshot'
+        target_date: { type: string, format: date }
+        timeline_type:
+          $ref: '#/components/schemas/CompetitionTimelineType'
+        event_end_date: { type: [string, 'null'], format: date }
+        defense_date: { type: [string, 'null'], format: date }
+        revision: { type: integer, minimum: 0 }
+        weekly_commitment:
+          $ref: '#/components/schemas/WeeklyCommitment'
+        experience_level:
+          $ref: '#/components/schemas/ExperienceLevel'
+        status:
+          type: string
+          enum: [draft, active, completed, archived]
+        phases:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreparationPhaseSnapshot'
+        personalized_summary: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        tight_schedule: { type: boolean }
+        overload: { type: boolean }
+    PreparationPhaseSnapshot:
+      type: object
+      required: [key, start_date, end_date, tasks]
+      properties:
+        key: { type: string }
+        start_date: { type: string, format: date }
+        end_date: { type: string, format: date }
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreparationTaskSnapshot'
+    PreparationTaskSnapshot:
+      type: object
+      required: [id, title, kind, estimated_hours, due_date]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        kind:
+          type: string
+          enum: [required, optional, userAdded]
+        estimated_hours: { type: number }
+        due_date: { type: string, format: date }
+        completed_at: { type: [string, 'null'], format: date-time }
+    PreparationAssistantRequest:
+      type: object
+      required: [calendar_today, base_plan_revision, plan_snapshot, user_message, request_id]
+      properties:
+        calendar_today: { type: string, format: date }
+        base_plan_revision: { type: integer, minimum: 0 }
+        plan_snapshot:
+          $ref: '#/components/schemas/PreparationAssistantPlanSnapshot'
+        user_message: { type: string }
+        request_id: { type: string, description: 客户端生成，服务端 echo }
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreparationAssistantHistoryTurn'
+    PreparationNewTaskDraft:
+      type: object
+      required: [title, estimated_hours, due_date]
+      properties:
+        title: { type: string, minLength: 1 }
+        estimated_hours: { type: integer, minimum: 1, maximum: 200 }
+        due_date: { type: string, format: date }
+        note: { type: string }
+    PreparationPhaseScheduleDraft:
+      type: object
+      required: [phase_key, start_date, end_date]
+      properties:
+        phase_key: { type: string }
+        start_date: { type: string, format: date }
+        end_date: { type: string, format: date }
+    PreparationChangeCardType:
+      type: string
+      enum: [move_task, add_task, delete_task, reschedule_phase, append_advice]
+    PreparationChangeCardStatus:
+      type: string
+      enum: [pending, rejected, applied, declined, stale]
+    PreparationChangeCardRejectionCode:
+      type: string
+      enum:
+        - missing_required_fields
+        - target_task_not_found
+        - target_phase_not_found
+        - completed_task_protected
+        - date_out_of_range
+        - invalid_add_task_fields
+        - required_task_delete_forbidden
+        - phase_schedule_invalid
+        - invalid_advice_fields
+    PreparationChangeCard:
+      type: object
+      required: [id, type, summary, rationale, status]
+      properties:
+        id: { type: string }
+        type:
+          $ref: '#/components/schemas/PreparationChangeCardType'
+        target_task_id: { type: string }
+        target_phase_key: { type: string }
+        new_date: { type: string, format: date }
+        new_task:
+          $ref: '#/components/schemas/PreparationNewTaskDraft'
+        phase_schedule:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreparationPhaseScheduleDraft'
+        advice_text: { type: string }
+        summary: { type: string }
+        rationale: { type: string }
+        status:
+          $ref: '#/components/schemas/PreparationChangeCardStatus'
+        rejection_code:
+          $ref: '#/components/schemas/PreparationChangeCardRejectionCode'
+        rejection_reason: { type: string }
+    PreparationChangeSet:
+      type: object
+      required: [id, base_plan_revision, cards]
+      properties:
+        id: { type: string }
+        base_plan_revision: { type: integer, minimum: 0 }
+        cards:
+          type: array
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/PreparationChangeCard'
+    PreparationAssistantResult:
+      type: object
+      required: [reply, change_set, request_id]
+      properties:
+        reply: { type: string }
+        change_set:
+          $ref: '#/components/schemas/PreparationChangeSet'
+        request_id: { type: string, description: echo 自请求 }
+    PreparationAssistantEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PreparationAssistantResult'
+    AnonymousIdentity:
+      type: object
+      required: [owner_id, access_token]
+      properties:
+        owner_id: { type: string, format: uuid }
+        access_token: { type: string }
+    SessionCreateRequest:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum: [general, professor]
+          default: general
+        professor_id: { type: [string, 'null'] }
+    ForkCreateRequest:
+      type: object
+      required: [source_turn_id, professor_id]
+      properties:
+        source_turn_id: { type: string, format: uuid }
+        professor_id: { type: string }
+    TurnCreateRequest:
+      type: object
+      required: [text, request_id, expected_revision]
+      properties:
+        text: { type: string, minLength: 1 }
+        request_id: { type: string, format: uuid }
+        expected_revision: { type: integer, minimum: 0 }
+    AttemptCreateRequest:
+      type: object
+      required: [session_id, request_id, expected_revision]
+      properties:
+        session_id: { type: string, format: uuid }
+        request_id: { type: string, format: uuid }
+        expected_revision: { type: integer, minimum: 0 }
+    FeedbackRequest:
+      type: object
+      required: [feedback]
+      properties:
+        feedback:
+          type: string
+          enum: [none, like, dislike]
+    ConversationSession:
+      type: object
+      required: [id, kind, root_session_id, revision, created_at, updated_at, legacy_context_incomplete]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [general, professor, fork] }
+        root_session_id: { type: string, format: uuid }
+        source_session_id: { type: [string, 'null'], format: uuid }
+        source_turn_id: { type: [string, 'null'], format: uuid }
+        professor_id: { type: [string, 'null'] }
+        revision: { type: integer, minimum: 0 }
+        title: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        deleted_at: { type: [string, 'null'], format: date-time }
+        legacy_context_incomplete: { type: boolean }
+    ConversationTurn:
+      type: object
+      required: [id, session_id, ordinal, status, user_message_id, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        session_id: { type: string, format: uuid }
+        ordinal: { type: integer, minimum: 0 }
+        status:
+          type: string
+          enum: [queued, classifying, connecting, streaming, recommending, committing, completed, failed, interrupted]
+        route: { type: [string, 'null'], enum: [recommendation, conversation, forkReroute, null] }
+        user_message_id: { type: string, format: uuid }
+        active_attempt_id: { type: [string, 'null'], format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ConversationMessage:
+      type: object
+      required: [id, turn_id, role, content, created_at, status, kind, feedback, related_recommendations]
+      properties:
+        id: { type: string, format: uuid }
+        turn_id: { type: string, format: uuid }
+        role: { type: string, enum: [user, assistant, system] }
+        content: { type: string }
+        created_at: { type: string, format: date-time }
+        status: { type: string, enum: [sending, streaming, done, error, interrupted] }
+        kind: { type: string }
+        feedback: { type: string, enum: [none, like, dislike] }
+        related_recommendations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Recommendation'
+    ConversationAggregate:
+      type: object
+      required: [session, turns, messages]
+      properties:
+        session:
+          $ref: '#/components/schemas/ConversationSession'
+        turns:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationTurn'
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationMessage'
+    TurnList:
+      type: object
+      required: [turns, messages]
+      properties:
+        turns:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationTurn'
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationMessage'
+    SessionList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationSession'
+    DeletedResult:
+      type: object
+      required: [deleted]
+      properties:
+        deleted: { type: boolean }
+    InterruptedResult:
+      type: object
+      required: [interrupted]
+      properties:
+        interrupted: { type: boolean }
+    UpdatedResult:
+      type: object
+      required: [updated]
+      properties:
+        updated: { type: boolean }
+    HomePrompt:
+      type: object
+      required: [text]
+      properties:
+        text: { type: string }
+    AcademicScore:
+      type: object
+      properties:
+        gpa: { type: number }
+        scale: { type: number }
+        rank: { type: string }
+    Competition:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        level: { type: string }
+        award: { type: string }
+        year: { type: string }
+    ResearchItem:
+      type: object
+      required: [type, title]
+      properties:
+        type:
+          type: string
+          enum: [paper, project, patent, other]
+        title: { type: string }
+        role: { type: string }
+        venue_or_status: { type: string }
+        year: { type: string }
+    UserProfile:
+      type: object
+      properties:
+        name: { type: string }
+        gender:
+          type: string
+          enum: [male, female, other, undisclosed]
+        degree_stage: { type: string }
+        target_degree: { type: string }
+        school: { type: string }
+        major: { type: string }
+        research_interests:
+          type: array
+          items: { type: string }
+        highlights: { type: string }
+        score:
+          $ref: '#/components/schemas/AcademicScore'
+        competitions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Competition'
+        research:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResearchItem'
+    QueryUnderstanding:
+      type: object
+      required: [research_interests, preferred_locations, preferred_universities, uncertainties]
+      properties:
+        research_interests:
+          type: array
+          items: { type: string }
+        preferred_locations:
+          type: array
+          items: { type: string }
+        preferred_universities:
+          type: array
+          items: { type: string }
+        degree_stage: { type: string }
+        uncertainties:
+          type: array
+          items: { type: string }
+    Recommendation:
+      type: object
+      required: [professor_id, name, university, college, title, research_fields, match_level, reason, limitations]
+      properties:
+        professor_id: { type: string }
+        name: { type: string }
+        university: { type: string }
+        college: { type: string }
+        title: { type: string }
+        research_fields:
+          type: array
+          items: { type: string }
+        homepage_url: { type: string }
+        match_level:
+          type: string
+          enum: [高, 中, 低]
+        match_score: { type: number, minimum: 0, maximum: 1 }
+        reason: { type: string }
+        limitations:
+          type: array
+          items: { type: string }
+    Professor:
+      type: object
+      required: [professor_id, name, university, college, title, research_fields]
+      properties:
+        professor_id: { type: string }
+        name: { type: string }
+        university: { type: string }
+        college: { type: string }
+        title: { type: string }
+        research_fields:
+          type: array
+          items: { type: string }
+        bio: { type: string }
+        homepage_url: { type: string }
+        source_url: { type: string }
+        updated_at: { type: string }
+        data_quality_score: { type: number }
+    MentorRecommendationRequest:
+      type: object
+      required: [prompt]
+      properties:
+        prompt: { type: string }
+        session_id: { type: string }
+        profile:
+          $ref: '#/components/schemas/UserProfile'
+    RecommendationResult:
+      type: object
+      required: [session_id, query_understanding, recommendations, follow_up_questions]
+      properties:
+        session_id: { type: string }
+        query_understanding:
+          $ref: '#/components/schemas/QueryUnderstanding'
+        recommendations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Recommendation'
+        follow_up_questions:
+          description: Short quick-action labels for follow-up chips; keep each item concise and non-question-like.
+          type: array
+          items: { type: string }
+    CompetitionUnderstanding:
+      type: object
+      required: [directions, categories, timing_preferences, team_preferences, uncertainties]
+      properties:
+        directions:
+          type: array
+          items: { type: string }
+        categories:
+          type: array
+          items: { type: string }
+        timing_preferences:
+          type: array
+          items: { type: string }
+        team_preferences:
+          type: array
+          items: { type: string }
+        uncertainties:
+          type: array
+          items: { type: string }
+    RecommendedCompetition:
+      type: object
+      required: [id, name, category, level, tags, team_size, signup_time, contest_time, format, organizer, reason, preparation_tips, limitations, match_score]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        category: { type: string }
+        level: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        team_size: { type: string }
+        signup_time: { type: string }
+        contest_time: { type: string }
+        format: { type: string }
+        organizer: { type: string }
+        official_url: { type: string }
+        reason: { type: string }
+        preparation_tips:
+          type: array
+          items: { type: string }
+        limitations:
+          type: array
+          items: { type: string }
+        match_score: { type: number, minimum: 0, maximum: 1 }
+    RecommendedCompetitionEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RecommendedCompetition'
+    CompetitionCatalogEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/RecommendedCompetition'
+    CompetitionRecommendationRequest:
+      type: object
+      required: [prompt]
+      properties:
+        prompt: { type: string }
+        session_id: { type: string }
+        profile:
+          $ref: '#/components/schemas/UserProfile'
+    CompetitionRecommendationResult:
+      type: object
+      required: [session_id, understanding, recommendations, follow_up_questions]
+      properties:
+        session_id: { type: string }
+        understanding:
+          $ref: '#/components/schemas/CompetitionUnderstanding'
+        recommendations:
+          type: array
+          items:
+            $ref: '#/components/schemas/RecommendedCompetition'
+        follow_up_questions:
+          description: Short quick-action labels for follow-up chips; keep each item concise and non-question-like.
+          type: array
+          items: { type: string }
+    ChatMessageRequest:
+      type: object
+      required: [session_id, message]
+      properties:
+        session_id: { type: string }
+        message: { type: string }
+        professor_id: { type: string }
+    ChatMessageResponse:
+      type: object
+      required: [session_id, answer, related_recommendations]
+      properties:
+        session_id: { type: string }
+        answer: { type: string }
+        related_recommendations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Recommendation'
+    RecommendationRecap:
+      type: object
+      required: [professor_id, name, university, research_fields]
+      properties:
+        professor_id: { type: string }
+        name: { type: string }
+        university: { type: string }
+        research_fields:
+          type: array
+          items: { type: string }
+    ChatRouteRequest:
+      type: object
+      required: [follow_up]
+      properties:
+        follow_up: { type: string }
+        session_id: { type: string }
+        last_recommendations:
+          type: array
+          items:
+            $ref: '#/components/schemas/RecommendationRecap'
+    ChatRouteResult:
+      type: object
+      required: [need]
+      properties:
+        need: { type: boolean }
+    QuickActionsRequest:
+      type: object
+      required: [follow_up]
+      properties:
+        follow_up: { type: string }
+        last_recommendations:
+          type: array
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/RecommendationRecap'
+    QuickActionsResult:
+      type: object
+      required: [quick_actions]
+      properties:
+        quick_actions:
+          type: array
+          minItems: 0
+          maxItems: 4
+          items: { type: string, maxLength: 8 }
+    ComparisonRow:
+      type: object
+      required: [dimension, cells]
+      properties:
+        dimension: { type: string }
+        cells:
+          type: object
+          additionalProperties:
+            type: string
+    ComparisonReport:
+      type: object
+      required: [professor_ids, professors, rows, summary, suggestion]
+      properties:
+        professor_ids:
+          type: array
+          items: { type: string }
+        professors:
+          type: array
+          items:
+            $ref: '#/components/schemas/Professor'
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComparisonRow'
+        summary: { type: string }
+        suggestion: { type: string }
+    MatchDimension:
+      type: object
+      required: [label, score, comment]
+      properties:
+        label: { type: string }
+        score: { type: integer, minimum: 0, maximum: 100 }
+        comment: { type: string }
+    MatchAnalysis:
+      type: object
+      required: [professor_id, summary, strengths, gaps, suggestions, dimensions]
+      properties:
+        professor_id: { type: string }
+        summary: { type: string }
+        strengths:
+          type: array
+          items: { type: string }
+        gaps:
+          type: array
+          items: { type: string }
+        suggestions:
+          type: array
+          items: { type: string }
+        dimensions:
+          type: array
+          items:
+            $ref: '#/components/schemas/MatchDimension'
+    EmailDraft:
+      type: object
+      required: [subject, body]
+      properties:
+        subject: { type: string }
+        body: { type: string }
+    AchievementDraft:
+      type: object
+      required: [competitions, research]
+      properties:
+        competitions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Competition'
+        research:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResearchItem'
+    FavoriteItem:
+      type: object
+      required: [professor_id, name, university, college, title, research_fields, favorited_at]
+      properties:
+        professor_id: { type: string }
+        name: { type: string }
+        university: { type: string }
+        college: { type: string }
+        title: { type: string }
+        research_fields:
+          type: array
+          items: { type: string }
+        homepage_url: { type: string }
+        favorited_at: { type: string, format: date-time }
+    SearchHistoryItem:
+      type: object
+      required: [type, session_id, prompt, created_at, summary, research_interests, preferred_locations, recommendation_count]
+      properties:
+        type:
+          type: string
+          enum: [mentor, competition]
+        session_id: { type: string }
+        prompt: { type: string }
+        created_at: { type: string, format: date-time }
+        summary: { type: string }
+        research_interests:
+          type: array
+          items: { type: string }
+        preferred_locations:
+          type: array
+          items: { type: string }
+        recommendation_count: { type: integer }
+    ClearedResult:
+      type: object
+      required: [cleared]
+      properties:
+        cleared: { type: boolean }
+    RemovedResult:
+      type: object
+      required: [removed]
+      properties:
+        removed: { type: boolean }
+    FavoriteStatus:
+      type: object
+      required: [favorited, item]
+      properties:
+        favorited: { type: boolean }
+        item:
+          $ref: '#/components/schemas/FavoriteItem'
+    FavoriteRemovedStatus:
+      type: object
+      required: [favorited]
+      properties:
+        favorited: { type: boolean }
+    HomePromptsEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/HomePrompt'
+    MentorRecommendationEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RecommendationResult'
+    CompetitionRecommendationEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/CompetitionRecommendationResult'
+    ProfessorEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/Professor'
+    ChatMessageEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ChatMessageResponse'
+    ChatRouteEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ChatRouteResult'
+    QuickActionsEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/QuickActionsResult'
+    ComparisonEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ComparisonReport'
+    MatchAnalysisEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/MatchAnalysis'
+    EmailDraftEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/EmailDraft'
+    AchievementDraftEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/AchievementDraft'
+    UserProfileEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/UserProfile'
+    FavoritesEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/FavoriteItem'
+    FavoriteStatusEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/FavoriteStatus'
+    FavoriteRemovedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/FavoriteRemovedStatus'
+    RemoteUserDataSummaryEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RemoteUserDataSummary'
+    RemoteUserDataDeletionEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RemoteUserDataDeletionResult'
+    HistoryEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/SearchHistoryItem'
+    HistoryItemEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SearchHistoryItem'
+    ClearedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ClearedResult'
+    RemovedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RemovedResult'
+    AnonymousIdentityEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/AnonymousIdentity'
+    SessionEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ConversationSession'
+    SessionListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SessionList'
+    SessionAggregateEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ConversationAggregate'
+    TurnListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TurnList'
+    DeletedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/DeletedResult'
+    InterruptedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/InterruptedResult'
+    UpdatedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeBase'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/UpdatedResult'
