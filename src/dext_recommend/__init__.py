@@ -12,7 +12,15 @@ dext_competition internals.
 import dext_grounded  # noqa: F401 — shared contract; asserted by import-boundary test
 
 from dext_recommend.config import RecommendSettings
+from dext_recommend.errors import (
+    ErrorSeverity, RecommendationError, RecommendationErrorCode,
+)
 
 __version__ = "0.1.0"
 
-__all__: list[str] = ["RecommendSettings"]
+__all__: list[str] = [
+    "ErrorSeverity",
+    "RecommendSettings",
+    "RecommendationError",
+    "RecommendationErrorCode",
+]
