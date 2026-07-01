@@ -391,6 +391,11 @@ async def test_concurrent_new_old_build_do_not_corrupt():
     # late-finishing b1 check. The asyncio.Lock serializes so completion order
     # follows dispatch order.
 
+    # NOTE: this is a smoke-test regression pin (both checks read b2). A
+    # failing-without-lock contention test is not constructible because the
+    # asyncio.Lock itself is what prevents the stale-overwrite interleaving;
+    # removing the lock to prove the negative is out of scope.
+
     class _SwitchingCatalog:
         def __init__(self):
             self._build = "b1"
