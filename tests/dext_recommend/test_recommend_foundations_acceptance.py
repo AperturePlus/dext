@@ -92,7 +92,7 @@ def test_all_four_fakes_satisfy_protocols():
     assert isinstance(FakeProfessorFactPort(), ProfessorFactPort)
 
 
-def test_core_wired_with_fakes_does_not_touch_real_services():
+async def test_core_wired_with_fakes_does_not_touch_real_services():
     snap = _snap()
     deps = RecommendDeps(
         snapshot_port=FakeActiveSnapshotProvider(snap),
@@ -103,7 +103,7 @@ def test_core_wired_with_fakes_does_not_touch_real_services():
     core = RecommendationCore(deps)
     # placeholder recommend raises NotImplementedError, but construction is clean
     with pytest.raises(NotImplementedError):
-        core.recommend(RecommendRequest(query_text="x"))
+        await core.recommend(RecommendRequest(query_text="x"))
 
 
 def test_error_codes_complete():

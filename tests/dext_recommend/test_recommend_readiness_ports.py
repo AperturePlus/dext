@@ -39,17 +39,17 @@ def _catalog(build_id: str = "b1") -> CatalogReleaseObservation:
     )
 
 
-def test_raw_release_fakes_satisfy_protocols_and_represent_absence():
+async def test_raw_release_fakes_satisfy_protocols_and_represent_absence():
     assert isinstance(FakeCatalogReleasePort(), CatalogReleasePort)
     assert isinstance(FakeVectorReleasePort(), VectorReleasePort)
     assert isinstance(FakeGraphReleasePort(), GraphReleasePort)
     assert isinstance(FakeRankingProfilePort(), RankingProfilePort)
-    assert FakeCatalogReleasePort().read_active() is None
-    assert FakeVectorReleasePort().read_current("current", ()) is None
-    assert FakeGraphReleasePort().read_active(()) is None
+    assert await FakeCatalogReleasePort().read_active() is None
+    assert await FakeVectorReleasePort().read_current("current", ()) is None
+    assert await FakeGraphReleasePort().read_active(()) is None
 
 
-def test_raw_release_fakes_can_represent_three_way_mismatch():
+async def test_raw_release_fakes_can_represent_three_way_mismatch():
     sample = ProfessorReleaseSample("e1", ["org"], profile_hash="h")
     catalog = FakeCatalogReleasePort(_catalog("catalog"), [sample])
     vector = FakeVectorReleasePort(VectorReleaseObservation(
@@ -59,12 +59,12 @@ def test_raw_release_fakes_can_represent_three_way_mismatch():
         coverage=[PayloadCoverageObservation("org_unit_ids", 1.0, 1)],
     ))
     graph = FakeGraphReleasePort(GraphReleaseObservation("graph", [sample]))
-    assert catalog.read_active().build_id == "catalog"
-    assert vector.read_current("current", ("e1",)).build_id == "vector"
-    assert graph.read_active(("e1",)).build_id == "graph"
+    assert (await catalog.read_active()).build_id == "catalog"
+    assert (await vector.read_current("current", ("e1",))).build_id == "vector"
+    assert (await graph.read_active(("e1",))).build_id == "graph"
 
 
-def test_readiness_source_error_is_safe_and_structured():
+async def test_readiness_source_error_is_safe_and_structured():
     error = ReadinessSourceError(
         "neo4j\nsource",
         "bolt://user:secret@host pointer\nmissing password=hunter2",
@@ -72,12 +72,12 @@ def test_readiness_source_error_is_safe_and_structured():
     )
     port = FakeGraphReleasePort(error=error)
     with pytest.raises(ReadinessSourceError) as raised:
-        port.read_active(())
+        await port.read_active(())
     assert "\n" not in str(raised.value)
     assert "secret" not in str(raised.value)
     assert "hunter2" not in str(raised.value)
     assert raised.value.retryable is True
 
 
-def test_ranking_profile_fake_returns_injected_version():
-    assert FakeRankingProfilePort("rank-v2").read_version(Path("unused")) == "rank-v2"
+async def test_ranking_profile_fake_returns_injected_version():
+    assert await FakeRankingProfilePort("rank-v2").read_version(Path("unused")) == "rank-v2"

@@ -1,9 +1,9 @@
-"""Every port data method must take an ActiveBuildSnapshot as an explicit param."""
+"""Snapshot pinning and async I/O boundary contracts for recommendation ports."""
 from __future__ import annotations
 
 import inspect
 
-from dext_recommend import ActiveBuildSnapshot
+from dext_recommend import ActiveBuildSnapshot, ReadinessService, RecommendationCore
 from dext_recommend.ports import (
     ActiveSnapshotProvider, CatalogReleasePort, EmbeddingResult, GraphReleasePort,
     ProfessorFactPort, ProfessorDetail, QueryEmbeddingPort, RankingProfilePort,
@@ -71,3 +71,29 @@ def test_raw_readback_ports_do_not_take_validated_snapshot():
     )
     for method in methods:
         assert "snapshot" not in _sig_params(method)
+
+
+def test_blocking_io_port_methods_are_async():
+    methods = (
+        CatalogReleasePort.read_active,
+        CatalogReleasePort.read_samples,
+        VectorReleasePort.read_current,
+        GraphReleasePort.read_active,
+        RankingProfilePort.read_version,
+        QueryEmbeddingPort.embed,
+        VectorSearchPort.hybrid_recall,
+        VectorSearchPort.alias_readback,
+        VectorSearchPort.count_readback,
+        ProfessorFactPort.get_detail,
+        ProfessorFactPort.hydrate,
+    )
+    assert all(inspect.iscoroutinefunction(method) for method in methods)
+
+
+def test_cached_snapshot_read_remains_synchronous():
+    assert not inspect.iscoroutinefunction(ActiveSnapshotProvider.get_snapshot)
+
+
+def test_io_orchestrators_are_async():
+    assert inspect.iscoroutinefunction(ReadinessService.check)
+    assert inspect.iscoroutinefunction(RecommendationCore.recommend)

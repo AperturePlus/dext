@@ -167,7 +167,7 @@ def test_recommendation_core_constructs_from_fake_ports():
     assert core is not None
 
 
-def test_recommendation_core_recommend_placeholder():
+async def test_recommendation_core_recommend_placeholder():
     import pytest
     snap = _make_snapshot()
     deps = RecommendDeps(
@@ -178,4 +178,4 @@ def test_recommendation_core_recommend_placeholder():
     )
     core = RecommendationCore(deps)
     with pytest.raises(NotImplementedError):
-        core.recommend(RecommendRequest(query_text="x"))
+        await core.recommend(RecommendRequest(query_text="x"))

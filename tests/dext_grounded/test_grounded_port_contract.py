@@ -13,6 +13,7 @@ def test_llm_generation_port_is_protocol():
 
 
 def test_llm_generation_port_generate_signature():
+    assert inspect.iscoroutinefunction(LLMGenerationPort.generate)
     sig = inspect.signature(LLMGenerationPort.generate)
     params = list(sig.parameters)
     # 'self' + the six spec params (§4)
@@ -22,11 +23,11 @@ def test_llm_generation_port_generate_signature():
     ]
 
 
-def test_fake_llm_generation_port_returns_preset_result():
+async def test_fake_llm_generation_port_returns_preset_result():
     preset = GenerationResult(output={"summary": "ok"})
     port = FakeLLMGenerationPort(preset)
     assert isinstance(port, LLMGenerationPort)
-    result = port.generate(
+    result = await port.generate(
         system_prompt_id="match-analysis-v1",
         user_inputs={},
         fact_bundle=FactBundle(build_id="b", subject_id="s", facts=[], source_refs=[]),
@@ -37,10 +38,10 @@ def test_fake_llm_generation_port_returns_preset_result():
     assert result is preset
 
 
-def test_fake_llm_generation_port_records_calls():
+async def test_fake_llm_generation_port_records_calls():
     preset = GenerationResult(output="hi")
     port = FakeLLMGenerationPort(preset)
-    port.generate(
+    await port.generate(
         system_prompt_id="p1", user_inputs={"x": 1},
         fact_bundle=FactBundle(build_id="b", subject_id="s", facts=[], source_refs=[]),
         student_context=None, json_schema=None, generation_profile_version="v1",

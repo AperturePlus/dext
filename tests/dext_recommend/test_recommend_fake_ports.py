@@ -31,24 +31,26 @@ def test_fake_active_snapshot_provider_no_active():
     assert port.get_snapshot() is None
 
 
-def test_fake_query_embedding_port_returns_fixed_vector_and_fingerprint():
+async def test_fake_query_embedding_port_returns_fixed_vector_and_fingerprint():
     port = FakeQueryEmbeddingPort(vector=[0.1, 0.2], fingerprint="fp-x")
     assert isinstance(port, QueryEmbeddingPort)
-    result = port.embed(_snap(), "NLP")
+    result = await port.embed(_snap(), "NLP")
     assert result.vector == (0.1, 0.2)
     assert result.embedding_fingerprint == "fp-x"
 
 
-def test_fake_vector_search_port_returns_preset_hits():
+async def test_fake_vector_search_port_returns_preset_hits():
     from dext_recommend import VectorHit
     hits = [VectorHit(entity_id="e1", score=0.9, payload={})]
     port = FakeVectorSearchPort(hits=hits)
     assert isinstance(port, VectorSearchPort)
-    out = port.hybrid_recall(_snap(), [0.1], filters=None, oversample=200, profile_version="r1")
+    out = await port.hybrid_recall(
+        _snap(), [0.1], filters=None, oversample=200, profile_version="r1"
+    )
     assert out == hits
 
 
-def test_fake_professor_fact_port_returns_preset_detail():
+async def test_fake_professor_fact_port_returns_preset_detail():
     detail = ProfessorDetail(
         build_id="b-1", profile_hash=None, entity_id="e1", display_name="P",
         university="U", org_units=[], title="Prof", title_family="professor",
@@ -60,5 +62,5 @@ def test_fake_professor_fact_port_returns_preset_detail():
     port = FakeProfessorFactPort(details={"e1": detail})
     assert isinstance(port, ProfessorFactPort)
     from dext_recommend import ViewerPermissions
-    got = port.get_detail(_snap(), "e1", False, ViewerPermissions())
+    got = await port.get_detail(_snap(), "e1", False, ViewerPermissions())
     assert got is detail

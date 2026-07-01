@@ -15,7 +15,7 @@ from dext_grounded import (
 )
 
 
-def test_grounded_pipeline_drops_fabricated_and_blocks_probability():
+async def test_grounded_pipeline_drops_fabricated_and_blocks_probability():
     # 1. assemble a fact bundle with one real source ref
     real_ref = SourceRef(
         doc_path="catalog://entity/p1", heading_path="rs",
@@ -48,7 +48,7 @@ def test_grounded_pipeline_drops_fabricated_and_blocks_probability():
     port: LLMGenerationPort = FakeLLMGenerationPort(llm_result)
 
     # 3. run generate → validate → safety
-    raw = port.generate(
+    raw = await port.generate(
         system_prompt_id="match-analysis-v1", user_inputs={},
         fact_bundle=bundle, student_context=StudentContext(),
         json_schema=None, generation_profile_version="gen-v1.0",
