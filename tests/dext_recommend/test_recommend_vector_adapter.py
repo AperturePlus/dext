@@ -98,6 +98,9 @@ def test_parse_build_id_missing_prefix_raises():
         parse_build_id_from_collection("random_name")
 
 
+def test_parse_build_id_empty_suffix_raises():
+    with pytest.raises(ReadinessSourceError):
+        parse_build_id_from_collection("dext_professors__")
 
 
 async def test_read_current_build_id_from_collection_not_samples():
