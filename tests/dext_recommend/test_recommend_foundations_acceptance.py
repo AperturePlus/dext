@@ -39,6 +39,8 @@ def test_models_reexport_grounded_student_context():
 
 def test_config_model_dump_redacts_secrets_by_default():
     # Spec §7: model_dump itself must not leak keys (SecretStr), not just safe_snapshot().
+    # Any serialization path — model_dump(), model_dump(mode="json"), model_dump_json(),
+    # dict(settings) — must not emit plaintext.
     from dext_recommend import RecommendSettings
     s = RecommendSettings(
         embedding_api_key="secret-embed",
@@ -47,9 +49,11 @@ def test_config_model_dump_redacts_secrets_by_default():
     )
     dumped = s.model_dump(mode="json")
     dumped_json = s.model_dump_json()
+    dumped_dict = dict(s)
     for secret in ("secret-embed", "secret-llm", "secret-pw"):
         assert secret not in str(dumped)
         assert secret not in dumped_json
+        assert secret not in str(dumped_dict)
     assert dumped["qdrant_alias"] == "dext_professors_current"
 
 
