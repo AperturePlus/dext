@@ -64,3 +64,47 @@ async def test_fake_professor_fact_port_returns_preset_detail():
     from dext_recommend import ViewerPermissions
     got = await port.get_detail(_snap(), "e1", False, ViewerPermissions())
     assert got is detail
+
+
+async def test_fake_vector_search_port_alias_readback_returns_default_bound_to_build():
+    port = FakeVectorSearchPort()
+    alias = await port.alias_readback(_snap())
+    assert alias.alias == "dext_professors_current"
+    assert alias.target_collection == "phys-1"
+    assert alias.build_id == "b-1"
+    assert alias.payload_schema_version == 2
+
+
+async def test_fake_vector_search_port_alias_readback_returns_preset_when_provided():
+    from dext_recommend import AliasReadback
+    preset = AliasReadback(
+        alias="a", target_collection="phys-9", build_id="b-9", payload_schema_version=3,
+    )
+    port = FakeVectorSearchPort(alias=preset)
+    got = await port.alias_readback(_snap())
+    assert got is preset
+
+
+async def test_fake_vector_search_port_count_readback_returns_preset():
+    port = FakeVectorSearchPort(count=42)
+    got = await port.count_readback(_snap())
+    assert got == 42
+    got2 = await port.count_readback(_snap(), filter={"k": "v"})
+    assert got2 == 42
+
+
+async def test_fake_professor_fact_port_hydrate_returns_only_known_entities():
+    from dext_recommend import ProfessorFact
+    fact_a = ProfessorFact(
+        "e1", "A", "U", ["org"], "T", "professor", "confirmed", "confirmed",
+        "included", None, None, None,
+    )
+    fact_b = ProfessorFact(
+        "e2", "B", "U", ["org"], "T", "professor", "confirmed", "confirmed",
+        "included", None, None, None,
+    )
+    port = FakeProfessorFactPort(facts={"e1": fact_a, "e2": fact_b})
+    out = await port.hydrate(_snap(), ["e1", "e3", "e2"])
+    assert set(out.keys()) == {"e1", "e2"}
+    assert out["e1"] is fact_a
+    assert out["e2"] is fact_b
