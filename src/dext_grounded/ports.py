@@ -16,7 +16,7 @@ from dext_grounded.student_context import StudentContext
 
 @runtime_checkable
 class LLMGenerationPort(Protocol):
-    def generate(
+    async def generate(
         self,
         system_prompt_id: str,
         user_inputs: dict[str, Any],
@@ -35,7 +35,7 @@ class FakeLLMGenerationPort:
         self._preset = preset
         self.calls: list[dict[str, Any]] = []
 
-    def generate(
+    async def generate(
         self,
         system_prompt_id: str,
         user_inputs: dict[str, Any],

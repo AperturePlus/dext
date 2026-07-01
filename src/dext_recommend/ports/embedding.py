@@ -23,7 +23,9 @@ class EmbeddingResult:
 
 @runtime_checkable
 class QueryEmbeddingPort(Protocol):
-    def embed(self, snapshot: ActiveBuildSnapshot, query_text: str) -> EmbeddingResult:
+    async def embed(
+        self, snapshot: ActiveBuildSnapshot, query_text: str
+    ) -> EmbeddingResult:
         ...
 
 

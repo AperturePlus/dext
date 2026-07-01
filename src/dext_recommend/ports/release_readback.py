@@ -105,30 +105,30 @@ class GraphReleaseObservation:
 
 @runtime_checkable
 class CatalogReleasePort(Protocol):
-    def read_active(self) -> CatalogReleaseObservation | None: ...
+    async def read_active(self) -> CatalogReleaseObservation | None: ...
 
-    def read_samples(
+    async def read_samples(
         self, build_id: str, sample_ids: tuple[str, ...],
     ) -> tuple[ProfessorReleaseSample, ...]: ...
 
 
 @runtime_checkable
 class VectorReleasePort(Protocol):
-    def read_current(
+    async def read_current(
         self, alias: str, sample_ids: tuple[str, ...],
     ) -> VectorReleaseObservation | None: ...
 
 
 @runtime_checkable
 class GraphReleasePort(Protocol):
-    def read_active(
+    async def read_active(
         self, sample_ids: tuple[str, ...],
     ) -> GraphReleaseObservation | None: ...
 
 
 @runtime_checkable
 class RankingProfilePort(Protocol):
-    def read_version(self, path: Path) -> str: ...
+    async def read_version(self, path: Path) -> str: ...
 
 
 __all__ = [

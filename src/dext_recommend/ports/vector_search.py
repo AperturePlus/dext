@@ -34,7 +34,7 @@ class AliasReadback:
 
 @runtime_checkable
 class VectorSearchPort(Protocol):
-    def hybrid_recall(
+    async def hybrid_recall(
         self,
         snapshot: ActiveBuildSnapshot,
         query_vector: list[float],
@@ -43,9 +43,9 @@ class VectorSearchPort(Protocol):
         profile_version: str,
     ) -> list[VectorHit]: ...
 
-    def alias_readback(self, snapshot: ActiveBuildSnapshot) -> AliasReadback: ...
+    async def alias_readback(self, snapshot: ActiveBuildSnapshot) -> AliasReadback: ...
 
-    def count_readback(
+    async def count_readback(
         self, snapshot: ActiveBuildSnapshot, filter: dict | None = None,
     ) -> int: ...
 

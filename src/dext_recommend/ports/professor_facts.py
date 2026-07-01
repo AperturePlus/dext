@@ -79,7 +79,7 @@ class ProfessorDetail:
 
 @runtime_checkable
 class ProfessorFactPort(Protocol):
-    def get_detail(
+    async def get_detail(
         self,
         snapshot: ActiveBuildSnapshot,
         entity_id: str,
@@ -87,7 +87,7 @@ class ProfessorFactPort(Protocol):
         viewer_permissions: ViewerPermissions,
     ) -> ProfessorDetail: ...
 
-    def hydrate(
+    async def hydrate(
         self,
         snapshot: ActiveBuildSnapshot,
         entity_ids: list[str],

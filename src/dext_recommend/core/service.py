@@ -31,7 +31,7 @@ class RecommendationCore:
     def deps(self) -> RecommendDeps:
         return self._deps
 
-    def recommend(self, request: RecommendRequest) -> RecommendResponse:
+    async def recommend(self, request: RecommendRequest) -> RecommendResponse:
         raise NotImplementedError("recommend pipeline implemented in R3")
 
 
