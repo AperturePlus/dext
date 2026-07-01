@@ -15,11 +15,18 @@ from dext_recommend.config import RecommendSettings
 from dext_recommend.errors import (
     ErrorSeverity, RecommendationError, RecommendationErrorCode,
 )
+from dext_recommend.readiness import (
+    ActiveBuildSnapshot, CoverageStat, ReadinessReport, ReadinessService,
+)
 
 __version__ = "0.1.0"
 
 __all__: list[str] = [
+    "ActiveBuildSnapshot",
+    "CoverageStat",
     "ErrorSeverity",
+    "ReadinessReport",
+    "ReadinessService",
     "RecommendSettings",
     "RecommendationError",
     "RecommendationErrorCode",
