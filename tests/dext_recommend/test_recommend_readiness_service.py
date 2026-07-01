@@ -328,3 +328,58 @@ async def test_snapshot_qdrant_alias_target_is_physical_collection():
     # _vector_obs() sets target_collection="dext_professors__b1", alias="dext_professors_current"
     assert report.snapshot.qdrant_alias_target == "dext_professors__b1"
     assert report.snapshot.qdrant_alias_target != "dext_professors_current"
+
+
+async def test_check_eligibility_coverage_insufficient_blocks_ready():
+    # 2 samples: one has master_eligibility, one lacks it -> 0.5 < 0.95 threshold
+    s1 = ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1",
+                                 master_eligibility="confirmed")
+    s2 = ProfessorReleaseSample("e2", ("org-a",), profile_hash="h2",
+                                 master_eligibility=None)
+    v = VectorReleaseObservation(
+        alias="dext_professors_current", target_collection="dext_professors__b1",
+        build_id="b1", payload_schema_version=2, embedding_fingerprint="fp-1",
+        embedding_dimension=1536, point_count=2, samples=(s1, s2),
+        coverage=(PayloadCoverageObservation("eligibility", 0.5, 2),),
+    )
+    svc = _service(
+        FakeCatalogReleasePort(
+            CatalogReleaseObservation(
+                build_id="b1", catalog_schema_version=6,
+                qdrant_payload_schema_version=2, embedding_provider="openai",
+                embedding_model="m", embedding_dimension=1536,
+                embedding_fingerprint="fp-1", taxonomy_version="tax-v1",
+                expected_professor_count=2, sample_entity_ids=("e1", "e2"),
+                created_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+            ),
+            [s1, s2],
+        ),
+        FakeVectorReleasePort(v),
+        FakeGraphReleasePort(GraphReleaseObservation("b1", (s1, s2))),
+        FakeRankingProfilePort("ranking-v1"),
+    )
+    report = await svc.check()
+    assert report.ready is False
+    codes = {e.code for e in report.errors}
+    assert RecommendationErrorCode.ELIGIBILITY_COVERAGE_INSUFFICIENT in codes
+
+
+async def test_check_eligibility_coverage_passes_when_master_eligible():
+    s1 = ProfessorReleaseSample("e1", ("org-a",), profile_hash="h1",
+                                 master_eligibility="confirmed")
+    v = VectorReleaseObservation(
+        alias="dext_professors_current", target_collection="dext_professors__b1",
+        build_id="b1", payload_schema_version=2, embedding_fingerprint="fp-1",
+        embedding_dimension=1536, point_count=1, samples=(s1,),
+        coverage=(PayloadCoverageObservation("eligibility", 1.0, 1),),
+    )
+    svc = _service(
+        FakeCatalogReleasePort(_catalog_obs(), [s1]),
+        FakeVectorReleasePort(v),
+        FakeGraphReleasePort(_graph_obs()),
+        FakeRankingProfilePort("ranking-v1"),
+    )
+    report = await svc.check()
+    assert report.ready is True
+    codes = {e.code for e in report.errors}
+    assert RecommendationErrorCode.ELIGIBILITY_COVERAGE_INSUFFICIENT not in codes
