@@ -554,10 +554,10 @@ def test_active_build_snapshot_is_frozen():
         snap.build_id = "other"
 
 
-def test_readiness_service_check_placeholder():
+async def test_readiness_service_check_placeholder():
     svc = ReadinessService()
     with pytest.raises(NotImplementedError):
-        svc.check()
+        await svc.check()
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -620,7 +620,7 @@ class CoverageStat:
 class ReadinessService:
     """Placeholder; R2 implements real ACTIVE-build construction + checks."""
 
-    def check(self) -> ReadinessReport:
+    async def check(self) -> ReadinessReport:
         raise NotImplementedError("readiness implemented in R2")
 
     def get_snapshot(self) -> ActiveBuildSnapshot:
@@ -969,13 +969,13 @@ git commit -m "feat(rec): add internal request/response models re-exporting grou
 
 **Interfaces:**
 - Consumes: `ActiveBuildSnapshot` (Task 4), `RecommendationFilters` (Task 5), `dext_grounded.LLMGenerationPort` (R0).
-- Produces: 5 `Protocol`s with explicit-snapshot signatures: `BuildSnapshotPort.get_snapshot()/refresh()`, `QueryEmbeddingPort.embed(snapshot, query_text) -> EmbeddingResult`, `VectorSearchPort.hybrid_recall(snapshot, query_vector, filters, oversample, profile_version) -> list[VectorHit]` + `alias_readback/count_readback`, `ProfessorFactPort.get_detail(snapshot, entity_id, include_contacts, viewer_permissions) -> ProfessorDetail` + `hydrate(snapshot, entity_ids) -> dict`, `generation.py` re-exports `LLMGenerationPort` from `dext_grounded`. Helper dataclasses: `EmbeddingResult`, `VectorHit`, `AliasReadback`, `ProfessorFact`, `ProfessorDetail`, `ViewerPermissions`.
+- Produces: 5 `Protocol`s with explicit-snapshot signatures: synchronous cached `BuildSnapshotPort.get_snapshot()`, async `refresh()`, async `QueryEmbeddingPort.embed(snapshot, query_text) -> EmbeddingResult`, async `VectorSearchPort.hybrid_recall(snapshot, query_vector, filters, oversample, profile_version) -> list[VectorHit]` + async `alias_readback/count_readback`, async `ProfessorFactPort.get_detail(snapshot, entity_id, include_contacts, viewer_permissions) -> ProfessorDetail` + async `hydrate(snapshot, entity_ids) -> dict`, `generation.py` re-exports async `LLMGenerationPort` from `dext_grounded`. Helper dataclasses: `EmbeddingResult`, `VectorHit`, `AliasReadback`, `ProfessorFact`, `ProfessorDetail`, `ViewerPermissions`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/test_recommend_ports_snapshot_contract.py
-"""Every port data method must take an ActiveBuildSnapshot as an explicit param."""
+"""Snapshot pinning and async I/O boundary contracts for recommendation ports."""
 from __future__ import annotations
 
 import inspect
@@ -1028,6 +1028,20 @@ def test_query_embedding_embed_takes_snapshot():
     assert "query_text" in params
 
 
+def test_io_port_methods_are_async():
+    methods = (
+        BuildSnapshotPort.refresh,
+        QueryEmbeddingPort.embed,
+        VectorSearchPort.hybrid_recall,
+        VectorSearchPort.alias_readback,
+        VectorSearchPort.count_readback,
+        ProfessorFactPort.get_detail,
+        ProfessorFactPort.hydrate,
+    )
+    assert all(inspect.iscoroutinefunction(method) for method in methods)
+    assert not inspect.iscoroutinefunction(BuildSnapshotPort.get_snapshot)
+
+
 def test_embedding_result_carries_fingerprint():
     r = EmbeddingResult(vector=[0.1, 0.2], embedding_fingerprint="fp-x")
     assert r.embedding_fingerprint == "fp-x"
@@ -1059,7 +1073,7 @@ from dext_recommend.readiness import ActiveBuildSnapshot
 class BuildSnapshotPort(Protocol):
     def get_snapshot(self) -> ActiveBuildSnapshot: ...
 
-    def refresh(self) -> ActiveBuildSnapshot | None:
+    async def refresh(self) -> ActiveBuildSnapshot | None:
         """Refresh failure returns None; never pollutes the validated snapshot."""
         ...
 
@@ -1087,7 +1101,7 @@ class EmbeddingResult:
 
 @runtime_checkable
 class QueryEmbeddingPort(Protocol):
-    def embed(self, snapshot: ActiveBuildSnapshot, query_text: str) -> EmbeddingResult:
+    async def embed(self, snapshot: ActiveBuildSnapshot, query_text: str) -> EmbeddingResult:
         ...
 
 
@@ -1127,7 +1141,7 @@ class AliasReadback:
 
 @runtime_checkable
 class VectorSearchPort(Protocol):
-    def hybrid_recall(
+    async def hybrid_recall(
         self,
         snapshot: ActiveBuildSnapshot,
         query_vector: list[float],
@@ -1136,9 +1150,9 @@ class VectorSearchPort(Protocol):
         profile_version: str,
     ) -> list[VectorHit]: ...
 
-    def alias_readback(self, snapshot: ActiveBuildSnapshot) -> AliasReadback: ...
+    async def alias_readback(self, snapshot: ActiveBuildSnapshot) -> AliasReadback: ...
 
-    def count_readback(
+    async def count_readback(
         self, snapshot: ActiveBuildSnapshot, filter: dict | None = None,
     ) -> int: ...
 
@@ -1209,7 +1223,7 @@ class ProfessorDetail:
 
 @runtime_checkable
 class ProfessorFactPort(Protocol):
-    def get_detail(
+    async def get_detail(
         self,
         snapshot: ActiveBuildSnapshot,
         entity_id: str,
@@ -1217,7 +1231,7 @@ class ProfessorFactPort(Protocol):
         viewer_permissions: ViewerPermissions,
     ) -> ProfessorDetail: ...
 
-    def hydrate(
+    async def hydrate(
         self,
         snapshot: ActiveBuildSnapshot,
         entity_ids: list[str],
@@ -1354,24 +1368,24 @@ def test_fake_build_snapshot_port_no_active():
     assert port.get_snapshot() is None
 
 
-def test_fake_query_embedding_port_returns_fixed_vector_and_fingerprint():
+async def test_fake_query_embedding_port_returns_fixed_vector_and_fingerprint():
     port = FakeQueryEmbeddingPort(vector=[0.1, 0.2], fingerprint="fp-x")
     assert isinstance(port, QueryEmbeddingPort)
-    result = port.embed(_snap(), "NLP")
+    result = await port.embed(_snap(), "NLP")
     assert result.vector == [0.1, 0.2]
     assert result.embedding_fingerprint == "fp-x"
 
 
-def test_fake_vector_search_port_returns_preset_hits():
+async def test_fake_vector_search_port_returns_preset_hits():
     from dext_recommend import VectorHit
     hits = [VectorHit(entity_id="e1", score=0.9, payload={})]
     port = FakeVectorSearchPort(hits=hits)
     assert isinstance(port, VectorSearchPort)
-    out = port.hybrid_recall(_snap(), [0.1], filters=None, oversample=200, profile_version="r1")
+    out = await port.hybrid_recall(_snap(), [0.1], filters=None, oversample=200, profile_version="r1")
     assert out == hits
 
 
-def test_fake_professor_fact_port_returns_preset_detail():
+async def test_fake_professor_fact_port_returns_preset_detail():
     detail = ProfessorDetail(
         build_id="b-1", profile_hash=None, entity_id="e1", display_name="P",
         university="U", org_units=[], title="Prof", title_family="professor",
@@ -1383,7 +1397,7 @@ def test_fake_professor_fact_port_returns_preset_detail():
     port = FakeProfessorFactPort(details={"e1": detail})
     assert isinstance(port, ProfessorFactPort)
     from dext_recommend import ViewerPermissions
-    got = port.get_detail(_snap(), "e1", False, ViewerPermissions())
+    got = await port.get_detail(_snap(), "e1", False, ViewerPermissions())
     assert got is detail
 ```
 
@@ -1420,7 +1434,7 @@ class FakeBuildSnapshotPort:
     def get_snapshot(self) -> ActiveBuildSnapshot | None:
         return self._snapshot
 
-    def refresh(self) -> ActiveBuildSnapshot | None:
+    async def refresh(self) -> ActiveBuildSnapshot | None:
         return self._snapshot
 
 
@@ -1429,7 +1443,7 @@ class FakeQueryEmbeddingPort:
         self._vector = vector
         self._fingerprint = fingerprint
 
-    def embed(self, snapshot: ActiveBuildSnapshot, query_text: str) -> EmbeddingResult:
+    async def embed(self, snapshot: ActiveBuildSnapshot, query_text: str) -> EmbeddingResult:
         return EmbeddingResult(vector=list(self._vector), embedding_fingerprint=self._fingerprint)
 
 
@@ -1444,7 +1458,7 @@ class FakeVectorSearchPort:
         self._alias = alias
         self._count = count
 
-    def hybrid_recall(
+    async def hybrid_recall(
         self,
         snapshot: ActiveBuildSnapshot,
         query_vector: list[float],
@@ -1454,13 +1468,13 @@ class FakeVectorSearchPort:
     ) -> list[VectorHit]:
         return list(self._hits)
 
-    def alias_readback(self, snapshot: ActiveBuildSnapshot) -> AliasReadback:
+    async def alias_readback(self, snapshot: ActiveBuildSnapshot) -> AliasReadback:
         return self._alias or AliasReadback(
             alias="dext_professors_current", target_collection="phys-1",
             build_id=snapshot.build_id, payload_schema_version=2,
         )
 
-    def count_readback(self, snapshot: ActiveBuildSnapshot, filter: dict | None = None) -> int:
+    async def count_readback(self, snapshot: ActiveBuildSnapshot, filter: dict | None = None) -> int:
         return self._count
 
 
@@ -1473,7 +1487,7 @@ class FakeProfessorFactPort:
         self._details = details or {}
         self._facts = facts or {}
 
-    def get_detail(
+    async def get_detail(
         self,
         snapshot: ActiveBuildSnapshot,
         entity_id: str,
@@ -1482,7 +1496,7 @@ class FakeProfessorFactPort:
     ) -> ProfessorDetail:
         return self._details[entity_id]
 
-    def hydrate(
+    async def hydrate(
         self,
         snapshot: ActiveBuildSnapshot,
         entity_ids: list[str],
@@ -1573,7 +1587,7 @@ def test_recommendation_core_constructs_from_fake_ports():
     assert core is not None
 
 
-def test_recommendation_core_recommend_placeholder():
+async def test_recommendation_core_recommend_placeholder():
     import pytest
     snap = _make_snapshot()
     deps = RecommendDeps(
@@ -1584,7 +1598,7 @@ def test_recommendation_core_recommend_placeholder():
     )
     core = RecommendationCore(deps)
     with pytest.raises(NotImplementedError):
-        core.recommend(RecommendRequest(query_text="x"))
+        await core.recommend(RecommendRequest(query_text="x"))
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1629,7 +1643,7 @@ class RecommendationCore:
     def deps(self) -> RecommendDeps:
         return self._deps
 
-    def recommend(self, request: RecommendRequest) -> RecommendResponse:
+    async def recommend(self, request: RecommendRequest) -> RecommendResponse:
         raise NotImplementedError("recommend pipeline implemented in R3")
 
 
@@ -1772,7 +1786,7 @@ def test_all_four_fakes_satisfy_protocols():
     assert isinstance(FakeProfessorFactPort(), ProfessorFactPort)
 
 
-def test_core_wired_with_fakes_does_not_touch_real_services():
+async def test_core_wired_with_fakes_does_not_touch_real_services():
     snap = _snap()
     deps = RecommendDeps(
         snapshot_port=FakeBuildSnapshotPort(snap),
@@ -1783,7 +1797,7 @@ def test_core_wired_with_fakes_does_not_touch_real_services():
     core = RecommendationCore(deps)
     # placeholder recommend raises NotImplementedError, but construction is clean
     with pytest.raises(NotImplementedError):
-        core.recommend(RecommendRequest(query_text="x"))
+        await core.recommend(RecommendRequest(query_text="x"))
 
 
 def test_error_codes_complete():

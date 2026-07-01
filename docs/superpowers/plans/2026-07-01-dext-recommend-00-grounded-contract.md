@@ -1028,7 +1028,7 @@ git commit -m "feat(grounded): add GenerationProfile and ProfileRegistry"
 
 **Interfaces:**
 - Consumes: `FactBundle` (Task 5), `StudentContext` (Task 3), `GenerationResult` (Task 6).
-- Produces: `LLMGenerationPort` runtime-checkable Protocol with `generate(system_prompt_id, user_inputs, fact_bundle, student_context, json_schema, generation_profile_version) -> GenerationResult`. Also a `FakeLLMGenerationPort` for use by recommend/competition unit tests (returns a pre-set `GenerationResult`).
+- Produces: `LLMGenerationPort` runtime-checkable Protocol with async `generate(system_prompt_id, user_inputs, fact_bundle, student_context, json_schema, generation_profile_version) -> GenerationResult`. Also an async `FakeLLMGenerationPort` for use by recommend/competition unit tests (returns a pre-set `GenerationResult`).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1049,6 +1049,7 @@ def test_llm_generation_port_is_protocol():
 
 
 def test_llm_generation_port_generate_signature():
+    assert inspect.iscoroutinefunction(LLMGenerationPort.generate)
     sig = inspect.signature(LLMGenerationPort.generate)
     params = list(sig.parameters)
     # 'self' + the six spec params (§4)
@@ -1058,11 +1059,11 @@ def test_llm_generation_port_generate_signature():
     ]
 
 
-def test_fake_llm_generation_port_returns_preset_result():
+async def test_fake_llm_generation_port_returns_preset_result():
     preset = GenerationResult(output={"summary": "ok"})
     port = FakeLLMGenerationPort(preset)
     assert isinstance(port, LLMGenerationPort)
-    result = port.generate(
+    result = await port.generate(
         system_prompt_id="match-analysis-v1",
         user_inputs={},
         fact_bundle=FactBundle(build_id="b", subject_id="s", facts=[], source_refs=[]),
@@ -1073,10 +1074,10 @@ def test_fake_llm_generation_port_returns_preset_result():
     assert result is preset
 
 
-def test_fake_llm_generation_port_records_calls():
+async def test_fake_llm_generation_port_records_calls():
     preset = GenerationResult(output="hi")
     port = FakeLLMGenerationPort(preset)
-    port.generate(
+    await port.generate(
         system_prompt_id="p1", user_inputs={"x": 1},
         fact_bundle=FactBundle(build_id="b", subject_id="s", facts=[], source_refs=[]),
         student_context=None, json_schema=None, generation_profile_version="v1",
@@ -1113,7 +1114,7 @@ from dext_grounded.student_context import StudentContext
 
 @runtime_checkable
 class LLMGenerationPort(Protocol):
-    def generate(
+    async def generate(
         self,
         system_prompt_id: str,
         user_inputs: dict[str, Any],
@@ -1132,7 +1133,7 @@ class FakeLLMGenerationPort:
         self._preset = preset
         self.calls: list[dict[str, Any]] = []
 
-    def generate(
+    async def generate(
         self,
         system_prompt_id: str,
         user_inputs: dict[str, Any],
