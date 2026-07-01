@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,15 +28,15 @@ class RecommendSettings(BaseSettings):
     neo4j_uri: str = "bolt://127.0.0.1:7687"
     neo4j_database: str = "neo4j"
     neo4j_username: str = ""
-    neo4j_password: str = Field(default="", repr=False)
+    neo4j_password: SecretStr = Field(default_factory=SecretStr)
 
     # Embedding (must align with ACTIVE build fingerprint)
     embedding_provider: str = ""
     embedding_model: str = ""
-    embedding_api_key: str = Field(default="", repr=False)
+    embedding_api_key: SecretStr = Field(default_factory=SecretStr)
 
     # LLM (constrained generation)
-    llm_api_key: str = Field(default="", repr=False)
+    llm_api_key: SecretStr = Field(default_factory=SecretStr)
     llm_base_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-v4-flash"
 

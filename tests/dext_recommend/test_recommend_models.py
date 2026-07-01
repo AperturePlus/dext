@@ -78,7 +78,7 @@ from dext_grounded import StudentContext
 
 def test_recommendation_filters_defaults():
     f = RecommendationFilters()
-    assert f.university_ids == []
+    assert not f.university_ids
     assert f.master_eligibility == "any"
     assert f.phd_eligibility == "any"
     assert f.topic_filter_mode == "soft"

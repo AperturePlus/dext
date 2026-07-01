@@ -15,14 +15,23 @@ from dext_grounded import SourceRef, StudentContext
 
 @dataclass(frozen=True, slots=True)
 class RecommendationFilters:
-    university_ids: list[str] = field(default_factory=list)
-    city_names: list[str] = field(default_factory=list)
-    org_unit_ids: list[str] = field(default_factory=list)
-    title_families: list[str] = field(default_factory=list)
+    university_ids: tuple[str, ...] = ()
+    city_names: tuple[str, ...] = ()
+    org_unit_ids: tuple[str, ...] = ()
+    title_families: tuple[str, ...] = ()
     master_eligibility: str = "any"          # any|confirmed
     phd_eligibility: str = "any"              # any|confirmed
-    topic_ids: list[str] = field(default_factory=list)
+    topic_ids: tuple[str, ...] = ()
     topic_filter_mode: str = "soft"           # soft|hard
+
+    def __post_init__(self) -> None:
+        # accept list/tuple/generator input; store as tuple (spec §3 deep immutability)
+        for _f in ("university_ids", "city_names", "org_unit_ids",
+                   "title_families", "topic_ids"):
+            object.__setattr__(
+                self, _f,
+                tuple(getattr(self, _f)) if getattr(self, _f) is not None else (),
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +45,13 @@ class ConversationContext:
     # new_search|more_mentors|same_field|refine_direction|detail_followup
     intent_source: str | None = None          # explicit|implicit
     intent_confidence: float | None = None
-    prior_result_entity_ids: list[str] = field(default_factory=list)
+    prior_result_entity_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "prior_result_entity_ids",
+            tuple(self.prior_result_entity_ids) if self.prior_result_entity_ids is not None else ()
+        )
 
 
 # ---- Query understanding (overview §10) ----
@@ -78,7 +93,7 @@ class RecommendedProfessor:
     entity_id: str
     display_name: str
     university: str
-    org_units: list[str]
+    org_units: tuple[str, ...]
     title: str
     title_family: str
     master_eligibility: str
@@ -87,15 +102,25 @@ class RecommendedProfessor:
     profile_url: str | None
     research_summary: str | None
     match_level: str                       # excellent|strong|possible|weak
-    short_reasons: list[str]
+    short_reasons: tuple[str, ...]
     score: float
     score_components: dict[str, float]
-    matched_topics: list[str]
-    matched_statements: list[str]
-    matched_publications: list[str]
-    evidence_refs: list[SourceRef]
-    risk_flags: list[str]
-    available_actions: list[str]            # detail|match|email|compare|favorite|follow_up
+    matched_topics: tuple[str, ...]
+    matched_statements: tuple[str, ...]
+    matched_publications: tuple[str, ...]
+    evidence_refs: tuple[SourceRef, ...]
+    risk_flags: tuple[str, ...]
+    available_actions: tuple[str, ...]            # detail|match|email|compare|favorite|follow_up
+
+    def __post_init__(self) -> None:
+        # accept list/tuple/generator input; store as tuple (spec §3 deep immutability)
+        for _f in ("org_units", "short_reasons", "matched_topics",
+                   "matched_statements", "matched_publications",
+                   "evidence_refs", "risk_flags", "available_actions"):
+            object.__setattr__(
+                self, _f,
+                tuple(getattr(self, _f)) if getattr(self, _f) is not None else ()
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,9 +145,17 @@ class RecommendResponse:
     taxonomy_version: str | None
     query_understanding: QueryUnderstanding
     query: QueryDiagnostics
-    results: list[RecommendedProfessor]
-    suggested_followups: list[str]
-    warnings: list[RecommendationWarning]
+    results: tuple[RecommendedProfessor, ...]
+    suggested_followups: tuple[str, ...]
+    warnings: tuple[RecommendationWarning, ...]
+
+    def __post_init__(self) -> None:
+        # accept list/tuple/generator input; store as tuple (spec §3 deep immutability)
+        for _f in ("results", "suggested_followups", "warnings"):
+            object.__setattr__(
+                self, _f,
+                tuple(getattr(self, _f)) if getattr(self, _f) is not None else ()
+            )
 
 
 __all__ = [
