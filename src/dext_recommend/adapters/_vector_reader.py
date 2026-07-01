@@ -84,6 +84,7 @@ class QdrantReader:
                     break
             wanted = set(sample_ids)
             samples = [p for p in points if p.get("entity_id") in wanted]
+            build_id = parse_build_id_from_collection(target)
         except ReadinessSourceError:
             raise
         except Exception as exc:
@@ -91,7 +92,7 @@ class QdrantReader:
         return {
             "alias": alias,
             "target_collection": target,
-            "build_id": samples[0]["build_id"] if samples else "",
+            "build_id": build_id,
             "payload_schema_version": self._payload_schema_version,
             "embedding_fingerprint": self._embedding_fingerprint,
             "embedding_dimension": self._embedding_dimension,

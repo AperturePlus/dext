@@ -98,6 +98,41 @@ def test_parse_build_id_missing_prefix_raises():
         parse_build_id_from_collection("random_name")
 
 
-def test_parse_build_id_empty_suffix_raises():
+
+
+async def test_read_current_build_id_from_collection_not_samples():
+    # samples carry a DIFFERENT build_id in the payload; the collection name wins
+    client = FakeAsyncQdrantClient(
+        alias_target="dext_professors__real_build",
+        count=1,
+        points=[{
+            "entity_id": "e1", "build_id": "STALE_PAYLOAD_BUILD",
+            "profile_hash": "h1", "master_eligibility": "confirmed",
+            "embedding_fingerprint": "fp-1", "org_unit_ids": ["org-a"],
+        }],
+    )
+    reader = QdrantReader(client, embedding_dimension=1536, embedding_fingerprint="fp-1")
+    adapter = VectorReleaseAdapter(reader)
+    obs = await adapter.read_current("dext_professors_current", ("e1",))
+    assert obs.build_id == "real_build"
+
+
+async def test_read_current_build_id_when_samples_empty():
+    # empty samples must NOT yield empty build_id
+    client = FakeAsyncQdrantClient(
+        alias_target="dext_professors__b1", count=0, points=[],
+    )
+    reader = QdrantReader(client, embedding_dimension=1536, embedding_fingerprint="fp-1")
+    adapter = VectorReleaseAdapter(reader)
+    obs = await adapter.read_current("dext_professors_current", ("e-missing",))
+    assert obs is not None
+    assert obs.build_id == "b1"
+
+
+async def test_read_current_raises_when_collection_unparseable():
+    # alias resolves to a collection whose name does not encode build_id
+    client = FakeAsyncQdrantClient(alias_target="legacy_collection", count=1, points=[])
+    reader = QdrantReader(client, embedding_dimension=1536, embedding_fingerprint="fp-1")
+    adapter = VectorReleaseAdapter(reader)
     with pytest.raises(ReadinessSourceError):
-        parse_build_id_from_collection("dext_professors__")
+        await adapter.read_current("dext_professors_current", ("e1",))
