@@ -52,7 +52,7 @@ intent 来源必须显式区分（overview §10）：
 
 ## 5. fork 式追问
 
-- `anchor_entity_id` 必须是 ACTIVE build 中存在且可解释的教师（通过 `ProfessorFactPort` 校验）。
+- `anchor_entity_id` 必须是 ACTIVE build 中存在且可解释的教师（通过 `await ProfessorFactPort.get_detail(...)` 校验）。
 - fork 会话不得污染主会话结果集；应用层保存 `main_session_id`/`source_turn_id`，推荐核心只消费上下文。
 - 细节追问基于 `ProfessorDetail` 事实包与证据片段回答，LLM 不得编造导师事实（受约束生成走共享契约）。
 - 用户从锚定导师转为“找类似导师”：显式按钮直接传 `same_field`/`refine_direction`；自由文本先过 implicit 分类，低置信时追问澄清。
@@ -73,3 +73,4 @@ intent 来源必须显式区分（overview §10）：
 - fork 会话不污染主会话结果集；`anchor_entity_id` 不在 ACTIVE build 时返回结构化错误。
 - `implicit conversation routing accuracy` 与 `explicit route contract pass rate` 指标可评测，评测样本按 overview §16 拆分。
 - 单测可用 fake ports 覆盖 intent 路由逻辑，不依赖真实外部服务。
+- 会触发 LLM、推荐核心或 ProfessorFactPort 的 conversation 路由入口为 async；纯状态转移校验保持同步。

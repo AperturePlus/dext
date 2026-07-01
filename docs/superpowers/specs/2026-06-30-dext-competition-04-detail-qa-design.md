@@ -20,7 +20,7 @@ answer_competition_question(question, competition_id?, context?) -> GroundedAnsw
 compare_competitions(competition_ids[2..4], student_context?) -> CompetitionComparison
 ```
 
-三个接口都走共享 `LLMGenerationPort`，传入阶段 2 的 `CompetitionCard`（映射为共享 `FactBundle`）作为 `fact_bundle`。
+三个接口都通过 `await LLMGenerationPort.generate(...)` 走共享 async 端口，传入阶段 2 的 `CompetitionCard`（映射为共享 `FactBundle`）作为 `fact_bundle`。
 
 ## 3. CompetitionDetail
 
@@ -51,7 +51,7 @@ CompetitionDetail
 
 1. 从 query 与 `competition_id`（可选）检索阶段 1 索引的相关 chunk。
 2. 把 chunk 映射为共享 `FactBundle`。
-3. 调用共享 `LLMGenerationPort` 生成回答。
+3. `await` 共享 `LLMGenerationPort` 生成回答。
 4. `CitationValidator` 逐 `Claim` 校验：`fact` 类断言映射回 `SourceRef`，`advice` 引用用户背景时映射回 `UserContextRef`，无法回溯的断言降级 `uncertain` 或剔除。
 5. `SafetyGuard` 拦截概率承诺、违规建议、把往届信息当当届事实等。
 

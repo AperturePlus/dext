@@ -18,17 +18,19 @@
 RecommendRequest
   -> ReadinessService.get_snapshot()（请求入口固定一次，全程传同一份）
   -> validate/normalize
-  -> QueryUnderstanding + intent routing (new_search 路径)
-  -> query embedding (QueryEmbeddingPort, snapshot 显式入参)
-  -> VectorSearchPort dense+sparse hybrid recall (RRF, snapshot 显式入参)
+  -> await QueryUnderstanding + intent routing (new_search 路径调用 LLM 时)
+  -> await query embedding (QueryEmbeddingPort, snapshot 显式入参)
+  -> await VectorSearchPort dense+sparse hybrid recall (RRF, snapshot 显式入参)
   -> payload pre-filter
-  -> ProfessorFactPort hydration and final filter (snapshot 显式入参)
+  -> await ProfessorFactPort hydration and final filter (snapshot 显式入参)
   -> deterministic rerank
   -> explanation and card assembly
   -> response validation
 ```
 
 各步骤落在独立模块，`core/service.py` 只做编排，不下沉业务。snapshot 在请求入口固定后传入所有数据端口（见 foundations §5），请求中途 alias/pointer 切换不影响本次请求，避免混用新旧 build。
+
+`RecommendationCore.recommend()` 是 async 入口；它必须 `await` embedding、Qdrant、facts/Neo4j 与 LLM ports。过滤、RRF、重排、解释和 response validation 保持同步纯计算。并发子任务必须共享同一 snapshot，且受请求总超时与各依赖并发上限约束。
 
 ## 3. 模块分解
 
@@ -107,7 +109,7 @@ warnings: list[RecommendationWarning]
 
 ## 10. 验收标准
 
-- `RecommendRequest -> RecommendResponse` 全链路可用，单测可完全用 fake ports 覆盖核心逻辑。
+- `await RecommendationCore.recommend(RecommendRequest) -> RecommendResponse` 全链路可用，单测可完全用 async fake ports 覆盖核心逻辑。
 - 混合召回使用 RRF，无 raw 分数直接相加；oversample 步进与上限可配置。
 - 过滤语义严格：`excluded` 永不返回，`review` 默认不返回，硬过滤候选不足时返回 `no_candidates_after_filters` 而非补位。
 - 重排权重与 tie-break 全部配置化，响应写明 `ranking_profile_version`。

@@ -95,35 +95,37 @@ ActiveSnapshotProvider
   get_snapshot() -> ActiveBuildSnapshot | null # 只返回最后一次完整验证的 snapshot
 
 CatalogReleasePort
-  read_active() -> CatalogReleaseObservation | null
-  read_samples(build_id, sample_ids) -> tuple[ProfessorReleaseSample]
+  async read_active() -> CatalogReleaseObservation | null
+  async read_samples(build_id, sample_ids) -> tuple[ProfessorReleaseSample]
 
 VectorReleasePort
-  read_current(alias, sample_ids) -> VectorReleaseObservation | null
+  async read_current(alias, sample_ids) -> VectorReleaseObservation | null
 
 GraphReleasePort
-  read_active(sample_ids) -> GraphReleaseObservation | null
+  async read_active(sample_ids) -> GraphReleaseObservation | null
 
 RankingProfilePort
-  read_version(path) -> str
+  async read_version(path) -> str
 
 VectorSearchPort
-  hybrid_recall(snapshot, query_vector, filters, oversample, profile_version) -> list[VectorHit]
-  alias_readback(snapshot) -> AliasReadback
-  count_readback(snapshot, filter) -> int
+  async hybrid_recall(snapshot, query_vector, filters, oversample, profile_version) -> list[VectorHit]
+  async alias_readback(snapshot) -> AliasReadback
+  async count_readback(snapshot, filter) -> int
 
 ProfessorFactPort
-  get_detail(snapshot, entity_id, include_contacts, viewer_permissions) -> ProfessorDetail
-  hydrate(snapshot, entity_ids) -> dict[entity_id, ProfessorFact]
+  async get_detail(snapshot, entity_id, include_contacts, viewer_permissions) -> ProfessorDetail
+  async hydrate(snapshot, entity_ids) -> dict[entity_id, ProfessorFact]
 
 QueryEmbeddingPort
-  embed(snapshot, query_text) -> EmbeddingResult  # 含与 snapshot.embedding_fingerprint 比对
+  async embed(snapshot, query_text) -> EmbeddingResult  # 含与 snapshot.embedding_fingerprint 比对
 
 LLMGenerationPort
-  # re-export 共享契约，不在本模块重复定义
+  async generate(...) -> GenerationResult  # re-export 共享契约，不在本模块重复定义
 ```
 
 **两层端口边界**：R2 原始 readback ports 不得接收 `ActiveBuildSnapshot`，否则会形成“先有 snapshot 才能验证 snapshot”的循环依赖。R2 校验完成后通过 `ActiveSnapshotProvider` 暴露缓存 snapshot。业务数据端口 `hybrid_recall`/`hydrate`/`get_detail`/`alias_readback`/`count_readback`/`embed` 仍显式接收 `ActiveBuildSnapshot`，保证单次请求不混用新旧 build。
+
+**异步边界**：所有可能执行文件、SQLite、Qdrant、Neo4j、embedding 或 LLM I/O 的 port 方法均为 `async def`，调用方必须 `await`。`ActiveSnapshotProvider.get_snapshot()` 仅执行进程内、无阻塞的原子缓存读取，保持同步；纯校验、过滤、排序、DTO 映射也保持同步。真实 adapter 不得在 async 方法内直接调用阻塞客户端；没有原生异步驱动时必须显式线程卸载并设置超时/并发上限。
 
 调用方（recommend core / detail service / 生成服务）在请求入口从 provider 取一次 snapshot 并固定，全程传同一份；业务数据端口不得在内部自行刷新。R2 刷新失败时 provider 继续保留旧的已验证 snapshot，绝不合并半刷新状态。
 
@@ -187,4 +189,4 @@ API key 只从环境读取，不进入配置对象的可序列化表示、日志
 - **深度不可变（必须）**：`RecommendedProfessor.matched_topics.append(...)`、`RecommendResponse.results.append(...)`、`ConversationContext.prior_result_entity_ids.append(...)`、`QueryUnderstanding.research_interests.append(...)` 及嵌套 payload/mapping 修改都必须报错，不是仅字段重赋值报错。
 - **模块内全绿**：`uv run pytest tests/dext_recommend/ -q` 必须全绿。不要求全项目 `uv run pytest -q` 全绿（全项目超时属已知约束，不作为本阶段阻塞条件），但本模块内不得有失败或跳过。
 
-`ReadinessService.check/get_snapshot` 与 `RecommendationCore.recommend` 的 `NotImplementedError` 是显式延后到 R2/R3 的占位，不计为本阶段缺陷。
+async `ReadinessService.check`、同步 `ReadinessService.get_snapshot` 与 async `RecommendationCore.recommend` 的 `NotImplementedError` 是显式延后到 R2/R3 的占位，不计为本阶段缺陷。

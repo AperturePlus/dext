@@ -96,7 +96,7 @@ FactItem
 
 ```text
 LLMGenerationPort
-  generate(
+  async generate(
     system_prompt_id: str,        # 版本化 prompt 标识，不是裸字符串
     user_inputs: dict,            # 序列化后的受约束输入
     fact_bundle: FactBundle,      # 事实输入，可为空（纯建议场景）
@@ -111,6 +111,8 @@ GenerationResult
   cited_refs: list[SourceRef]     # 事实证据引用，来自 FactBundle
   warnings: list[GenerationWarning]
 ```
+
+`generate` 是外部 LLM I/O 边界，调用方必须 `await`；fake 也保持 async 签名。`CitationValidator`、`SafetyGuard` 与事实裁剪是纯计算，保持同步。
 
 ### 4.1 Claim（逐条分类）
 

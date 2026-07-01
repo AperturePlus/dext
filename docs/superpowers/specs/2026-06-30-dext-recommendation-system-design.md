@@ -271,9 +271,9 @@ HTTP request
   -> RecommendRequest
   -> ReadinessService.get_snapshot()
   -> QueryUnderstanding + intent routing
-  -> query embedding
-  -> VectorSearchPort hybrid recall
-  -> ProfessorFactPort hydration and final filter
+  -> await query embedding
+  -> await VectorSearchPort hybrid recall
+  -> await ProfessorFactPort hydration and final filter
   -> rerank + explanation + card assembly
   -> API response + optional application-history write
 ```
@@ -339,6 +339,8 @@ HTTP adapter 可使用 FastAPI 或 aiohttp；框架选择不得进入 `core`。�
 - 单个请求内所有异步任务共享同一 snapshot，不允许刷新后继续合并结果。
 - 缓存 key 必须基于发布产物版本，不基于 adapter 实现类名或其他模块内部状态。
 
+异步契约：Qdrant、Neo4j、catalog/release readback、embedding、LLM 与应用数据库等可能阻塞的 I/O ports 均定义为 `async def`，编排服务与 HTTP handler 必须 `await`。`ActiveSnapshotProvider.get_snapshot()` 是进程内原子缓存读取，保持同步；过滤、排序、校验、DTO 映射等纯计算也不机械 async 化。无原生异步客户端时，adapter 必须在线程卸载边界执行并应用超时与并发上限。
+
 ### 6.7 架构退出标准
 
 进入功能实现前，架构骨架至少满足：
@@ -393,6 +395,10 @@ v1 推荐场景：学生找导师。
 ## 8. 内部接口
 
 推荐核心先定义为进程内接口，不绑定 HTTP：
+
+```text
+async RecommendationCore.recommend(request: RecommendRequest) -> RecommendResponse
+```
 
 ```text
 RecommendRequest
@@ -480,16 +486,16 @@ available_actions
 辅助服务接口：
 
 ```text
-get_professor_detail(entity_id, include_contacts, viewer_permissions) -> ProfessorDetail
-analyze_match(entity_id, student_context, evidence_policy) -> MatchAnalysis
-draft_outreach_email(entity_id, student_context, tone, language) -> OutreachDraft
-compare_professors(entity_ids[2..3], student_context, evidence_policy) -> ProfessorComparison
+async get_professor_detail(entity_id, include_contacts, viewer_permissions) -> ProfessorDetail
+async analyze_match(entity_id, student_context, evidence_policy) -> MatchAnalysis
+async draft_outreach_email(entity_id, student_context, tone, language) -> OutreachDraft
+async compare_professors(entity_ids[2..3], student_context, evidence_policy) -> ProfessorComparison
 ```
 
 OpenAPI 适配层只负责：
 
 1. 把 App 契约转换为内部 request。
-2. 调用推荐核心或辅助服务。
+2. `await` 推荐核心或辅助服务。
 3. 把 response 映射回 OpenAPI。
 4. 执行身份、权限、收藏/历史/profile 存储等应用层逻辑。
 

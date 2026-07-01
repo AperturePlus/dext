@@ -38,7 +38,7 @@
 `api/schemas.py`（OpenAPI DTO）、`api/adapters.py`（DTO ↔ 内部模型）、`api/routes.py`（薄 handler）、`api/auth.py`（viewer permissions 与 `include_contacts`）。adapter 只做四件事：
 
 1. 把 App 契约 request 转换为内部 `RecommendRequest`/`StudentContext`/`ConversationContext`。
-2. 调用推荐核心或辅助服务。
+2. `await` 推荐核心或辅助服务。
 3. 把 response 映射回 OpenAPI。
 4. 执行身份、权限、收藏/历史/profile 存储等应用层逻辑。
 
@@ -56,6 +56,8 @@ profile、session、fork、favorites、history 与远端资料删除由应用层
 ## 6. 缓存与并发
 
 按 overview §6.6：`ActiveBuildSnapshot` 短 TTL 缓存，release pointer 不一致时立即失效；热门 `ProfessorDetail` 缓存 key 含 `build_id`+`entity_id`+`profile_hash`，`profile_hash=null` 时禁用或短 TTL 降级；query understanding 与 LLM generation 不默认缓存。各外部依赖独立连接池与并发上限。
+
+所有 HTTP handler 使用 async 入口并 `await` core/detail/generation/application repositories；不得在事件循环中调用同步 Qdrant、Neo4j、LLM、embedding 或数据库客户端。阻塞兼容层只能在线程卸载边界内使用，并受超时和并发上限控制。
 
 ## 7. 隐私与日志
 

@@ -13,9 +13,9 @@
 ## 2. 三个辅助服务
 
 ```text
-analyze_match(entity_id, student_context, evidence_policy) -> MatchAnalysis
-draft_outreach_email(entity_id, student_context, tone, language) -> OutreachDraft
-compare_professors(entity_ids[2..3], student_context, evidence_policy) -> ProfessorComparison
+async analyze_match(entity_id, student_context, evidence_policy) -> MatchAnalysis
+async draft_outreach_email(entity_id, student_context, tone, language) -> OutreachDraft
+async compare_professors(entity_ids[2..3], student_context, evidence_policy) -> ProfessorComparison
 ```
 
 三个服务都走共享 `LLMGenerationPort`，传入阶段 4 的 `ProfessorDetail`（实现共享 `FactBundle` 接口）作为 `fact_bundle`。
@@ -46,7 +46,7 @@ compare_professors(entity_ids[2..3], student_context, evidence_policy) -> Profes
 每个服务统一走（由共享契约提供，本阶段只装配）：
 
 ```text
-ProfessorDetail(s) -> FactBundle trimming -> LLMGenerationPort.generate
+ProfessorDetail(s) -> FactBundle trimming -> await LLMGenerationPort.generate
   -> CitationValidator -> SafetyGuard -> GenerationResult
 ```
 
@@ -75,3 +75,4 @@ ProfessorDetail(s) -> FactBundle trimming -> LLMGenerationPort.generate
 - 评测样本中 `grounded generation precision` 与 `no-admission-probability rate` 同时达标，样本绑定 `generation_profile_version`。
 - 失败模式返回对应结构化错误，不静默回退或交付无引用输出。
 - 单测可用 fixture 事实包 + fake `LLMGenerationPort` 覆盖受约束生成逻辑（grounded 逻辑部分不调真实 LLM）。
+- 三个服务及 fake LLM port 均为 async；引用校验、安全检查和事实裁剪保持同步纯计算。

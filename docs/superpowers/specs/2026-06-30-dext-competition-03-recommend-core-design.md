@@ -59,7 +59,7 @@ CompetitionQueryUnderstanding
   needs_clarification
 ```
 
-需求理解调用共享 `LLMGenerationPort`（轻量），输出映射回结构化字段；无法解析时返回 `needs_clarification=true`，不直接触发推荐。
+需求理解通过 `await LLMGenerationPort.generate(...)` 调用共享 async 端口（轻量），输出映射回结构化字段；无法解析时返回 `needs_clarification=true`，不直接触发推荐。
 
 ## 4. 候选召回与过滤
 
