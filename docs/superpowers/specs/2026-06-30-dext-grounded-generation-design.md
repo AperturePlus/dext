@@ -37,9 +37,10 @@ StudentContext
 
 约束：
 
-- `gpa_bucket`、`rank_bucket` 必须是分桶枚举，不得接收或记录原值。
+- `gpa_bucket`、`rank_bucket` 必须是分桶枚举，不得接收或记录原值。`StudentContext.__post_init__` 必须拒绝形似原值的输入（数字串如 `"3.97"`、`"3.9/4.0"`、`"rank 12"` 等），否则抛错；合法桶由规则文件枚举（如 `top10`/`top25`/`high`/`medium`/`unknown`），不在枚举内的值一律拒绝。
+- `profile_completeness` 在 `safe_log_summary()` 中只记录**粗粒度完成度桶**（如 `high`/`medium`/`low`/`none`），不得返回原始浮点；浮点字段可存在于内存对象用于排序，但日志摘要不得序列化原值。
 - `StudentContext` 不进入 catalog、Neo4j、Qdrant 教师事实图，也不进入竞赛知识库索引。
-- 推荐日志不得记录 `StudentContext` 原文；只记录完成度 bucket 和是否使用。
+- 推荐日志不得记录 `StudentContext` 原文；只记录完成度 bucket 和是否使用。`safe_log_summary()` 的返回值本身即视为“可序列化结构”，其字段集必须通过脱敏断言（任何面向日志/manifest/exception 的序列化路径都不得绕过该函数）。
 
 ### 2.2 `SourceRef`
 
@@ -55,7 +56,7 @@ SourceRef
   last_verified: str | null # 可选核验日期（ISO-8601）
 ```
 
-每条推荐、规则回答、匹配分析、套磁邮件和对比结论至少返回 1 个 `SourceRef`；确实无来源时必须显式标注 `uncertain`，不得用空引用伪装有据。
+每条推荐、规则回答、匹配分析、套磁邮件和对比结论的事实性断言必须在后端内部绑定 `SourceRef`；确实无来源时必须显式标注 `uncertain`，不得用空引用伪装有据。公开 API 默认不暴露 `doc_path`、`heading_path` 或 `chunk_hash`，除非 diagnostics/debug/admin 模式显式开启且 OpenAPI 契约允许。
 
 ### 2.3 `ContentClass`
 
@@ -87,7 +88,7 @@ FactItem
 
 约束：
 
-- `FactBundle` 是只读、不可变快照；单次生成请求内不刷新。
+- `FactBundle` 是只读、不可变快照；单次生成请求内不刷新。“不可变”指**深度不可变**：`facts`、`source_refs` 等集合字段必须以只读视图（`tuple` 或 `MappingProxyType`/`frozenset`）暴露，`bundle.facts.append(...)`、`claim.fact_refs.append(...)`、`result.claims.append(...)` 等就地修改必须报错。仅冻结 dataclass 本身（字段重赋值报错）不足以满足“不可变快照”语义。
 - LLM 生成只能消费传入 `FactBundle` 的 `facts`，不得从训练记忆补充教师事实或赛事规则。
 - `FactItem` 缺少 `source_refs` 时必须标记 `uncertain`，并计入 groundedness 评测。
 
@@ -156,33 +157,34 @@ UserContextRef
 
 ### 5.1 裁剪
 
-- 传入 LLM 的 `FactBundle` 必须按 token 预算裁剪：保留命中 query 的 `FactItem`，丢弃无关长正文。
-- 裁剪不得改变 `fact` 的语义；超长 `ResearchStatement`、论文摘要、规则正文截断后必须保留可回溯 `SourceRef`。
-- 不得把联系方式、未脱敏个人数据、赛题保密材料放入 prompt。
+- 传入 LLM 的 `FactBundle` 必须按 token 预算裁剪：保留命中 query 的 `FactItem`，丢弃无关长正文。R0 阶段必须提供**裁剪 hook 接口**（`trim(fact_bundle, token_budget) -> FactBundle`，纯函数，输入输出同型）与预算字段（`generation_profile.trim_token_budget`，已在 `GroundedRules.trim_token_budget` 落地）；完整 tokenizer 接入与按字段优先级裁剪策略延后到 R6，但 hook 与预算字段在本阶段落地，使后续阶段只填实现、不改契约。
+- 裁剪不得改变 `fact` 的语义；超长 `ResearchStatement`、论文摘要、规则正文截断后必须保留可回溯 `SourceRef`。裁剪 hook 必须保证：裁剪后 `FactItem` 的 `source_refs` 不被丢弃（即“裁剪掉正文也不能裁掉引用”），并保留命中 query 的条目。
+- 不得把联系方式、未脱敏个人数据、赛题保密材料放入 prompt。裁剪 hook 必须拒绝把含联系方式/未脱敏数据的 `FactItem` 放入裁剪后的 bundle。
 
 ### 5.2 引用校验 `CitationValidator`
 
 逐 `Claim` 校验，按 `content_class` 区分引用要求：
 
 - `content_class=fact`：`fact_refs` 必须非空，且每条都能在 `FactBundle.source_refs` 集合内找到；否则降级为 `uncertain` 并产出 `uncited_claim` warning，或剔除该断言。
-- `content_class=advice`：可不挂 `fact_refs`；若引用用户背景，必须挂 `user_context_ref`，且 `field` 必须是本次请求 `StudentContext` 实际传入的字段，否则产出 `uncited_user_context` warning 并剔除该用户背景引用。
+- `content_class=advice`：可不挂 `fact_refs`；**若挂了 `fact_refs`，每条同样必须在 `FactBundle.source_refs` 集合内校验通过**（伪造的 advice 引用与伪造的 fact 引用同等处理：剔除该引用 + `fabricated_ref` warning，必要时剔除整条断言），不得放任 advice 引用未经校验直接进入 `cited_refs`；若引用用户背景，必须挂 `user_context_ref`，且 `field` 必须是本次请求 `StudentContext` 实际传入的字段，否则产出 `uncited_user_context` warning 并剔除该用户背景引用。
 - `content_class=uncertain`：不得挂 `fact_refs` 伪装确定事实。
 - LLM 自报 `fact_ref` 不在 `FactBundle.source_refs` 集合内：标记 `fabricated_ref` warning 并剔除该断言。
 - LLM 自报 `user_context_ref.field` 不在传入 `StudentContext` 字段集合内：标记 `fabricated_user_context` warning 并剔除。
+- **引用身份比对以 `FactBundle.source_refs` 的规范条目为准**，而非 LLM 自报对象：校验通过后，`cited_refs` 与 `Claim.fact_refs` 中保留下来的必须是**来自 bundle 的规范 `SourceRef` 对象**（按 `(doc_path, heading_path, chunk_hash)` 三元组 + 内容 hash 匹配并替换），不得回传 LLM 自报的同 key 但不同 `quote_or_summary`/`official_url` 的伪造条目。仅比 `(doc_path, chunk_hash)` 不足以防止“冒充真实引用”（同 doc+chunk 但摘要被替换）。
 - 事实冲突（同一字段多个不一致来源）：保留冲突并在输出中显式标注，不得静默选一边。
 
 ## 6. 安全边界
 
-`SafetyGuard` 在引用校验后对输出做规则检查，命中即拦截或降级：
+`SafetyGuard` 在引用校验后对输出做规则检查，命中即拦截或降级。**拦截/剔除必须作用于最终交付对象，不只是 `claims`**：`GenerationResult.output`（字符串或 dict）必须同步被清洗或置空，否则被丢弃的断言仍会经 `output` 明文回到调用方。
 
 | 规则 | 命中处理 |
 |---|---|
-| 概率承诺：录取/保研/奖学金/综测加分/Offer/获奖/导师接收意愿 | 剔除断言 + `no_probability_claim` warning |
+| 概率承诺：录取/保研/奖学金/综测加分/Offer/获奖/导师接收意愿 | 剔除断言 + 从 `output` 中移除相关明文片段 + `no_probability_claim` warning |
 | 无来源事实：断言不在事实包内且非 `advice` | 降级 `uncertain` + `uncited_claim` warning |
 | 伪造引用 | 剔除 + `fabricated_ref` warning |
-| 违规参赛建议：代做、挂名、伪造数据、赛中泄题、绕过查重、规避 AI 披露 | 拒绝输出 + `unsafe_advice` error |
-| 越权联系方式：未授权却索取或生成邮箱/电话 | 剔除 + `unauthorized_contact` warning |
-| 把往届/未核验信息写成当届确定事实 | 降级 `uncertain` + `stale_fact` warning |
+| 违规参赛建议：代做、挂名、伪造数据、赛中泄题、绕过查重、规避 AI 披露 | **拒绝整个输出**（`output` 置空或替换为拒绝模板，`claims=[]`）+ `unsafe_advice` error |
+| 越权联系方式：未授权却索取或生成邮箱/电话 | **从 `output` 中剥离匹配的邮箱/电话片段**（不只是 warning；剥离失败时降级为拒绝整个输出）+ `unauthorized_contact` warning |
+| 把往届/未核验信息写成当届确定事实 | 降级 `uncertain` + `stale_fact` warning；`output` 中对应明文须同步降级标注 |
 
 竞赛侧额外规则：
 
@@ -211,6 +213,11 @@ UserContextRef
 
 - 两个模块各自的 grounded 能力实现都通过本文定义的 `LLMGenerationPort`、`CitationValidator`、`SafetyGuard` 接口，不在 handler 中内联 prompt 或安全规则。
 - 输出按 `Claim` 逐条分类，混合 fact/advice/uncertain 时不被压成单一全局 `content_class`；`fact` 类 `fact_refs` 非空，`advice` 引用用户背景时挂 `user_context_ref`。
-- 评测样本中 `grounded generation precision` 与 `no-probability-claim rate` 同时达标；样本绑定 `generation_profile_version`。
+- 评测样本中 `grounded generation precision` 与 `no-probability-claim rate` 同时达标；样本绑定 `generation_profile_version`。R0 阶段必须落地评测**契约**：定义 precision 与 no-probability-claim rate 的口径与样本数据形状（样本须绑定 `generation_profile_version` 与 `GroundedRules.manifest_hash`），并提供一个最小可运行的评测入口（`eval/`，可只跑内置样本，不要求线上规模）；完整离线评测 harness 与基线值可延后，但口径与样本绑定不得缺位。
 - 共享契约有 import 边界测试：`dext_recommend` 与 `dext_competition` 都能 import 共享契约，但互相不 import。
 - `StudentContext` 原值不出现在任何日志、prompt 明文或事实层；`SourceRef` 与 `UserContextRef` 的 `quote_or_summary` 有长度上限，`UserContextRef.value_bucket` 只存脱敏分桶。
+- **面向最终 output 的攻击性测试（必须）**：验收测试不能只断言 `claims` 与 warning code，必须断言最终 `GenerationResult.output` 的清洗结果——(a) 概率承诺命中后 `output` 中不再包含概率明文；(b) `unsafe_advice` 命中后 `output` 被置空或替换为拒绝模板（不能仍含违规建议原文）；(c) 未授权联系方式命中后 `output` 中邮箱/电话被剥离（不能仍含明文）；(d) 伪造 advice `fact_refs` 与“冒充真实引用”（同 key 但 `quote_or_summary` 被替换）都被 `fabricated_ref` 拦截且不进入 `cited_refs`。
+- **深度不可变测试（必须）**：`bundle.facts.append(...)`、`claim.fact_refs.append(...)`、`result.claims.append(...)` 等就地修改必须报错（`AttributeError`/`TypeError`），不是仅字段重赋值报错。
+- **脱敏分桶测试（必须）**：`StudentContext(gpa_bucket="3.97")` 等原值输入必须被 `__post_init__` 拒绝并抛错；`safe_log_summary()` 不得返回原始 `profile_completeness` 浮点，只返回粗粒度桶。
+- **裁剪 hook 测试（必须）**：`trim(fact_bundle, token_budget)` 必须保留命中 query 的 `FactItem`、不得丢弃 `source_refs`、不得把含联系方式/未脱敏数据的条目放入裁剪后 bundle。
+- **模块内全绿**：`uv run pytest tests/dext_grounded/ -q` 必须全绿。不要求全项目 `uv run pytest -q` 全绿（全项目超时属已知约束，不作为本阶段阻塞条件），但本模块内不得有失败或跳过。
