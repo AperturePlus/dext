@@ -80,3 +80,25 @@ def test_dext_recommend_imports_grounded_contract():
     finally:
         sys.modules.clear()
         sys.modules.update(saved)
+
+
+def test_dext_recommend_adapters_do_not_import_dext_graph():
+    saved = dict(sys.modules)
+    try:
+        for name in list(sys.modules):
+            if name in ("dext", "dext_graph", "dext_monitor", "dext_competition"):
+                del sys.modules[name]
+        importlib.import_module("dext_recommend.adapters")
+        importlib.import_module("dext_recommend.adapters._catalog_reader")
+        importlib.import_module("dext_recommend.adapters._vector_reader")
+        importlib.import_module("dext_recommend.adapters._graph_reader")
+        importlib.import_module("dext_recommend.adapters.catalog_release")
+        importlib.import_module("dext_recommend.adapters.vector_release")
+        importlib.import_module("dext_recommend.adapters.graph_release")
+        importlib.import_module("dext_recommend.adapters.ranking_profile")
+        assert "dext_graph" not in sys.modules, (
+            "dext_recommend.adapters must not import dext_graph"
+        )
+    finally:
+        sys.modules.clear()
+        sys.modules.update(saved)
