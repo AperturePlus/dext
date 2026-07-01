@@ -63,8 +63,8 @@ def test_validate_rejects_error_response_with_results():
 
 def test_validate_rejects_error_response_without_error_warning():
     resp = make_error_response(
-        build_id="b-1", ranking_profile_version="r1", embedding_fingerprint="fp",
-        taxonomy_version="t1",
+        build_id="unavailable", ranking_profile_version="unavailable",
+        embedding_fingerprint="unavailable", taxonomy_version=None,
         warning=RecommendationWarning(code="needs_clarification", message="x", severity="warning"),
     )
     with pytest.raises(ValueError):

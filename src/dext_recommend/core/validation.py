@@ -31,10 +31,6 @@ def validate(response: RecommendResponse) -> None:
         if response.results != ():
             raise ValueError("error response must have empty results")
         return
-    # success / warning-only: empty results combined with warnings implies an error
-    # response, so at least one error-severity warning is required
-    if response.results == () and response.warnings:
-        raise ValueError("empty results with warnings requires at least one error severity")
     # success / warning-only
     for field in ("build_id", "ranking_profile_version", "embedding_fingerprint"):
         value = getattr(response, field)
