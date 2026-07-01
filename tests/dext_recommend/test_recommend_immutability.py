@@ -77,3 +77,20 @@ def test_fake_ports_defensively_copy_constructor_inputs():
     search_port = FakeVectorSearchPort(hits=hits)
     hits.append(VectorHit("e2", 0.5, {}))
     assert len(search_port._hits) == 1
+
+
+def test_professor_fact_authority_fields_are_immutable():
+    fact = ProfessorFact(
+        "e", "P", "U", ["org"], "T", "professor", "confirmed",
+        "confirmed", "included", None, None, None,
+        university_id="u_demo", city_name="北京",
+        org_unit_ids=["ou_cs"], topic_ids=["topic_cv"],
+    )
+    assert fact.university_id == "u_demo"
+    assert fact.city_name == "北京"
+    assert fact.org_unit_ids == ("ou_cs",)
+    assert fact.topic_ids == ("topic_cv",)
+    with pytest.raises((AttributeError, TypeError)):
+        fact.org_unit_ids.append("x")
+    with pytest.raises((AttributeError, TypeError)):
+        fact.topic_ids.append("y")

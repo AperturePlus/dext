@@ -32,9 +32,16 @@ class ProfessorFact:
     profile_url: str | None
     profile_hash: str | None
     research_summary: str | None
+    # authority fields for hard filters (R3); display fields above are for cards only
+    university_id: str | None = None
+    city_name: str | None = None
+    org_unit_ids: tuple[str, ...] = ()
+    topic_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "org_units", tuple(self.org_units or ()))
+        object.__setattr__(self, "org_unit_ids", tuple(self.org_unit_ids or ()))
+        object.__setattr__(self, "topic_ids", tuple(self.topic_ids or ()))
 
 
 @dataclass(frozen=True, slots=True)
