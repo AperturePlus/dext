@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-QUOTE_MAX_LEN = 500
+from dext_grounded.rules import load_grounded_rules
+from dext_grounded.student_context import _looks_like_raw_value
+
+QUOTE_MAX_LEN = load_grounded_rules().quote_max_len
 
 
 def _truncate(value: str, limit: int = QUOTE_MAX_LEN) -> str:
@@ -35,6 +38,19 @@ class UserContextRef:
     quote_or_summary: str
 
     def __post_init__(self) -> None:
+        if self.value_bucket is not None:
+            if not isinstance(self.value_bucket, str) or not self.value_bucket:
+                raise ValueError("value_bucket must be a non-empty redacted bucket")
+            rules = load_grounded_rules()
+            legal_buckets = (
+                rules.gpa_buckets
+                | rules.rank_buckets
+                | frozenset(name for name, _ in rules.completeness_buckets.thresholds)
+            )
+            if self.value_bucket not in legal_buckets and _looks_like_raw_value(
+                self.value_bucket
+            ):
+                raise ValueError("value_bucket must not contain a raw GPA/rank value")
         object.__setattr__(self, "quote_or_summary", _truncate(self.quote_or_summary))
 
 

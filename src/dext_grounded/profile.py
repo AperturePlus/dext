@@ -10,6 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from dext_grounded.rules import load_grounded_rules
+
+_DEFAULT_RULES = load_grounded_rules()
+
 
 @dataclass(frozen=True, slots=True)
 class GenerationProfile:
@@ -17,8 +21,8 @@ class GenerationProfile:
     prompt_ids: list[str] = field(default_factory=list)
     json_schema_ids: list[str] = field(default_factory=list)
     safety_rule_ids: list[str] = field(default_factory=list)
-    trim_token_budget: int = 4096
-    quote_max_len: int = 500
+    trim_token_budget: int = _DEFAULT_RULES.trim_token_budget
+    quote_max_len: int = _DEFAULT_RULES.quote_max_len
 
     def __post_init__(self) -> None:
         if not self.version:

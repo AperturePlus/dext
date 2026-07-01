@@ -34,6 +34,7 @@ def test_fact_claim_with_fabricated_ref_dropped():
         GenerationResult(output="x", claims=[claim]), bundle, StudentContext(),
     )
     assert not result.claims
+    assert result.output == ""
     assert any(w.code == "fabricated_ref" for w in result.warnings)
 
 
@@ -97,6 +98,7 @@ def test_all_claims_dropped_returns_no_grounded_output_marker():
         GenerationResult(output="x", claims=[fake_claim]), bundle, StudentContext(),
     )
     assert not result.claims
+    assert result.output == ""
     assert any(w.code == "no_grounded_output" for w in result.warnings)
 
 
@@ -172,3 +174,38 @@ def test_fact_claim_same_triple_different_quote_still_flagged_fabricated():
     )
     assert not result.claims
     assert any(w.code == "fabricated_ref" for w in result.warnings)
+
+
+def test_partial_fabricated_claim_text_removed_from_nested_output():
+    real = _ref("catalog://e/p1")
+    fake = _ref("catalog://e/p2", "fake")
+    result = CitationValidator().validate(
+        GenerationResult(
+            output={"items": ["real claim", "fabricated claim"]},
+            claims=[
+                Claim(text="real claim", content_class=ContentClass.FACT, fact_refs=[real]),
+                Claim(text="fabricated claim", content_class=ContentClass.FACT, fact_refs=[fake]),
+            ],
+        ),
+        _bundle([real]),
+        StudentContext(),
+    )
+    assert result.output == {"items": ["real claim", ""]}
+    assert [claim.text for claim in result.claims] == ["real claim"]
+
+
+def test_gpa_user_context_bucket_must_match_current_request():
+    claim = Claim(
+        text="advice",
+        content_class=ContentClass.ADVICE,
+        user_context_ref=UserContextRef(
+            field="gpa_bucket", value_bucket="top25", quote_or_summary="bucket",
+        ),
+    )
+    result = CitationValidator().validate(
+        GenerationResult(output="advice", claims=[claim]),
+        _bundle([]),
+        StudentContext(gpa_bucket="top10"),
+    )
+    assert result.claims[0].user_context_ref is None
+    assert any(w.code == "fabricated_user_context" for w in result.warnings)

@@ -51,3 +51,11 @@ def test_user_context_ref_value_bucket_never_raw():
         field="gpa_bucket", value_bucket="top10", quote_or_summary="high GPA",
     )
     assert ref.value_bucket == "top10"
+
+
+@pytest.mark.parametrize("raw", ["3.97", "3.9/4.0", "rank 12", "87%"])
+def test_user_context_ref_rejects_raw_value_bucket(raw):
+    with pytest.raises(ValueError):
+        UserContextRef(
+            field="gpa_bucket", value_bucket=raw, quote_or_summary="raw value",
+        )

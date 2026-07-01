@@ -12,8 +12,8 @@ Behavior:
    char-approximation (len(value) // 4 tokens); the real tokenizer is R6.
 4. NEVER drop source_refs from a kept FactItem — R0 trim only SELECTS items,
    never shortens value, so source_refs naturally survive.
-5. Return a new FactBundle with the same build_id/subject_id, the filtered
-   facts tuple, and the original canonical source_refs tuple unchanged.
+5. Rebuild the canonical source_refs tuple from references used by kept facts,
+   preserving the original canonical order.
 """
 from __future__ import annotations
 
@@ -44,7 +44,17 @@ def _item_has_contact(item: FactItem, patterns: tuple[re.Pattern[str], ...]) -> 
     if _has_contact(item.value, patterns):
         return True
     for ref in item.source_refs:
-        if _has_contact(ref.quote_or_summary, patterns):
+        if any(
+            _has_contact(value, patterns)
+            for value in (
+                ref.doc_path,
+                ref.heading_path,
+                ref.chunk_hash,
+                ref.quote_or_summary,
+                ref.official_url or "",
+                ref.last_verified or "",
+            )
+        ):
             return True
     return False
 
@@ -79,7 +89,7 @@ def trim(
     - Contact-bearing items are ALWAYS rejected (even if query-hit).
     - Non-hit items are kept only while the remaining budget allows.
     - source_refs on kept items are never dropped.
-    - The bundle's canonical source_refs tuple is preserved unchanged.
+    - The canonical source_refs tuple contains only refs used by kept items.
     """
     patterns = _compiled_contact_patterns()
     terms_lower = {str(term).lower() for term in query_terms}
@@ -106,11 +116,45 @@ def trim(
             remaining_budget -= item_tokens
         # else: drop — over budget
 
+    used_ref_identities = {
+        (
+            ref.doc_path,
+            ref.heading_path,
+            ref.chunk_hash,
+            ref.quote_or_summary,
+            ref.official_url,
+        )
+        for item in kept
+        for ref in item.source_refs
+    }
+    canonical_refs = tuple(
+        ref
+        for ref in fact_bundle.source_refs
+        if (
+            ref.doc_path,
+            ref.heading_path,
+            ref.chunk_hash,
+            ref.quote_or_summary,
+            ref.official_url,
+        ) in used_ref_identities
+        and not any(
+            _has_contact(value, patterns)
+            for value in (
+                ref.doc_path,
+                ref.heading_path,
+                ref.chunk_hash,
+                ref.quote_or_summary,
+                ref.official_url or "",
+                ref.last_verified or "",
+            )
+        )
+    )
+
     return FactBundle(
         build_id=fact_bundle.build_id,
         subject_id=fact_bundle.subject_id,
         facts=kept,
-        source_refs=fact_bundle.source_refs,
+        source_refs=canonical_refs,
     )
 
 

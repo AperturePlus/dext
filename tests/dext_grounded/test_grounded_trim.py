@@ -6,7 +6,7 @@ Behavior:
 - DROP non-hit items when over budget.
 - REJECT contact-bearing items (value or source_ref quote matches a contact regex).
 - NEVER drop source_refs from a kept FactItem.
-- Preserve the bundle's canonical source_refs tuple unchanged.
+- Keep only canonical source_refs used by surviving facts.
 - token_budget<=0 keeps ONLY query-hit items.
 """
 from __future__ import annotations
@@ -87,6 +87,7 @@ def test_trim_rejects_contact_in_source_ref_quote():
                         facts=[bad], source_refs=[real])
     trimmed = trim(bundle, token_budget=4096, query_terms={"RAG"})
     assert not any(f.field == "research_statement" for f in trimmed.facts)
+    assert not trimmed.source_refs
 
 
 def test_trim_rejects_phone_contact():
@@ -99,13 +100,29 @@ def test_trim_rejects_phone_contact():
 
 # (e) preserves bundle source_refs canonical set ---------------------------
 
-def test_trim_preserves_bundle_source_refs():
+def test_trim_preserves_only_used_bundle_source_refs():
     real = _ref("RAG")
+    unused = _ref("unused", chunk="c2")
     hit = _item("research_statement", "RAG", refs=[real])
     bundle = FactBundle(build_id="b", subject_id="p1",
-                        facts=[hit], source_refs=[real])
+                        facts=[hit], source_refs=[real, unused])
     trimmed = trim(bundle, token_budget=4096, query_terms={"RAG"})
     assert trimmed.source_refs == (real,)
+
+
+def test_trim_rejects_contact_in_source_ref_url():
+    ref = SourceRef(
+        doc_path="catalog://e/p1", heading_path="rs", chunk_hash="c1",
+        quote_or_summary="RAG", official_url="https://example.test/foo@bar.com",
+    )
+    item = _item("research_statement", "RAG", refs=[ref])
+    trimmed = trim(
+        FactBundle(build_id="b", subject_id="p1", facts=[item], source_refs=[ref]),
+        token_budget=4096,
+        query_terms={"RAG"},
+    )
+    assert not trimmed.facts
+    assert not trimmed.source_refs
 
 
 # (f) token_budget<=0 keeps only hits --------------------------------------

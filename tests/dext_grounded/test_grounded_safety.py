@@ -57,8 +57,8 @@ def test_unauthorized_contact_warning_emitted_even_when_strip_fails():
         GenerationResult(output="email: foo@bar.com", claims=[]),
         domain="recommend", include_contacts=False,
     )
-    # output downgraded to refusal template ...
-    assert res.output == "[output rejected: unsafe advice]"
+    # output downgraded to an empty value of the same declared type ...
+    assert res.output == ""
     # ... AND the unauthorized_contact warning still emitted (the Finding 1 fix)
     assert any(w.code == "unauthorized_contact" for w in res.warnings)
 
@@ -119,3 +119,27 @@ def test_stale_phrase_only_in_output_annotated():
     out = res.output if isinstance(res.output, str) else ""
     assert "[uncertain" in out  # annotated as downgraded
     assert any(w.code == "stale_fact" for w in res.warnings)
+
+
+def test_warning_is_deduplicated_when_claim_and_output_share_pattern():
+    result = SafetyGuard().inspect(
+        GenerationResult(
+            output={"text": "录取概率 90%"},
+            claims=[Claim(text="录取概率 90%", content_class=ContentClass.ADVICE)],
+        ),
+        domain="recommend",
+    )
+    assert sum(w.code == "no_probability_claim" for w in result.warnings) == 1
+
+
+def test_contact_in_claim_is_removed_even_when_output_does_not_repeat_it():
+    result = SafetyGuard().inspect(
+        GenerationResult(
+            output="safe summary",
+            claims=[Claim(text="联系 foo@bar.com", content_class=ContentClass.ADVICE)],
+        ),
+        domain="recommend",
+        include_contacts=False,
+    )
+    assert "foo@bar.com" not in result.claims[0].text
+    assert any(w.code == "unauthorized_contact" for w in result.warnings)

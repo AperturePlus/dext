@@ -97,7 +97,6 @@ class StudentContext:
         )
         return {
             "uses_profile": uses,
-            "education_stage": self.education_stage,
             "completeness_bucket": bucket,
         }
 

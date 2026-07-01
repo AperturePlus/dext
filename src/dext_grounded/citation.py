@@ -17,12 +17,13 @@ from __future__ import annotations
 import hashlib
 from dataclasses import replace
 
+from dext_grounded._output import empty_output, remove_output_fragments
 from dext_grounded.claims import Claim, GenerationResult, GenerationWarning
 from dext_grounded.codes import GenerationWarningCode
 from dext_grounded.content import ContentClass
 from dext_grounded.fact_bundle import FactBundle
 from dext_grounded.rules import GroundedRules, load_grounded_rules
-from dext_grounded.source_ref import SourceRef
+from dext_grounded.source_ref import SourceRef, UserContextRef
 from dext_grounded.student_context import StudentContext
 
 
@@ -55,21 +56,27 @@ def _bundle_ref_index(
     return index
 
 
-def _present_student_fields(
+def _has_context_value(student_context: StudentContext | None, field: str) -> bool:
+    if student_context is None:
+        return False
+    value = getattr(student_context, field, None)
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return bool(value)
+    return value not in (None, "")
+
+
+def _valid_user_context_ref(
+    ref: UserContextRef,
     student_context: StudentContext | None,
     allowed_fields: tuple[str, ...],
-) -> set[str]:
-    if student_context is None:
-        return set()
-    present: set[str] = set()
-    for name in allowed_fields:
-        value = getattr(student_context, name, None)
-        if isinstance(value, list):
-            if value:
-                present.add(name)
-        elif value not in (None, ""):
-            present.add(name)
-    return present
+) -> bool:
+    if ref.field not in allowed_fields or not _has_context_value(
+        student_context, ref.field
+    ):
+        return False
+    if ref.field in {"gpa_bucket", "rank_bucket"}:
+        return ref.value_bucket == getattr(student_context, ref.field, None)
+    return True
 
 
 class CitationValidator:
@@ -83,20 +90,21 @@ class CitationValidator:
         student_context: StudentContext | None,
     ) -> GenerationResult:
         ref_index = _bundle_ref_index(fact_bundle)
-        present_fields = _present_student_fields(
-            student_context, self.rules.student_context_fields,
-        )
         warnings: list[GenerationWarning] = list(result.warnings)
         kept_claims: list[Claim] = []
+        dropped_claim_texts: list[str] = []
 
         for claim in result.claims:
             new_claim, claim_warnings = self._validate_claim(
-                claim, ref_index, present_fields,
+                claim, ref_index, student_context,
             )
             warnings.extend(claim_warnings)
             if new_claim is not None:
                 kept_claims.append(new_claim)
+            else:
+                dropped_claim_texts.append(claim.text)
 
+        output = remove_output_fragments(result.output, tuple(dropped_claim_texts))
         if result.claims and not kept_claims:
             warnings.append(GenerationWarning(
                 code=GenerationWarningCode.NO_GROUNDED_OUTPUT.value,
@@ -104,6 +112,7 @@ class CitationValidator:
                     GenerationWarningCode.NO_GROUNDED_OUTPUT.value
                 ],
             ))
+            output = empty_output(result.output)
 
         cited: list = []
         for claim in kept_claims:
@@ -123,13 +132,14 @@ class CitationValidator:
             claims=kept_claims,
             cited_refs=unique_cited,
             warnings=warnings,
+            output=output,
         )
 
     def _validate_claim(
         self,
         claim: Claim,
         ref_index: dict[tuple[str, str, str], tuple[SourceRef, str]],
-        present_fields: set[str],
+        student_context: StudentContext | None,
     ) -> tuple[Claim | None, list[GenerationWarning]]:
         warnings: list[GenerationWarning] = []
         if claim.content_class == ContentClass.FACT:
@@ -162,7 +172,11 @@ class CitationValidator:
         if claim.content_class == ContentClass.ADVICE:
             if claim.user_context_ref is not None:
                 field = claim.user_context_ref.field
-                if field not in present_fields:
+                if not _valid_user_context_ref(
+                    claim.user_context_ref,
+                    student_context,
+                    self.rules.student_context_fields,
+                ):
                     message = (
                         self.rules.warning_messages[
                             GenerationWarningCode.FABRICATED_USER_CONTEXT.value

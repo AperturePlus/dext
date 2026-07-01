@@ -89,7 +89,7 @@ def test_student_context_safe_log_summary_omits_raw_values():
     # only completeness bucket + whether used, never raw text
     assert summary["uses_profile"] is True
     assert summary["completeness_bucket"] == "high"
-    assert summary["education_stage"] == "本科高年级"
+    assert set(summary) == {"uses_profile", "completeness_bucket"}
     for forbidden in ("school", "major", "gpa_bucket", "rank_bucket",
                        "research_interests", "achievements_summary",
                        "competition_experience_summary", "profile_completeness"):
@@ -101,6 +101,7 @@ def test_student_context_safe_log_summary_empty_context():
     summary = ctx.safe_log_summary()
     assert summary["uses_profile"] is False
     assert summary["completeness_bucket"] == "none"
+    assert set(summary) == {"uses_profile", "completeness_bucket"}
 
 
 @pytest.mark.parametrize(

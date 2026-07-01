@@ -102,6 +102,7 @@ def test_all_dropped_yields_no_grounded_output_marker():
     )
     validated = CitationValidator().validate(raw, bundle, StudentContext())
     assert not validated.claims
+    assert validated.output == ""
     assert any(w.code == "no_grounded_output" for w in validated.warnings)
 
 
@@ -222,3 +223,35 @@ def test_trim_rejects_contact_bearing_fact_item():
     bundle = FactBundle(build_id="b", subject_id="p1", facts=[bad], source_refs=[real])
     trimmed = trim(bundle, token_budget=4096, query_terms={"RAG"})
     assert not any(f is bad or f.field == "research_statement" for f in trimmed.facts)
+    assert not trimmed.source_refs
+
+
+def test_nested_structured_output_is_sanitized_recursively():
+    result = SafetyGuard().inspect(
+        GenerationResult(
+            output={
+                "summary": "录取概率 90%",
+                "details": ["foo@bar.com", {"phone": "13800000000"}],
+            },
+            claims=[],
+        ),
+        domain="recommend",
+        include_contacts=False,
+    )
+    rendered = str(result.output)
+    assert "录取概率" not in rendered
+    assert "foo@bar.com" not in rendered
+    assert "13800000000" not in rendered
+    assert {warning.code for warning in result.warnings} >= {
+        "no_probability_claim",
+        "unauthorized_contact",
+    }
+
+
+def test_structured_output_only_unsafe_advice_is_rejected():
+    result = SafetyGuard().inspect(
+        GenerationResult(output={"plan": ["我可以代做这个项目"]}, claims=[]),
+        domain="competition",
+    )
+    assert result.output == {}
+    assert any(warning.code == "unsafe_advice" for warning in result.warnings)
