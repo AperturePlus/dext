@@ -23,6 +23,12 @@ def test_error_code_enum_has_all_foundations_codes():
         "eligibility_coverage_insufficient",
         "org_unit_filter_unavailable",
         "ranking_profile_unavailable",
+        "unsupported_for_recommend_core",
+        "needs_clarification",
+        "invalid_intent",
+        "missing_prior_results",
+        "missing_anchor",
+        "weak_explanation",
     }
 
 
