@@ -40,12 +40,12 @@ class FakeCatalogReleasePort:
         self._samples = tuple(samples)
         self._error = error
 
-    def read_active(self) -> CatalogReleaseObservation | None:
+    async def read_active(self) -> CatalogReleaseObservation | None:
         if self._error is not None:
             raise self._error
         return self._observation
 
-    def read_samples(
+    async def read_samples(
         self, build_id: str, sample_ids: tuple[str, ...],
     ) -> tuple[ProfessorReleaseSample, ...]:
         if self._error is not None:
@@ -63,7 +63,7 @@ class FakeVectorReleasePort:
         self._observation = observation
         self._error = error
 
-    def read_current(
+    async def read_current(
         self, alias: str, sample_ids: tuple[str, ...],
     ) -> VectorReleaseObservation | None:
         if self._error is not None:
@@ -80,7 +80,7 @@ class FakeGraphReleasePort:
         self._observation = observation
         self._error = error
 
-    def read_active(
+    async def read_active(
         self, sample_ids: tuple[str, ...],
     ) -> GraphReleaseObservation | None:
         if self._error is not None:
@@ -97,7 +97,7 @@ class FakeRankingProfilePort:
         self._version = version
         self._error = error
 
-    def read_version(self, path: Path) -> str:
+    async def read_version(self, path: Path) -> str:
         if self._error is not None:
             raise self._error
         return self._version
@@ -108,7 +108,9 @@ class FakeQueryEmbeddingPort:
         self._vector = tuple(float(value) for value in vector)
         self._fingerprint = fingerprint
 
-    def embed(self, snapshot: ActiveBuildSnapshot, query_text: str) -> EmbeddingResult:
+    async def embed(
+        self, snapshot: ActiveBuildSnapshot, query_text: str
+    ) -> EmbeddingResult:
         return EmbeddingResult(
             vector=self._vector,
             embedding_fingerprint=self._fingerprint,
@@ -126,7 +128,7 @@ class FakeVectorSearchPort:
         self._alias = alias
         self._count = int(count)
 
-    def hybrid_recall(
+    async def hybrid_recall(
         self,
         snapshot: ActiveBuildSnapshot,
         query_vector: list[float],
@@ -136,7 +138,7 @@ class FakeVectorSearchPort:
     ) -> list[VectorHit]:
         return list(self._hits)
 
-    def alias_readback(self, snapshot: ActiveBuildSnapshot) -> AliasReadback:
+    async def alias_readback(self, snapshot: ActiveBuildSnapshot) -> AliasReadback:
         return self._alias or AliasReadback(
             alias="dext_professors_current",
             target_collection="phys-1",
@@ -144,7 +146,7 @@ class FakeVectorSearchPort:
             payload_schema_version=2,
         )
 
-    def count_readback(
+    async def count_readback(
         self, snapshot: ActiveBuildSnapshot, filter: dict | None = None,
     ) -> int:
         return self._count
@@ -159,7 +161,7 @@ class FakeProfessorFactPort:
         self._details = dict(details or {})
         self._facts = dict(facts or {})
 
-    def get_detail(
+    async def get_detail(
         self,
         snapshot: ActiveBuildSnapshot,
         entity_id: str,
@@ -168,7 +170,7 @@ class FakeProfessorFactPort:
     ) -> ProfessorDetail:
         return self._details[entity_id]
 
-    def hydrate(
+    async def hydrate(
         self,
         snapshot: ActiveBuildSnapshot,
         entity_ids: list[str],
