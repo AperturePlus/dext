@@ -1,11 +1,13 @@
 """ProfessorFactPort — assemble ProfessorDetail / hydrate facts (R4 fills)."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 from dext_grounded import SourceRef
 
+from dext_recommend._immutable import freeze_mapping
 from dext_recommend.readiness import ActiveBuildSnapshot
 
 
@@ -21,7 +23,7 @@ class ProfessorFact:
     entity_id: str
     display_name: str
     university: str
-    org_units: list[str]
+    org_units: tuple[str, ...]
     title: str
     title_family: str
     master_eligibility: str
@@ -31,6 +33,9 @@ class ProfessorFact:
     profile_hash: str | None
     research_summary: str | None
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "org_units", tuple(self.org_units or ()))
+
 
 @dataclass(frozen=True, slots=True)
 class ProfessorDetail:
@@ -39,22 +44,37 @@ class ProfessorDetail:
     entity_id: str
     display_name: str
     university: str
-    org_units: list[str]
+    org_units: tuple[str, ...]
     title: str
     title_family: str
     master_eligibility: str
     phd_eligibility: str
     role_status: str
     profile_url: str | None
-    research_statements: list[str]
-    approved_topics: list[str]
-    selected_publication_mentions: list[str]
-    bio_snippets: list[str]
-    source_urls: list[str]
-    provenance_refs: list[SourceRef]
-    quality_findings: list[str]
-    risk_flags: list[str]
-    contacts: dict[str, str] = field(default_factory=dict)   # gated by viewer perms
+    research_statements: tuple[str, ...]
+    approved_topics: tuple[str, ...]
+    selected_publication_mentions: tuple[str, ...]
+    bio_snippets: tuple[str, ...]
+    source_urls: tuple[str, ...]
+    provenance_refs: tuple[SourceRef, ...]
+    quality_findings: tuple[str, ...]
+    risk_flags: tuple[str, ...]
+    contacts: Mapping[str, str] = field(default_factory=dict)   # gated by viewer perms
+
+    def __post_init__(self) -> None:
+        for name in (
+            "org_units",
+            "research_statements",
+            "approved_topics",
+            "selected_publication_mentions",
+            "bio_snippets",
+            "source_urls",
+            "provenance_refs",
+            "quality_findings",
+            "risk_flags",
+        ):
+            object.__setattr__(self, name, tuple(getattr(self, name) or ()))
+        object.__setattr__(self, "contacts", freeze_mapping(self.contacts))
 
 
 @runtime_checkable

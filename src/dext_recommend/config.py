@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,11 +21,16 @@ class RecommendSettings(BaseSettings):
     )
 
     # Published-artifact locations
-    build_manifest_path: Path = Path("data/catalog/build-manifest.json")
     catalog_path: Path = Path("data/catalog/catalog.db")
     qdrant_url: str = "http://127.0.0.1:6333"
     qdrant_alias: str = "dext_professors_current"
-    neo4j_uri: str = "bolt://127.0.0.1:7687"
+    neo4j_uri: str = Field(
+        default="bolt://127.0.0.1:7687",
+        validation_alias=AliasChoices(
+            "DEXT_RECOMMEND_NEO4J_URL",
+            "DEXT_RECOMMEND_NEO4J_URI",
+        ),
+    )
     neo4j_database: str = "neo4j"
     neo4j_username: str = ""
     neo4j_password: SecretStr = Field(default_factory=SecretStr)

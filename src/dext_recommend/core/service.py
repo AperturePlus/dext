@@ -11,13 +11,13 @@ from dataclasses import dataclass
 
 from dext_recommend.models import RecommendRequest, RecommendResponse
 from dext_recommend.ports import (
-    BuildSnapshotPort, ProfessorFactPort, QueryEmbeddingPort, VectorSearchPort,
+    ActiveSnapshotProvider, ProfessorFactPort, QueryEmbeddingPort, VectorSearchPort,
 )
 
 
 @dataclass(frozen=True, slots=True)
 class RecommendDeps:
-    snapshot_port: BuildSnapshotPort
+    snapshot_port: ActiveSnapshotProvider
     embedding_port: QueryEmbeddingPort
     vector_port: VectorSearchPort
     facts_port: ProfessorFactPort

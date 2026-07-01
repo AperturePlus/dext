@@ -6,9 +6,11 @@ are imported from the shared dext_grounded contract — never redefined here.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from dext_grounded import SourceRef, StudentContext
+from dext_recommend._immutable import freeze_mapping
 
 
 # ---- Filters & conversation (overview §8) ----
@@ -58,15 +60,25 @@ class ConversationContext:
 
 @dataclass(frozen=True, slots=True)
 class QueryUnderstanding:
-    research_interests: list[str]
-    preferred_universities: list[str]
-    preferred_cities: list[str]
-    preferred_org_units: list[str]
+    research_interests: tuple[str, ...]
+    preferred_universities: tuple[str, ...]
+    preferred_cities: tuple[str, ...]
+    preferred_org_units: tuple[str, ...]
     degree_goal: str | None
     mentor_eligibility_requirement: str | None
-    missing_information: list[str]
+    missing_information: tuple[str, ...]
     needs_clarification: bool
     confidence: float
+
+    def __post_init__(self) -> None:
+        for name in (
+            "research_interests",
+            "preferred_universities",
+            "preferred_cities",
+            "preferred_org_units",
+            "missing_information",
+        ):
+            object.__setattr__(self, name, tuple(getattr(self, name) or ()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +116,7 @@ class RecommendedProfessor:
     match_level: str                       # excellent|strong|possible|weak
     short_reasons: tuple[str, ...]
     score: float
-    score_components: dict[str, float]
+    score_components: Mapping[str, float]
     matched_topics: tuple[str, ...]
     matched_statements: tuple[str, ...]
     matched_publications: tuple[str, ...]
@@ -121,6 +133,7 @@ class RecommendedProfessor:
                 self, _f,
                 tuple(getattr(self, _f)) if getattr(self, _f) is not None else ()
             )
+        object.__setattr__(self, "score_components", freeze_mapping(self.score_components))
 
 
 @dataclass(frozen=True, slots=True)

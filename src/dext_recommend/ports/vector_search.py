@@ -5,10 +5,12 @@ mid-request alias/pointer switch cannot mix new+old build versions.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from dext_recommend.models import RecommendationFilters
+from dext_recommend._immutable import freeze_mapping
 from dext_recommend.readiness import ActiveBuildSnapshot
 
 
@@ -16,7 +18,10 @@ from dext_recommend.readiness import ActiveBuildSnapshot
 class VectorHit:
     entity_id: str
     score: float
-    payload: dict[str, Any]
+    payload: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload", freeze_mapping(self.payload))
 
 
 @dataclass(frozen=True, slots=True)

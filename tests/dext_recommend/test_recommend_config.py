@@ -31,4 +31,17 @@ def test_recommend_settings_safe_snapshot_excludes_api_keys():
 def test_recommend_settings_paths_are_path_objects():
     s = RecommendSettings()
     assert isinstance(s.catalog_path, Path)
-    assert isinstance(s.build_manifest_path, Path)
+
+
+def test_recommend_settings_accepts_canonical_neo4j_url(monkeypatch):
+    monkeypatch.setenv("DEXT_RECOMMEND_NEO4J_URL", "bolt://canonical:7687")
+    monkeypatch.setenv("DEXT_RECOMMEND_NEO4J_URI", "bolt://legacy:7687")
+    settings = RecommendSettings(_env_file=None)
+    assert settings.neo4j_uri == "bolt://canonical:7687"
+
+
+def test_recommend_settings_accepts_legacy_neo4j_uri(monkeypatch):
+    monkeypatch.delenv("DEXT_RECOMMEND_NEO4J_URL", raising=False)
+    monkeypatch.setenv("DEXT_RECOMMEND_NEO4J_URI", "bolt://legacy:7687")
+    settings = RecommendSettings(_env_file=None)
+    assert settings.neo4j_uri == "bolt://legacy:7687"

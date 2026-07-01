@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from dext_recommend import (
-    ActiveBuildSnapshot, BuildSnapshotPort, FakeBuildSnapshotPort,
+    ActiveBuildSnapshot, ActiveSnapshotProvider, FakeActiveSnapshotProvider,
     FakeProfessorFactPort, FakeQueryEmbeddingPort, FakeVectorSearchPort,
     ProfessorDetail, ProfessorFactPort, QueryEmbeddingPort, VectorSearchPort,
 )
@@ -20,14 +20,14 @@ def _snap():
     )
 
 
-def test_fake_build_snapshot_port_satisfies_protocol():
-    port = FakeBuildSnapshotPort(_snap())
-    assert isinstance(port, BuildSnapshotPort)
+def test_fake_active_snapshot_provider_satisfies_protocol():
+    port = FakeActiveSnapshotProvider(_snap())
+    assert isinstance(port, ActiveSnapshotProvider)
     assert port.get_snapshot().build_id == "b-1"
 
 
-def test_fake_build_snapshot_port_no_active():
-    port = FakeBuildSnapshotPort(None)
+def test_fake_active_snapshot_provider_no_active():
+    port = FakeActiveSnapshotProvider(None)
     assert port.get_snapshot() is None
 
 
@@ -35,7 +35,7 @@ def test_fake_query_embedding_port_returns_fixed_vector_and_fingerprint():
     port = FakeQueryEmbeddingPort(vector=[0.1, 0.2], fingerprint="fp-x")
     assert isinstance(port, QueryEmbeddingPort)
     result = port.embed(_snap(), "NLP")
-    assert result.vector == [0.1, 0.2]
+    assert result.vector == (0.1, 0.2)
     assert result.embedding_fingerprint == "fp-x"
 
 

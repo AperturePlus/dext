@@ -8,8 +8,8 @@ import pytest
 
 import dext_recommend as rec
 from dext_recommend import (
-    ActiveBuildSnapshot, BuildSnapshotPort, ConversationContext, ErrorSeverity,
-    FakeBuildSnapshotPort, FakeProfessorFactPort, FakeQueryEmbeddingPort,
+    ActiveBuildSnapshot, ActiveSnapshotProvider, ConversationContext, ErrorSeverity,
+    FakeActiveSnapshotProvider, FakeProfessorFactPort, FakeQueryEmbeddingPort,
     FakeVectorSearchPort, ProfessorFactPort, QueryEmbeddingPort,
     QueryUnderstanding, RecommendDeps, RecommendRequest, RecommendedProfessor,
     RecommendationCore, RecommendationErrorCode, RecommendationFilters,
@@ -84,7 +84,7 @@ def test_snapshot_is_immutable():
 
 def test_all_four_fakes_satisfy_protocols():
     snap = _snap()
-    assert isinstance(FakeBuildSnapshotPort(snap), BuildSnapshotPort)
+    assert isinstance(FakeActiveSnapshotProvider(snap), ActiveSnapshotProvider)
     assert isinstance(
         FakeQueryEmbeddingPort([0.1], "fp-x"), QueryEmbeddingPort,
     )
@@ -95,7 +95,7 @@ def test_all_four_fakes_satisfy_protocols():
 def test_core_wired_with_fakes_does_not_touch_real_services():
     snap = _snap()
     deps = RecommendDeps(
-        snapshot_port=FakeBuildSnapshotPort(snap),
+        snapshot_port=FakeActiveSnapshotProvider(snap),
         embedding_port=FakeQueryEmbeddingPort([0.1], snap.embedding_fingerprint),
         vector_port=FakeVectorSearchPort(),
         facts_port=FakeProfessorFactPort(),

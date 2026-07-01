@@ -127,7 +127,7 @@ def test_query_understanding_fields():
         needs_clarification=False,
         confidence=0.8,
     )
-    assert qu.research_interests == ["NLP"]
+    assert qu.research_interests == ("NLP",)
     assert qu.confidence == 0.8
 
 
@@ -148,7 +148,7 @@ def test_recommended_professor_minimum():
 # appended to tests/test_recommend_models.py
 from dext_recommend import RecommendationCore, RecommendDeps
 from dext_recommend import (
-    FakeBuildSnapshotPort, FakeProfessorFactPort, FakeQueryEmbeddingPort,
+    FakeActiveSnapshotProvider, FakeProfessorFactPort, FakeQueryEmbeddingPort,
     FakeVectorSearchPort,
 )
 
@@ -156,7 +156,7 @@ from dext_recommend import (
 def test_recommendation_core_constructs_from_fake_ports():
     snap = _make_snapshot()
     deps = RecommendDeps(
-        snapshot_port=FakeBuildSnapshotPort(snap),
+        snapshot_port=FakeActiveSnapshotProvider(snap),
         embedding_port=FakeQueryEmbeddingPort([0.1], snap.embedding_fingerprint),
         vector_port=FakeVectorSearchPort(),
         facts_port=FakeProfessorFactPort(),
@@ -169,7 +169,7 @@ def test_recommendation_core_recommend_placeholder():
     import pytest
     snap = _make_snapshot()
     deps = RecommendDeps(
-        snapshot_port=FakeBuildSnapshotPort(snap),
+        snapshot_port=FakeActiveSnapshotProvider(snap),
         embedding_port=FakeQueryEmbeddingPort([0.1], snap.embedding_fingerprint),
         vector_port=FakeVectorSearchPort(),
         facts_port=FakeProfessorFactPort(),

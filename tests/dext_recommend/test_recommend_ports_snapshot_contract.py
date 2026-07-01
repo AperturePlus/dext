@@ -5,8 +5,9 @@ import inspect
 
 from dext_recommend import ActiveBuildSnapshot
 from dext_recommend.ports import (
-    BuildSnapshotPort, EmbeddingResult, ProfessorFactPort, ProfessorDetail,
-    QueryEmbeddingPort, VectorHit, VectorSearchPort,
+    ActiveSnapshotProvider, CatalogReleasePort, EmbeddingResult, GraphReleasePort,
+    ProfessorFactPort, ProfessorDetail, QueryEmbeddingPort, RankingProfilePort,
+    VectorHit, VectorReleasePort, VectorSearchPort,
 )
 
 
@@ -56,6 +57,17 @@ def test_embedding_result_carries_fingerprint():
     assert r.embedding_fingerprint == "fp-x"
 
 
-def test_build_snapshot_port_has_get_and_refresh():
-    assert hasattr(BuildSnapshotPort, "get_snapshot")
-    assert hasattr(BuildSnapshotPort, "refresh")
+def test_active_snapshot_provider_only_exposes_validated_snapshot():
+    assert hasattr(ActiveSnapshotProvider, "get_snapshot")
+
+
+def test_raw_readback_ports_do_not_take_validated_snapshot():
+    methods = (
+        CatalogReleasePort.read_active,
+        CatalogReleasePort.read_samples,
+        VectorReleasePort.read_current,
+        GraphReleasePort.read_active,
+        RankingProfilePort.read_version,
+    )
+    for method in methods:
+        assert "snapshot" not in _sig_params(method)

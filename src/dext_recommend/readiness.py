@@ -8,10 +8,12 @@ an explicit parameter (foundations §5).
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
 from dext_recommend.errors import RecommendationError
+from dext_recommend._immutable import freeze_mapping
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,8 +36,12 @@ class ActiveBuildSnapshot:
 class ReadinessReport:
     ready: bool
     snapshot: ActiveBuildSnapshot | None
-    errors: list[RecommendationError]
-    payload_coverage: dict[str, "CoverageStat"]
+    errors: tuple[RecommendationError, ...]
+    payload_coverage: Mapping[str, "CoverageStat"]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "errors", tuple(self.errors or ()))
+        object.__setattr__(self, "payload_coverage", freeze_mapping(self.payload_coverage))
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +68,7 @@ class ReadinessService:
     def check(self) -> ReadinessReport:
         raise NotImplementedError("readiness implemented in R2")
 
-    def get_snapshot(self) -> ActiveBuildSnapshot:
+    def get_snapshot(self) -> ActiveBuildSnapshot | None:
         raise NotImplementedError("readiness implemented in R2")
 
 
