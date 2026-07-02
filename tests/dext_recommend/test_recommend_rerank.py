@@ -174,3 +174,51 @@ def test_rerank_same_field_components_always_present():
     assert "same_field_boost" in ranked[0].score_components
     assert ranked[0].score_components["same_field_overlap"] == 0.0
     assert ranked[0].score_components["same_field_boost"] == 0.0
+
+
+def test_rerank_tie_break_configurable():
+    from dext_recommend.core.rerank import rerank
+    from dext_recommend.core.ranking_profile import RankingProfile
+    from dext_recommend.core.intent import RecommendRoute
+    from dext_recommend.ports.vector_search import VectorHit
+    from dext_recommend.ports.professor_facts import ProfessorDetail
+    from tests.dext_recommend._recfixtures import ranking_profile_dict
+
+    d = ranking_profile_dict(tie_break=("score", "semantic_score", "entity_id", "evidence_count"))
+    profile = RankingProfile.from_dict(d)
+    route = RecommendRoute(intent="new_search", exclude_entity_ids=(),
+                          anchor_entity_id=None, refine_merge=False,
+                          unsupported=None, warnings=())
+    # two candidates with identical score and semantic_score but different
+    # evidence_count and entity_id. Custom tie_break puts entity_id asc
+    # BEFORE evidence_count, so e_a (evidence=0) outranks e_b (evidence=5).
+    # The hardcoded sort puts evidence_count desc before entity_id, so it
+    # would rank e_b first.
+    hits = [
+        VectorHit(entity_id="e_b", score=0.5, payload={}),
+        VectorHit(entity_id="e_a", score=0.5, payload={}),
+    ]
+    detail_a = ProfessorDetail(
+        build_id="b-1", profile_hash=None, entity_id="e_a",
+        display_name="A", university="U", org_units=("CS",), title="Prof",
+        title_family="professor", master_eligibility="confirmed",
+        phd_eligibility="confirmed", role_status="included", profile_url=None,
+        research_statements=(), approved_topics=(),
+        selected_publication_mentions=(), bio_snippets=(),
+        source_urls=("u1", "u2", "u3", "u4", "u5"), provenance_refs=(),
+        quality_findings=(), risk_flags=(),
+    )
+    detail_b = ProfessorDetail(
+        build_id="b-1", profile_hash=None, entity_id="e_b",
+        display_name="B", university="U", org_units=("CS",), title="Prof",
+        title_family="professor", master_eligibility="confirmed",
+        phd_eligibility="confirmed", role_status="included", profile_url=None,
+        research_statements=(), approved_topics=(),
+        selected_publication_mentions=(), bio_snippets=(),
+        source_urls=("u1", "u2", "u3", "u4", "u5", "u6", "u7", "u8", "u9", "u10"),
+        provenance_refs=(), quality_findings=(), risk_flags=(),
+    )
+    details = {"e_a": detail_a, "e_b": detail_b}
+    ranked = rerank(hits, {}, details, {"e_a": 1.0, "e_b": 1.0}, None, profile, route)
+    assert ranked[0].entity_id == "e_a"
+    assert ranked[1].entity_id == "e_b"

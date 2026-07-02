@@ -89,6 +89,7 @@ class QueryDiagnostics:
     recall_count: int = 0
     post_filter_count: int = 0
     returned_count: int = 0
+    steps_used: int = 0
 
 
 @dataclass(frozen=True, slots=True)

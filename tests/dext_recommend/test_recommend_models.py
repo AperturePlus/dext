@@ -211,3 +211,16 @@ async def test_recommendation_core_recommend_runs_pipeline():
     from dext_recommend import RecommendResponse
     assert isinstance(resp, RecommendResponse)
     assert resp.build_id == "b-1"
+
+
+def test_query_diagnostics_steps_used_defaults_zero():
+    from dext_recommend.models import QueryDiagnostics
+    d = QueryDiagnostics(query_length=5, language_summary="en", filter_summary="none")
+    assert d.steps_used == 0
+
+
+def test_query_diagnostics_steps_used_set():
+    from dext_recommend.models import QueryDiagnostics
+    d = QueryDiagnostics(query_length=5, language_summary="en",
+                        filter_summary="none", steps_used=2)
+    assert d.steps_used == 2

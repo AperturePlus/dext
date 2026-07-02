@@ -82,6 +82,14 @@ async def test_new_search_happy_path():
     assert "e_cv_excluded" not in ids
 
 
+async def test_recommend_steps_used_in_diagnostics():
+    """Happy path: resp.query.steps_used >= 1."""
+    core = _core()
+    resp = await core.recommend(RecommendRequest(query_text="NLP 导师"))
+    assert isinstance(resp, RecommendResponse)
+    assert resp.query.steps_used >= 1
+
+
 async def test_no_active_build_returns_error_response():
     core = _core(snapshot_obj=None)
     resp = await core.recommend(RecommendRequest(query_text="NLP"))

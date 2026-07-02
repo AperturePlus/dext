@@ -107,6 +107,21 @@ def _match_level(score: float, thresholds: Mapping[str, float]) -> str:
     return "weak"
 
 
+def _tie_break_key(entry: RerankEntry, spec: tuple[str, ...]) -> tuple:
+    keys = []
+    for field in spec:
+        if field == "score":
+            keys.append(-entry.score)
+        elif field == "semantic_score":
+            keys.append(-entry.score_components["semantic_score"])
+        elif field == "evidence_count":
+            keys.append(-entry.evidence_count)
+        elif field == "entity_id":
+            keys.append(entry.entity_id)
+        else:
+            raise ValueError(f"unknown tie_break field: {field}")
+    return tuple(keys)
+
 def _same_field_affinity(
     fact: ProfessorFact | None, anchor_topics: tuple[str, ...],
     base: float, profile: RankingProfile,
@@ -176,10 +191,9 @@ def rerank(
             match_level=_match_level(score, profile.match_level_thresholds),
             evidence_count=evidence_count,
         ))
-    # tie-break: score desc, semantic_score desc, evidence_count desc, entity_id asc
-    entries.sort(key=lambda e: (
-        -e.score, -e.score_components["semantic_score"], -e.evidence_count, e.entity_id,
-    ))
+    # tie-break driven by profile.tie_break (validated to be a complete
+    # permutation of {score, semantic_score, evidence_count, entity_id})
+    entries.sort(key=lambda e: _tie_break_key(e, profile.tie_break))
     return entries
 
 

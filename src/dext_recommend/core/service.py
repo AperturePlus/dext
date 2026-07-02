@@ -203,6 +203,7 @@ class RecommendationCore:
                 language_summary=_language_summary(request.query_text),
                 filter_summary=_filter_summary(effective_filters),
                 recall_count=recall_count, post_filter_count=0, returned_count=0,
+                steps_used=steps_used,
             )
             object.__setattr__(resp, "query", diag)
             validate(resp)
@@ -257,6 +258,7 @@ class RecommendationCore:
             filter_summary=_filter_summary(effective_filters),
             recall_count=recall_count, post_filter_count=len(survivors),
             returned_count=len(results),
+            steps_used=steps_used,
         )
         resp = RecommendResponse(
             build_id=snapshot.build_id, ranking_profile_version=profile.version,

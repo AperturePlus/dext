@@ -15,6 +15,7 @@ _REQUIRED_WEIGHTS = (
     "eligibility_score", "provenance_score", "completeness_score",
 )
 _WEIGHT_SUM_TOLERANCE = 0.01
+_allowed_tie_break = {"score", "semantic_score", "evidence_count", "entity_id"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +66,16 @@ class RankingProfile:
             )
         if not self.tie_break:
             raise ValueError("RankingProfile.tie_break must be non-empty")
+        if len(set(self.tie_break)) != len(self.tie_break):
+            raise ValueError("RankingProfile.tie_break must not repeat fields")
+        unknown = [f for f in self.tie_break if f not in _allowed_tie_break]
+        if unknown:
+            raise ValueError(f"RankingProfile.tie_break has unknown fields: {unknown}")
+        if set(self.tie_break) != _allowed_tie_break:
+            raise ValueError(
+                "RankingProfile.tie_break must be a complete permutation of "
+                "{score, semantic_score, evidence_count, entity_id}"
+            )
         if not (0.0 <= self.same_field_boost_per_topic <= self.same_field_boost_max <= 1.0):
             raise ValueError(
                 "require 0 <= same_field_boost_per_topic <= same_field_boost_max <= 1"
