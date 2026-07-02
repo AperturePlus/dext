@@ -29,13 +29,17 @@ from dext_recommend.ports import (
     FakeProfessorFactPort, FakeQueryEmbeddingPort, FakeRankingProfilePort,
     FakeVectorReleasePort, FakeVectorSearchPort, GraphReleaseObservation,
     GraphReleasePort, LLMGenerationPort, PayloadCoverageObservation,
-    ProfessorDetail, ProfessorFact, ProfessorFactPort, ProfessorReleaseSample,
-    QueryEmbeddingPort, RankingProfile, RankingProfilePort, ReadinessSourceError,
-    VectorHit, VectorReleaseObservation, VectorReleasePort, VectorSearchPort,
-    ViewerPermissions,
+    ProfessorDetail, ProfessorFact, ProfessorFactNotFound, ProfessorFactPort,
+    ProfessorReleaseSample, QueryEmbeddingPort, RankingProfile,
+    RankingProfilePort, ReadinessSourceError, VectorHit, VectorReleaseObservation,
+    VectorReleasePort, VectorSearchPort, ViewerPermissions,
 )
 from dext_recommend.readiness import (
     ActiveBuildSnapshot, CoverageStat, ReadinessReport, ReadinessService,
+)
+from dext_recommend.adapters import (
+    CatalogProfessorFactAdapter, CatalogProfessorFactReader,
+    CatalogSqliteFactReader,
 )
 
 __version__ = "0.1.0"
@@ -44,8 +48,11 @@ __all__: list[str] = [
     "ActiveBuildSnapshot",
     "ActiveSnapshotProvider",
     "AliasReadback",
+    "CatalogProfessorFactAdapter",
+    "CatalogProfessorFactReader",
     "CatalogReleaseObservation",
     "CatalogReleasePort",
+    "CatalogSqliteFactReader",
     "ConversationContext",
     "CoverageStat",
     "EmbeddingResult",
@@ -65,6 +72,7 @@ __all__: list[str] = [
     "PayloadCoverageObservation",
     "ProfessorDetail",
     "ProfessorFact",
+    "ProfessorFactNotFound",
     "ProfessorFactPort",
     "ProfessorReleaseSample",
     "QueryDiagnostics",

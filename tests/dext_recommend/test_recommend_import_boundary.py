@@ -151,6 +151,42 @@ def test_core_does_not_import_api_or_adapters():
         sys.modules.update(saved)
 
 
+def test_dext_recommend_fact_submodules_importable_without_dext_family():
+    saved = dict(sys.modules)
+    try:
+        for name in list(sys.modules):
+            if name in ("dext", "dext_graph", "dext_monitor", "dext_competition"):
+                del sys.modules[name]
+        for sub in (
+            "dext_recommend.facts._ids",
+            "dext_recommend.facts.evidence",
+            "dext_recommend.facts.source_urls",
+            "dext_recommend.adapters._catalog_fact_schema",
+            "dext_recommend.adapters._catalog_fact_reader",
+            "dext_recommend.adapters.catalog_professor_facts",
+        ):
+            importlib.import_module(sub)
+        for forbidden in ("dext", "dext_graph", "dext_monitor", "dext_competition"):
+            assert forbidden not in sys.modules
+    finally:
+        sys.modules.clear()
+        sys.modules.update(saved)
+
+
+def test_catalog_fact_adapter_reexported_at_root():
+    import dext_recommend as dr
+    assert hasattr(dr, "CatalogProfessorFactAdapter")
+    assert hasattr(dr, "CatalogSqliteFactReader")
+    assert hasattr(dr, "ProfessorFactNotFound")
+
+
+def test_recommend_settings_has_fact_knobs():
+    from dext_recommend.config import RecommendSettings
+    s = RecommendSettings()
+    assert s.fact_read_timeout > 0
+    assert s.fact_chunk_size >= 1
+
+
 def test_core_does_not_reference_raw_dense_sparse_scores():
     import re
     from pathlib import Path

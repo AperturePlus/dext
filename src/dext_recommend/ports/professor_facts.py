@@ -3,14 +3,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from dext_grounded import SourceRef
 from dext_grounded.content import ContentClass
 from dext_grounded.fact_bundle import FactBundle, FactItem
 
 from dext_recommend._immutable import freeze_mapping
-from dext_recommend.readiness import ActiveBuildSnapshot
+
+if TYPE_CHECKING:
+    from dext_recommend.readiness import ActiveBuildSnapshot
 
 
 class ProfessorFactNotFound(LookupError):

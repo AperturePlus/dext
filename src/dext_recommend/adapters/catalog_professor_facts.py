@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dext_grounded import SourceRef
 from dext_grounded.fact_bundle import FactBundle, FactItem
@@ -28,7 +28,9 @@ from dext_recommend.facts.source_urls import dedupe_source_urls
 from dext_recommend.ports.professor_facts import (
     ProfessorDetail, ProfessorFact, ProfessorFactNotFound, ViewerPermissions,
 )
-from dext_recommend.readiness import ActiveBuildSnapshot
+
+if TYPE_CHECKING:
+    from dext_recommend.readiness import ActiveBuildSnapshot
 
 
 def _fact_from_row(row: dict[str, Any]) -> ProfessorFact:
