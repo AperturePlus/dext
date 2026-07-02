@@ -740,6 +740,25 @@ async def test_recommend_invalid_request_calls_no_ports():
     assert core._deps.facts_port.get_detail_calls == []
 
 
+async def test_recommend_hard_topic_filter_without_topic_ids_invalid():
+    """topic_filter_mode=hard with empty topic_ids -> INVALID_REQUEST, no ports called.
+    spec §2.2: R3 defaults to NOT allowing topic hard-filter degraded."""
+    core = _core()
+    req = RecommendRequest(
+        query_text="NLP",
+        filters=RecommendationFilters(topic_filter_mode="hard", topic_ids=()),
+        limit=5,
+    )
+    resp = await core.recommend(req)
+    codes = [w.code for w in resp.warnings]
+    assert "invalid_request" in codes
+    assert resp.results == ()
+    # no port was called
+    assert core._deps.vector_port.hybrid_recall_calls == []
+    assert core._deps.facts_port.hydrate_calls == []
+    assert core._deps.facts_port.get_detail_calls == []
+
+
 async def test_recommend_unauthorized_contacts_calls_no_detail():
     """include_contacts=True with default ViewerPermissions -> UNAUTHORIZED_CONTACT, no get_detail."""
     core = _core()
@@ -763,6 +782,10 @@ async def test_recommend_unauthorized_review_policy():
     codes = [w.code for w in resp.warnings]
     assert "unauthorized_review" in codes
     assert resp.results == ()
+    # an unauthorized review-policy request must not touch any port
+    assert core._deps.facts_port.get_detail_calls == []
+    assert core._deps.vector_port.hybrid_recall_calls == []
+    assert core._deps.facts_port.hydrate_calls == []
 
 
 def test_composition_seam_injects_deps_verbatim():

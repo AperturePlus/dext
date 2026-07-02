@@ -6,7 +6,8 @@ fields but MUST have results==() and at least one error warning.
 from __future__ import annotations
 
 from dext_recommend.models import (
-    QueryDiagnostics, QueryUnderstanding, RecommendResponse, RecommendationWarning,
+    PhaseDiagnostic, QueryDiagnostics, QueryUnderstanding,
+    RecommendResponse, RecommendationWarning,
 )
 
 _VALID_MATCH_LEVELS = {"excellent", "strong", "possible", "weak"}
@@ -46,7 +47,7 @@ def validate(response: RecommendResponse) -> None:
 def make_error_response(
     *, build_id: str, ranking_profile_version: str, embedding_fingerprint: str,
     taxonomy_version: str | None, warning: RecommendationWarning,
-    phase_diagnostics: tuple = (),
+    phase_diagnostics: tuple[PhaseDiagnostic, ...] = (),
 ) -> RecommendResponse:
     qu = QueryUnderstanding(
         research_interests=(), preferred_universities=(), preferred_cities=(),

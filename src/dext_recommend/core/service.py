@@ -93,6 +93,10 @@ def validate_request(request: RecommendRequest, settings: RecommendSettings) -> 
         return "invalid phd_eligibility"
     if request.filters.topic_filter_mode not in ("soft", "hard"):
         return "invalid topic_filter_mode"
+    # spec §2.2: topic_filter_mode="hard" with empty topic_ids is not a valid
+    # request — R3 defaults to NOT allowing topic hard-filter degraded.
+    if request.filters.topic_filter_mode == "hard" and not request.filters.topic_ids:
+        return "topic_filter_mode=hard requires non-empty topic_ids"
     for fld in ("university_ids", "city_names", "org_unit_ids", "title_families", "topic_ids"):
         for v in getattr(request.filters, fld):
             if not isinstance(v, str) or not v:

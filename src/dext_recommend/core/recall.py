@@ -98,6 +98,7 @@ async def recall_loop(
 
     for step in steps:
         steps_used += 1
+        # awaited immediately; safe to close over loop var `step` and `embedding_sparse_vector`.
         hits = await _guarded_async(
             ctx, "vector_recall",
             "vector_unavailable",
@@ -119,6 +120,7 @@ async def recall_loop(
         new_ids = [h.entity_id for h in pref if h.entity_id not in hydrated_ids]
         if new_ids:
             hydrated_ids.update(new_ids)
+            # awaited immediately; safe to close over loop var `step` and `new_ids`.
             hydrated = await _guarded_async(
                 ctx, "candidate_hydrate",
                 "hydrate_unavailable",
