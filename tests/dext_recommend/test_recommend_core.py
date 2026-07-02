@@ -763,3 +763,42 @@ async def test_recommend_unauthorized_review_policy():
     assert "unauthorized_review" in codes
     assert resp.results == ()
 
+
+def test_composition_seam_injects_deps_verbatim():
+    from dext_recommend.composition import assemble_core, build_test_core
+    from dext_recommend.config import RecommendSettings
+    from dext_recommend.core.ranking_profile import RankingProfile
+    from dext_recommend.core.service import RecommendDeps
+    from dext_recommend.ports._fakes import (
+        FakeActiveSnapshotProvider, FakeProfessorFactPort, FakeQueryEmbeddingPort,
+        FakeRankingProfilePort, FakeVectorSearchPort,
+    )
+    from tests.dext_recommend._recfixtures import (
+        coverage_flags_case, fake_llm_for_understanding, professor_details_case,
+        professor_facts_case, ranking_profile_dict, snapshot, vector_hits_case,
+    )
+
+    snap = snapshot()
+    prof = RankingProfile.from_dict(ranking_profile_dict())
+    deps = RecommendDeps(
+        snapshot_port=FakeActiveSnapshotProvider(snap),
+        embedding_port=FakeQueryEmbeddingPort([0.1, 0.2], "fp-x"),
+        vector_port=FakeVectorSearchPort(hits=list(vector_hits_case("happy"))),
+        facts_port=FakeProfessorFactPort(
+            facts=professor_facts_case("happy"),
+            details=professor_details_case("happy"),
+        ),
+        llm_port=fake_llm_for_understanding({
+            "research_interests": ["NLP"], "preferred_universities": [],
+            "preferred_cities": [], "preferred_org_units": [], "degree_goal": "master",
+            "mentor_eligibility_requirement": None, "missing_information": [],
+            "needs_clarification": False, "confidence": 0.8,
+        }),
+        ranking_port=FakeRankingProfilePort(profile=prof),
+        coverage_flags_by_build_id=coverage_flags_case(snap.build_id),
+    )
+    settings = RecommendSettings()
+    core = assemble_core(deps, settings)
+    assert core.deps is deps
+    assert build_test_core(deps, settings).deps is deps
+
