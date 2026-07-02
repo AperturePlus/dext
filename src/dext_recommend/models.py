@@ -56,6 +56,14 @@ class ConversationContext:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ConversationSummary:
+    session_id: str
+    through_turn_id: str | None
+    text: str
+    created_at: str            # UTC ISO-8601
+
+
 # ---- Query understanding (overview §10) ----
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +178,7 @@ class RecommendResponse:
     results: tuple[RecommendedProfessor, ...]
     suggested_followups: tuple[str, ...]
     warnings: tuple[RecommendationWarning, ...]
+    generation_profile_version: str | None = None
     phase_diagnostics: tuple[PhaseDiagnostic, ...] = ()
 
     def __post_init__(self) -> None:
@@ -181,8 +190,68 @@ class RecommendResponse:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class DetailFollowupResponse:
+    build_id: str
+    ranking_profile_version: str
+    generation_profile_version: str
+    grounded_rules_manifest_hash: str
+    embedding_fingerprint: str
+    taxonomy_version: str | None
+    anchor_entity_id: str
+    anchor_display_name: str
+    answer: str
+    claims: tuple
+    cited_refs: tuple
+    warnings: tuple[RecommendationWarning, ...]
+    phase_diagnostics: tuple[PhaseDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        for _f in ("claims", "cited_refs", "warnings", "phase_diagnostics"):
+            object.__setattr__(
+                self, _f,
+                tuple(getattr(self, _f)) if getattr(self, _f) is not None else ()
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationDispatchResult:
+    kind: str   # recommendation|detail_followup|clarification|error
+    context: "ConversationContext | None"
+    recommendation: "RecommendResponse | None"
+    detail_followup: "DetailFollowupResponse | None"
+    issues: tuple[RecommendationWarning, ...]
+    generation_profile_version: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "issues", tuple(self.issues or ()))
+        kind = self.kind
+        has_rec = self.recommendation is not None
+        has_det = self.detail_followup is not None
+        if kind == "recommendation":
+            if not has_rec or has_det:
+                raise ValueError("kind=recommendation requires only recommendation payload")
+        elif kind == "detail_followup":
+            if not has_det or has_rec:
+                raise ValueError("kind=detail_followup requires only detail_followup payload")
+        elif kind in ("clarification", "error"):
+            if has_rec or has_det:
+                raise ValueError(f"kind={kind} must carry no payload")
+        else:
+            raise ValueError(f"unknown kind: {kind!r}")
+        if kind == "clarification":
+            if not any(w.code == "needs_clarification" for w in self.issues):
+                raise ValueError("kind=clarification requires a needs_clarification issue")
+        if kind == "error":
+            if not any(w.severity == "error" for w in self.issues):
+                raise ValueError("kind=error requires at least one severity=error issue")
+
+
 __all__ = [
     "ConversationContext",
+    "ConversationDispatchResult",
+    "ConversationSummary",
+    "DetailFollowupResponse",
     "QueryDiagnostics",
     "QueryUnderstanding",
     "PhaseDiagnostic",

@@ -44,6 +44,15 @@ class RecommendationErrorCode(str, Enum):
     VECTOR_UNAVAILABLE = "vector_unavailable"
     HYDRATE_UNAVAILABLE = "hydrate_unavailable"
     DETAILS_UNAVAILABLE = "details_unavailable"
+    INVALID_CONVERSATION_STATE = "invalid_conversation_state"
+    MORE_MENTORS_REQUIRES_PRIOR = "more_mentors_requires_prior"
+    SAME_FIELD_REQUIRES_ANCHOR = "same_field_requires_anchor"
+    DETAIL_FOLLOWUP_REQUIRES_ANCHOR = "detail_followup_requires_anchor"
+    ANCHOR_NOT_IN_ACTIVE_BUILD = "anchor_not_in_active_build"
+    INTENT_CLASSIFICATION_UNAVAILABLE = "intent_classification_unavailable"
+    FOLLOWUP_GENERATION_UNAVAILABLE = "followup_generation_unavailable"
+    GENERATION_PARSE_ERROR = "generation_parse_error"
+    NO_GROUNDED_OUTPUT = "no_grounded_output"
 
 
 @dataclass(frozen=True, slots=True)

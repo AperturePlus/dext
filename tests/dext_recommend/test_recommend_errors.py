@@ -36,6 +36,15 @@ def test_error_code_enum_has_all_foundations_codes():
         "vector_unavailable",
         "hydrate_unavailable",
         "details_unavailable",
+        "invalid_conversation_state",
+        "more_mentors_requires_prior",
+        "same_field_requires_anchor",
+        "detail_followup_requires_anchor",
+        "anchor_not_in_active_build",
+        "intent_classification_unavailable",
+        "followup_generation_unavailable",
+        "generation_parse_error",
+        "no_grounded_output",
     }
 
 

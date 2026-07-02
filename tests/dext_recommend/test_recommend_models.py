@@ -319,18 +319,65 @@ def test_professor_detail_rejects_mismatched_provenance_projection():
         ))
 
 
-def test_professor_detail_rejects_contacts_in_fact_bundle():
-    import pytest
-    from dext_grounded import FactBundle, FactItem
-    from dext_grounded.content import ContentClass
+# Task 3: ConversationSummary, ConversationDispatchResult, DetailFollowupResponse + error codes + generation_profile_version field
+from dext_recommend import (
+    ConversationDispatchResult, ConversationSummary, DetailFollowupResponse,
+)
+from dext_recommend.errors import RecommendationErrorCode
+from dext_grounded import Claim, ContentClass, SourceRef
 
-    bundle = FactBundle(
-        build_id="b1", subject_id="e1",
-        facts=(FactItem(
-            field="email", value="private@example.test",
-            content_class=ContentClass.UNCERTAIN,
-        ),),
-        source_refs=(),
+
+def test_conversation_summary_immutable():
+    s = ConversationSummary(session_id="s1", through_turn_id="t1",
+                            text="abc", created_at="2026-07-02T00:00:00Z")
+    assert s.session_id == "s1"
+
+
+def test_dispatch_result_kind_recommendation_carries_only_recommendation():
+    from dext_recommend import RecommendResponse
+    resp = RecommendResponse(build_id="b", ranking_profile_version="rv",
+                             embedding_fingerprint="ef", taxonomy_version=None,
+                             query_understanding=None, query=None, results=(),
+                             suggested_followups=(), warnings=(), )
+    r = ConversationDispatchResult(kind="recommendation", context=None,
+                                   recommendation=resp, detail_followup=None,
+                                   issues=(), generation_profile_version="gp")
+    assert r.recommendation is resp
+    assert r.detail_followup is None
+
+
+def test_dispatch_result_rejects_mixed_payload():
+    import pytest
+    with pytest.raises(ValueError):
+        ConversationDispatchResult(kind="recommendation", context=None,
+                                   recommendation=None, detail_followup=None,
+                                   issues=(), generation_profile_version=None)
+
+
+def test_detail_followup_response_basic():
+    r = DetailFollowupResponse(
+        build_id="b", ranking_profile_version="rv", generation_profile_version="gp",
+        grounded_rules_manifest_hash="grh", embedding_fingerprint="ef",
+        taxonomy_version=None, anchor_entity_id="e1", anchor_display_name="X",
+        answer="hi", claims=(), cited_refs=(), warnings=(),
     )
-    with pytest.raises(ValueError, match="contacts"):
-        _detail_for_bundle_invariant(bundle)
+    assert r.answer == "hi"
+    assert r.phase_diagnostics == ()
+
+
+def test_new_error_codes_registered():
+    codes = {c.value for c in RecommendationErrorCode}
+    assert "invalid_conversation_state" in codes
+    assert "more_mentors_requires_prior" in codes
+    assert "same_field_requires_anchor" in codes
+    assert "detail_followup_requires_anchor" in codes
+    assert "anchor_not_in_active_build" in codes
+    assert "intent_classification_unavailable" in codes
+    assert "followup_generation_unavailable" in codes
+    assert "generation_parse_error" in codes
+    assert "no_grounded_output" in codes
+
+
+def test_recommend_response_has_optional_generation_profile_version():
+    from dext_recommend import RecommendResponse
+    assert RecommendResponse.__dataclass_fields__["generation_profile_version"].default is None

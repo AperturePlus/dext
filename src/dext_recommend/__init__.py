@@ -18,7 +18,8 @@ from dext_recommend.errors import (
     ErrorSeverity, RecommendationError, RecommendationErrorCode,
 )
 from dext_recommend.models import (
-    ConversationContext, QueryDiagnostics, QueryUnderstanding, RecommendRequest,
+    ConversationContext, ConversationDispatchResult, ConversationSummary,
+    DetailFollowupResponse, QueryDiagnostics, QueryUnderstanding, RecommendRequest,
     RecommendResponse, RecommendationFilters, RecommendationWarning,
     RecommendedProfessor,
 )
@@ -55,7 +56,10 @@ __all__: list[str] = [
     "CatalogReleasePort",
     "CatalogSqliteFactReader",
     "ConversationContext",
+    "ConversationDispatchResult",
+    "ConversationSummary",
     "CoverageStat",
+    "DetailFollowupResponse",
     "EmbeddingResult",
     "ErrorSeverity",
     "FakeActiveSnapshotProvider",

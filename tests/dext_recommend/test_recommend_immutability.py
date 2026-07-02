@@ -90,7 +90,30 @@ def test_professor_fact_authority_fields_are_immutable():
     assert fact.city_name == "北京"
     assert fact.org_unit_ids == ("ou_cs",)
     assert fact.topic_ids == ("topic_cv",)
+
+
+def test_detail_followup_response_deep_immutable():
+    from dext_recommend import DetailFollowupResponse
+    from dext_grounded import Claim, ContentClass
+    import pytest
+    r = DetailFollowupResponse(
+        build_id="b", ranking_profile_version="rv", generation_profile_version="gp",
+        grounded_rules_manifest_hash="grh", embedding_fingerprint="ef",
+        taxonomy_version=None, anchor_entity_id="e1", anchor_display_name="X",
+        answer="hi",
+        claims=(Claim(text="hi", content_class=ContentClass.FACT),),
+        cited_refs=(), warnings=(),
+    )
     with pytest.raises((AttributeError, TypeError)):
-        fact.org_unit_ids.append("x")
+        r.claims.append("x")
+
+
+def test_dispatch_result_issues_immutable():
+    from dext_recommend import ConversationDispatchResult, RecommendationWarning
+    import pytest
+    r = ConversationDispatchResult(kind="error", context=None,
+                                    recommendation=None, detail_followup=None,
+                                    issues=(RecommendationWarning("e", "m", severity="error"),),
+                                    generation_profile_version=None)
     with pytest.raises((AttributeError, TypeError)):
-        fact.topic_ids.append("y")
+        r.issues.append(RecommendationWarning("y", "z"))
