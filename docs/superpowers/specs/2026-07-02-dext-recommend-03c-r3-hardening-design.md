@@ -1,10 +1,12 @@
 # 阶段 3c：dext_recommend R3 hardening（语义修正 + 配置接线 + 结构就绪）
 
-> 状态：已实现
+> 状态：已实现；最终验收发现的权限/异常/warning/输入校验缺口由 [R3d closure](2026-07-02-dext-recommend-03d-r3-closure-design.md) 关闭
 >
 > 实现结果：tests/dext_recommend/ 全模块绿；新增/改写测试 246 条（见 §6.1）。
 >
 > 日期：2026-07-02
+>
+> 后续阶段：[R3d closure](2026-07-02-dext-recommend-03d-r3-closure-design.md) → [R4b professor facts](2026-07-02-dext-recommend-04b-professor-facts-impl-design.md)
 >
 > 范围：**纯 R3 加固**——修正 R3 已落地代码的语义错误、把未接线的配置项接进流水线、补齐
 > 显式 composition seam 与 live adapter 阶段归属，**不触 live LLM/Qdrant/Neo4j**（仍 R4/R5/R7 边界）。

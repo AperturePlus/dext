@@ -1,10 +1,10 @@
 # dext 后端推荐系统设计
 
-> 状态：设计稿（已按 App 侧文档、系统架构与低耦合边界进一步修订；已拆为 overview + 7 个子 spec）
+> 状态：持续修订；2026-07-02 将交付链收敛为 R3d → R4b → R5/R6 → R7a/R7b/R7c
 >
 > 日期：2026-06-30
 >
-> 设计版本：recommendation-design-v1.4-ranking-recall-intent
+> 设计版本：recommendation-design-v1.5-staged-delivery-gates
 >
 > 目标模块：`dext_recommend`，与 `dext`、`dext_graph`、`dext_monitor` 平级
 >
@@ -80,17 +80,14 @@ dext -> published source snapshots -> build artifacts -> dext_recommend -> App/A
 
 ## 4. 本次本地审查发现
 
-以下是截至 2026-06-30 的本地状态审查，不属于推荐模块的长期运行假设。若后续状态已变化，以 catalog、Neo4j、Qdrant readback 为准。
+以下是截至 2026-07-02 的本地观察，不属于推荐模块的长期运行假设。若状态变化，以 catalog、Neo4j、Qdrant readback 为准：
 
-- 本地 `data/catalog/catalog.db` 为 `PRAGMA user_version=3`，代码 schema 常量已到 5；Topic/vector 表尚未在该库中存在。
-- 最新 build 停在 `WRITING_VECTOR`，尚未进入 `VALIDATING -> READY -> ACTIVE`。
-- 现有数据规模：8 所学校、11,801 active canonical professors、11,799 eligible professors、40,042 ResearchStatement、75,135 PublicationMention。
-- 阶段 6 仍是设计稿，缺少正式 `validate/promote/gc/archive` 和 Qdrant `dext_professors_current` alias 切换。
-- Professor graph export 的 `profile_hash` 当前固定为 `None`，图层无法直接对账 Qdrant profile。
-- Qdrant professor payload 的 `org_unit_ids` 当前为空数组，无法做稳定院系过滤和院系级解释。
-- 当前向量发布侧只验证了 create/upsert/count 类能力，尚未形成推荐侧可依赖的标准 recall/alias/readback 协议；阶段 0 query 只是临时实验 collection。
-- append-only source observation 增强仍是可选设计；这不是推荐首次上线的绝对阻断项，但会影响 provenance 粒度和解释质量评测。
-- `docs/appside/openapi.yaml` 当前提供 `/api/v1` 契约；后续需要以该文件做 contract test。若 OpenAPI 后续移动或拆分，阶段 7 spec 必须同步更新。
+- 本地 catalog 只有一个 build，状态为 `WRITING_VECTOR`，`taxonomy_version=null`，尚未进入 `VALIDATING -> READY -> ACTIVE`。
+- 当前库有 11,801 canonical professors、40,042 ResearchStatement、75,135 PublicationMention；
+  但缺 `statement_topic_links` 与 `professor_profiles`，不能用于 R4 live 验收。
+- 没有 ACTIVE build 时可以继续 fixture/临时 SQLite 驱动的内部开发，但不得把 staging 数据接入在线查询。
+- `docs/appside/openapi.yaml` 是全 App 契约；推荐模块只拥有 recommendation/chat/professor/profile/favorites/history/account 子集。
+- append-only source observation 增强仍是可选设计；首次上线硬门禁是证据可追溯、ACTIVE 产物一致和评测达标。
 
 推荐模块可以先开发内部接口和离线测试，但线上服务必须等 ACTIVE build、Qdrant alias、Neo4j active pointer 和必要 payload 对账能力补齐后才能放量。
 
@@ -321,7 +318,9 @@ v1 推荐采用“一个 HTTP 服务进程 + 外部发布产物”的部署形�
 - App state DB：PostgreSQL，由 API 应用层管理 anonymous identity、profile、session、fork、turn/message/feedback、favorites、history 和远端资料删除；推荐核心只通过 DTO 获取必要上下文。
 - LLM/Embedding provider：独立 client、独立超时、重试和脱敏日志；embedding 配置必须与 ACTIVE build fingerprint 对齐。
 
-HTTP adapter 可使用 FastAPI 或 aiohttp；框架选择不得进入 `core`。若后续已有 App 后端服务，则优先把 `dext_recommend` 作为平级库嵌入该服务，嵌入方式只装配 `dext_recommend` 自己的 ports/adapters，不导入 `dext_graph` 内部代码；当负载或部署隔离需要时，再拆成独立推荐服务。
+R7b HTTP adapter 使用仓库已有 aiohttp + Pydantic v2；框架不得进入 `core`。若后续已有 App 后端服务，
+优先把 `dext_recommend` 作为平级库嵌入，只装配自身 ports/adapters，不导入 `dext_graph` 内部代码；
+当负载或部署隔离需要时，再拆成独立推荐服务。
 
 ### 6.6 缓存与并发
 
@@ -697,7 +696,11 @@ source URLs
 provenance refs
 quality findings and risk flags
 build_id/profile_hash
+fact_bundle                 # 共享受约束生成输入；contacts 永不进入该 bundle
 ```
+
+`ProfessorDetail` 通过 `fact_bundle: FactBundle` 组合共享契约，不继承也不冒充 `FactBundle`。
+展示字段供推荐卡片/详情使用，阶段 6 只消费 bundle 中逐条绑定 SourceRef 的事实。
 
 若候选排序主要由 semantic score 贡献，但找不到可引用证据，应返回候选时附带 `weak_explanation`，并把该情况计入 explanation precision 评测。
 
@@ -861,27 +864,32 @@ v1 不做：
 
 ## 20. 落地步骤与子 spec 拆分
 
-推荐模块按依赖序拆为 7 个子 spec，每个子 spec 自带 spec → plan → TDD 执行周期。阶段编号表示实施依赖，不等同于运行时状态机。HTTP 契约（阶段 7）是最后实现的一步，字段与路径以 `docs/appside/openapi.yaml` 为准。
+推荐模块采用逐级门禁，而不是把所有生产接线压入单一 HTTP 阶段。固定依赖链为：
+`R3d closure → R4b facts → R5/R6（可并行）→ R7a runtime → R7b HTTP → R7c production acceptance`。
+每个实现阶段单独执行 spec → plan → TDD；字段与路径仍以 `docs/appside/openapi.yaml` 为准。
 
 | 阶段 | 子 spec | 入口条件 | 退出门禁 |
 |---:|---|---|---|
 | 1 | [Foundations](2026-06-30-dext-recommendation-01-foundations-design.md) | 共享 grounded-generation 契约已定义 | 包、内部模型、错误码、ports、adapters、fake ports、import 边界测试齐备 |
 | 2 | [Readiness](2026-06-30-dext-recommendation-02-readiness-design.md) | 阶段 1 骨架就绪 | `ActiveBuildSnapshot` 在缺 ACTIVE / alias 缺失 / pointer 缺失 / 三端不一致时返回结构化错误 |
-| 3 | [Recommend core](2026-06-30-dext-recommendation-03-recommend-core-design.md) | 阶段 2 可读 ACTIVE build | `RecommendRequest -> RecommendResponse` 全链路可用，含需求理解、召回、过滤、重排、解释、卡片 |
-| 4 | [Professor facts](2026-06-30-dext-recommendation-04-professor-facts-design.md) | 阶段 3 候选可解释 | `ProfessorDetail` 事实包可组装，供详情、追问、匹配、套磁、对比复用 |
-| 5 | [Conversation adapter](2026-06-30-dext-recommendation-05-conversation-design.md) | 阶段 4 事实包稳定 | session/turn/fork 上下文与 explicit/implicit intent 路由可用 |
-| 6 | [Auxiliary generation](2026-06-30-dext-recommendation-06-auxiliary-generation-design.md) | 阶段 4 事实包 + 共享 grounded-generation 可用 | 匹配分析、套磁邮件、导师对比受约束生成可用，禁无来源事实与概率承诺 |
-| 7 | [HTTP/OpenAPI adapter](2026-06-30-dext-recommendation-07-http-contract-design.md) | `docs/appside/openapi.yaml` + 阶段 3/4/5/6 可用 | `/api/v1` adapter、权限、profile/favorites/history 应用层接线与端到端契约测试通过 |
+| 3d | [R3 closure](2026-07-02-dext-recommend-03d-r3-closure-design.md) | R3c 已实现 | 权限、异常、warning、输入/profile 校验闭环，全仓绿 |
+| 4b | [Professor facts implementation](2026-07-02-dext-recommend-04b-professor-facts-impl-design.md) | R3d 验收完成 | catalog-only facts adapter、`ProfessorDetail.fact_bundle` 与证据权限契约可用 |
+| 5 | [Conversation adapter](2026-06-30-dext-recommendation-05-conversation-design.md) | R4b 事实包稳定 | 状态校验、implicit 分类与 context 组装可用；推荐执行仍归 R3 |
+| 6 | [Auxiliary generation](2026-06-30-dext-recommendation-06-auxiliary-generation-design.md) | R4b + grounded-generation | 匹配/邮件/对比只消费 `fact_bundle`，最终 output 通过 citation/safety |
+| 7a | [Live runtime/composition](2026-07-02-dext-recommend-07a-runtime-composition-design.md) | R4/R5/R6 live ports + 发布产物就绪 | startup readiness、live adapters 与 production root fail-fast |
+| 7b | [HTTP/application state](2026-07-02-dext-recommend-07b-http-app-state-design.md) | R7a runtime 可启动 | 推荐域 OpenAPI 子集、鉴权、PostgreSQL owner-scoped state 全绿 |
+| 7c | [Production acceptance](2026-07-02-dext-recommend-07c-production-acceptance-design.md) | R7b 完成 + 真实 ACTIVE build | E2E、故障注入、质量/性能/隐私门禁通过后才可放量 |
 
 ### 20.1 上游阻断
 
-推荐核心的**内部接口与离线测试**可立即推进；**线上放量**受 curation-graph-build 阶段 6/7 阻断，必须等以下条件全部满足（见本文 §4 本地审查结论）：
+推荐核心、R4/R5/R6 的 **fixture/离线开发** 可继续推进；R7a live integration 与 R7c 线上放量必须等以下条件全部满足：
 
 - catalog schema migration 到推荐要求的最低版本，build 完成 `VALIDATING -> READY -> ACTIVE`。
 - vector store 形成 `dext_professors_current` alias，payload 填充 `org_unit_ids`、`profile_hash`、`embedding_fingerprint`、approved Topic IDs。
 - graph store 填充真实 `profile_hash` 并暴露 active pointer。
 - readiness 关键 payload 覆盖率与一致性检查达标；院系硬过滤依赖的 `org_unit_ids` 不达标时不得上线院系过滤。
 
-阶段 2/3 的单测使用 fake ports；阶段 7 上线前必须切换到真实 ACTIVE 产物并重跑评测门禁。阶段 6 的受约束生成不依赖 ACTIVE build 本身，可使用 fixture 事实包先实现与测试。
+R2/R3 使用 fake ports，R4 使用临时生产形状 SQLite，R5/R6 可使用 fixture FactBundle；这些绿灯都不能替代
+R7c 面向真实 ACTIVE 产物的验收。
 
-这七步都只读消费发布产物，不改变上游事实生成与发布职责。
+推荐运行侧只读消费发布产物，不改变上游事实生成与发布职责。

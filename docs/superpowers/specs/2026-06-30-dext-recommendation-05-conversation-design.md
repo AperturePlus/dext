@@ -2,13 +2,15 @@
 
 > 状态：设计稿
 >
-> 前置依赖：[阶段 4 professor facts](2026-06-30-dext-recommendation-04-professor-facts-design.md)事实包稳定
+> 前置依赖：[R4b professor facts](2026-07-02-dext-recommend-04b-professor-facts-impl-design.md) 事实包稳定
 >
-> 后续阶段：[Auxiliary generation](2026-06-30-dext-recommendation-06-auxiliary-generation-design.md)
+> 后续阶段：与 [Auxiliary generation](2026-06-30-dext-recommendation-06-auxiliary-generation-design.md) 可并行；共同进入 [R7a runtime](2026-07-02-dext-recommend-07a-runtime-composition-design.md)
 
 ## 1. 目标
 
-实现 session/turn/fork 上下文适配与追问路由。推荐核心保持无状态、可独立调用，对话状态由应用层管理，推荐核心只消费传入的 `ConversationContext`。本阶段不实现匹配/套磁/对比生成。
+实现 session/turn/fork 上下文校验、implicit intent 分类与 `ConversationContext` 组装。推荐核心保持无状态、
+可独立调用；R3 继续拥有五种 intent 的推荐执行语义，R5 不复制排序、过滤、same-field 或 oversample 逻辑。
+本阶段不实现 PostgreSQL 持久化，也不实现匹配/套磁/对比生成。
 
 ## 2. ConversationContext
 
@@ -30,6 +32,9 @@ ConversationContext
 `main_session_id`、`source_turn_id` 由应用层保存以表达 fork 关系，推荐核心只消费、不持久化。
 
 ## 3. intent 路由
+
+本表描述最终行为，但推荐执行仍委托 R3 core。R5 的输出是已校验的 route/context；除 `detail_followup`
+交给事实/生成服务外，不建立第二套推荐 pipeline。
 
 按 overview §10 的路由语义表执行：
 
@@ -64,6 +69,10 @@ intent 来源必须显式区分（overview §10）：
 - 持久化 session/turn/fork 关系与历史。
 - 传入脱敏后的 `ConversationContext` 与必要 `StudentContext`。
 - 写历史时只保存 response snapshot 所需的最小字段，避免把完整证据包与用户档案重复落库。
+
+R5 只定义 store-neutral repository port 与 fake；真实 PostgreSQL schema/repository 归 R7b。
+query-understanding/implicit intent 的 production LLM adapter 在 R5 落地；R6 generation 必须使用独立配置、
+timeout、连接池与 generation profile，不能复用请求级 mutable client state。
 
 ## 7. 验收标准
 

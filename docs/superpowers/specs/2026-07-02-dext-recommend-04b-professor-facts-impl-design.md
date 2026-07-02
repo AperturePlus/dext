@@ -1,6 +1,6 @@
 # 阶段 4b：dext_recommend professor facts 实现设计
 
-> 状态：已实现；R4 adapter + reader + FactBundle 组装落地，单测全绿（tests/dext_recommend/ 全模块绿）；live ACTIVE-build 验收留待 R7 production acceptance
+> 状态：fixture/offline acceptance complete；R4 adapter + reader + 完整 FactBundle/精确 provenance 组装已通过 tests/dext_recommend/ 全模块回归；真实 ACTIVE-build 与生产接线尚未验收，严格留待 R7 production acceptance
 >
 > 高层目标：[阶段 4 professor facts](2026-06-30-dext-recommendation-04-professor-facts-design.md)
 >
@@ -103,4 +103,3 @@ SourceRef key 使用发布产物可重建标识，例如：
 - Neo4j live detail query、图遍历或跨导师关系解释。
 - detail cache、HTTP DTO、PostgreSQL user state。
 - LLM 文案生成、对话持久化或 production composition。
-

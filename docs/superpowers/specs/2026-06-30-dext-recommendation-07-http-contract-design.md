@@ -1,20 +1,22 @@
 # 阶段 7：dext_recommend HTTP/OpenAPI adapter
 
-> 状态：设计稿
+> 状态：历史高层设计；已拆分为 [R7a runtime](2026-07-02-dext-recommend-07a-runtime-composition-design.md)、[R7b HTTP/application state](2026-07-02-dext-recommend-07b-http-app-state-design.md)、[R7c production acceptance](2026-07-02-dext-recommend-07c-production-acceptance-design.md)
 >
 > 前置依赖：`docs/appside/openapi.yaml`；[阶段 3/4/5/6](2026-06-30-dext-recommendation-system-design.md)核心能力可用
 >
-> 后续阶段：无（本模块最后一步）
+> 后续阶段：R7a → R7b → R7c；仅 R7c 通过后允许受控发布
 
 ## 1. 目标
 
-实现 `/api/v1` HTTP adapter、权限控制、PostgreSQL 应用态用户数据接线与端到端契约测试。本阶段是推荐模块最后实现的一步，字段与路径以 `docs/appside/openapi.yaml` 为准；本阶段不做字段发明，只做字段映射与权限包装。
+本文保留 HTTP adapter、权限与 PostgreSQL application state 的高层边界。生产 runtime 接线、HTTP/application
+state 实现与真实上线验收分别由 R7a/R7b/R7c 承担。字段与路径以 `docs/appside/openapi.yaml` 为准；
+推荐模块只拥有推荐/chat/professor/profile/favorites/history/account 子集，不承诺实现 competition/preparation 全部路径。
 
 ## 2. 入口条件
 
 本阶段不得偏离 `docs/appside/openapi.yaml` 自行定义字段。若内部模型字段多于 OpenAPI，adapter 必须默认隐藏内部 diagnostics，只在契约允许的调试/运营模式下返回。
 
-- HTTP 框架骨架（FastAPI 或 aiohttp，框架不进入 `core`）。
+- HTTP 框架使用仓库已有 aiohttp，Pydantic v2 负责 DTO 校验；框架不进入 `core`。
 - adapter ↔ 内部模型的字段映射。
 - 权限与 PostgreSQL application state DB 接线点；本地开发默认使用 `docker/compose.yaml` 的 `postgres:16-alpine`，服务通过 `DEXT_APP_DATABASE_URL` 连接。
 
@@ -65,7 +67,7 @@ profile、session、fork、favorites、history 与远端资料删除由应用层
 
 ## 8. 契约测试
 
-- 端到端契约测试覆盖 §3 全部端点。
+- 端到端契约测试覆盖 §3 中由推荐模块拥有的端点；其他领域端点由对应模块验收。
 - adapter 字段映射与 OpenAPI 一致；契约变更触发测试失败。
 - 鉴权与 `include_contacts` 权限边界测试覆盖。
 - PostgreSQL repository 测试覆盖 owner scoping、匿名身份撤销、远端资料清理和幂等历史写入。
@@ -75,7 +77,7 @@ profile、session、fork、favorites、history 与远端资料删除由应用层
 
 - adapter 字段映射与 `docs/appside/openapi.yaml` 一致。
 - HTTP handler 只有 adapter 与权限逻辑；排序/过滤/解释/证据/降权全部在 core，不在 handler。
-- `/api/v1` 全部端点契约测试通过；权限边界与联系方式开关测试覆盖。
+- 推荐模块拥有的 `/api/v1` 端点契约测试通过；权限边界与联系方式开关测试覆盖。
 - 应用层负责 PostgreSQL 中的 profile/session/favorites/history/远端资料删除；推荐核心不写用户数据。
 - 推荐核心测试可绕过 HTTP 直接调用，fake ports 不依赖真实外部服务。
 - 日志符合 §7 隐私边界；AI trace 仅显式开关下采样。

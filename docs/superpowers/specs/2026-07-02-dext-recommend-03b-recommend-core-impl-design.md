@@ -1,12 +1,12 @@
 # 阶段 3b：dext_recommend core 实现详设
 
-> 状态：实现完成（部分条款被 [3c R3 hardening](2026-07-02-dext-recommend-03c-r3-hardening-design.md) supersedes：§3.1 编排、§4.2 tie-break、§5.2 org_unit 降级、§8 explanation）
+> 状态：实现完成；部分条款被 [3c R3 hardening](2026-07-02-dext-recommend-03c-r3-hardening-design.md) supersede，R3 最终验收以 [3d closure](2026-07-02-dext-recommend-03d-r3-closure-design.md) 为准
 >
 > 日期：2026-07-02
 >
 > 前置依赖：[阶段 2 readiness](2026-06-30-dext-recommendation-02-readiness-design.md) 已落地（`ActiveBuildSnapshot` 可由 fake ports 构建，三端一致性 / coverage / org_unit 降级语义已实现）
 >
-> 后续阶段：[阶段 4 professor facts](2026-06-30-dext-recommendation-04-professor-facts-design.md)
+> 后续阶段：[R3d closure](2026-07-02-dext-recommend-03d-r3-closure-design.md) → [R4b professor facts](2026-07-02-dext-recommend-04b-professor-facts-impl-design.md)
 
 ## 1. 范围与目标
 

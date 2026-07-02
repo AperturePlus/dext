@@ -2,9 +2,9 @@
 
 > 状态：设计稿
 >
-> 前置依赖：[阶段 4 professor facts](2026-06-30-dext-recommendation-04-professor-facts-design.md)事实包 + [共享 grounded-generation](2026-06-30-dext-grounded-generation-design.md)可用
+> 前置依赖：[R4b professor facts](2026-07-02-dext-recommend-04b-professor-facts-impl-design.md) 事实包 + [共享 grounded-generation](2026-06-30-dext-grounded-generation-design.md) 已实现
 >
-> 后续阶段：[HTTP/OpenAPI adapter](2026-06-30-dext-recommendation-07-http-contract-design.md)
+> 后续阶段：与 [Conversation adapter](2026-06-30-dext-recommendation-05-conversation-design.md) 可并行；共同进入 [R7a runtime](2026-07-02-dext-recommend-07a-runtime-composition-design.md)
 
 ## 1. 目标
 
@@ -18,7 +18,8 @@ async draft_outreach_email(entity_id, student_context, tone, language) -> Outrea
 async compare_professors(entity_ids[2..3], student_context, evidence_policy) -> ProfessorComparison
 ```
 
-三个服务都走共享 `LLMGenerationPort`，传入阶段 4 的 `ProfessorDetail`（实现共享 `FactBundle` 接口）作为 `fact_bundle`。
+三个服务都走共享 `LLMGenerationPort`。服务入口固定一次 `ActiveBuildSnapshot`，通过 R4 读取
+`ProfessorDetail`，只把 `ProfessorDetail.fact_bundle` 交给生成管线；展示 DTO 本身不是 `FactBundle`。
 
 ## 3. 匹配分析
 
@@ -46,7 +47,7 @@ async compare_professors(entity_ids[2..3], student_context, evidence_policy) -> 
 每个服务统一走（由共享契约提供，本阶段只装配）：
 
 ```text
-ProfessorDetail(s) -> FactBundle trimming -> await LLMGenerationPort.generate
+pin snapshot -> ProfessorDetail.fact_bundle -> FactBundle trimming -> await LLMGenerationPort.generate
   -> CitationValidator -> SafetyGuard -> GenerationResult
 ```
 

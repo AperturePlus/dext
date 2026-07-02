@@ -1,8 +1,8 @@
 # 阶段 4：dext_recommend professor facts
 
-> 状态：设计稿
+> 状态：高层设计基线；实现细节由 [R4b professor facts 实现设计](2026-07-02-dext-recommend-04b-professor-facts-impl-design.md) supersede
 >
-> 前置依赖：[阶段 3 recommend core](2026-06-30-dext-recommendation-03-recommend-core-design.md)候选可解释
+> 前置依赖：[R3d closure](2026-07-02-dext-recommend-03d-r3-closure-design.md) 验收完成
 >
 > 后续阶段：[Conversation adapter](2026-06-30-dext-recommendation-05-conversation-design.md)、[Auxiliary generation](2026-06-30-dext-recommendation-06-auxiliary-generation-design.md)
 
@@ -63,18 +63,22 @@ ProfessorDetail
 
 ## 6. 与共享契约对齐
 
-`ProfessorDetail` 实现 overview 中共享 `FactBundle` 接口（`build_id`、`subject_id`、`facts`、`source_refs`），使阶段 6 的匹配/套磁/对比可直接消费。`Subject_id` = `entity_id`，`facts` 由 identity/eligibility/research_statement 等映射为 `FactItem`。
+`ProfessorDetail` 通过组合持有共享 `FactBundle`，不继承、不冒充 `FactBundle`。`FactBundle.subject_id = entity_id`，
+`facts` 由 identity/eligibility/research_statement 等映射为 `FactItem`；阶段 6 只消费该 bundle。
+精确模型与不变量以 R4b 为准。
 
 ## 7. 缓存
 
-允许热门 `ProfessorDetail` 只读缓存，key 必须包含 `build_id`、`entity_id` 和 `profile_hash`；`profile_hash=null` 时必须禁用该条缓存或使用短 TTL 降级缓存，避免不同导师详情碰撞。snapshot 切换时缓存失效，不混合版本。
+R4 默认不实现缓存，先保证 pinned-build 读取与证据组装正确。若 R7 根据真实负载增加只读缓存，必须作为
+adapter decorator 落地，key 包含 `build_id`、`entity_id`、`profile_hash`；`profile_hash=null` 时禁用缓存，
+snapshot 切换不得混合版本。
 
 ## 8. 验收标准
 
 - `ProfessorDetail` 可按 `entity_id` 组装，字段覆盖 overview §13 全部块。
 - 每条事实附 `SourceRef`，可回溯到 catalog/Neo4j 证据；缺证据显式标注 `uncertain`。
 - 联系方式默认不返回；`include_contacts` + 权限校验通过才返回；缺权限返回 `unauthorized_contact`。
-- `ProfessorDetail` 实现共享 `FactBundle` 接口，可被阶段 6 直接消费。
-- 缓存 key 基于 `build_id` + `entity_id` + `profile_hash`；`profile_hash=null` 不产生跨导师缓存碰撞，snapshot 切换不混合版本。
+- `ProfessorDetail.fact_bundle` 是必需的共享事实输入；阶段 6 不把展示 DTO 本身当作 `FactBundle`。
+- R4 adapter 在无缓存条件下通过全部正确性测试；任何后续缓存必须满足 §7 的 key 与失效约束。
 - 单测可用 fake `ProfessorFactPort` 覆盖组装逻辑，不依赖真实 catalog。
 - `get_detail`/`hydrate` 及详情服务入口为 async，调用方必须 `await`。
