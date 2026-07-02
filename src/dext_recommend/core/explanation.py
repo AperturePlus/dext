@@ -39,8 +39,11 @@ def build_explanation(
 ) -> ExplanationResult:
     if detail is None:
         return ExplanationResult(
-            short_reasons=(), evidence_refs=(), matched_topics=(),
-            matched_statements=(), matched_publications=(),
+            short_reasons=("综合匹配信号较高；当前缺少可回溯详情证据",),
+            evidence_refs=(),
+            matched_topics=(),
+            matched_statements=(),
+            matched_publications=(),
             weak_explanation=True,
             missing_reason="ProfessorDetail unavailable in ACTIVE build",
         )

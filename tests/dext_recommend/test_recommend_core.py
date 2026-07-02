@@ -687,3 +687,40 @@ async def test_recommend_empty_new_ids_skips_hydrate():
     ids = [r.entity_id for r in resp.results]
     assert set(ids) == {"e1", "e2"}
 
+
+async def test_explanation_every_result_has_reason():
+    """Every result in resp.results has len(short_reasons) >= 1, including
+    candidates whose ProfessorDetail is missing."""
+    from dext_recommend import VectorHit
+    hits = [
+        VectorHit("e_with_detail", 0.90, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_cv"],
+        }),
+        VectorHit("e_no_detail", 0.85, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_nlp"],
+        }),
+    ]
+    facts = {
+        "e_with_detail": _fact("e_with_detail"),
+        "e_no_detail": _fact("e_no_detail", topic_ids=("topic_nlp",)),
+    }
+    # e_no_detail deliberately omitted from details -> get_detail raises
+    # KeyError -> fetch_details returns None -> build_explanation gets None.
+    details = {"e_with_detail": _detail("e_with_detail")}
+    core = _core(hits=hits, facts=facts, details=details)
+    resp = await core.recommend(RecommendRequest(query_text="NLP"))
+    assert len(resp.results) >= 1
+    # every result has at least one short_reason
+    assert all(c.short_reasons for c in resp.results)
+    # e_no_detail is in results with a non-empty reason despite missing detail
+    ids = [r.entity_id for r in resp.results]
+    assert "e_no_detail" in ids
+    no_detail_card = next(r for r in resp.results if r.entity_id == "e_no_detail")
+    assert len(no_detail_card.short_reasons) >= 1
+

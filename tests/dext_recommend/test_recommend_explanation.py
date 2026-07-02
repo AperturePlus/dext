@@ -31,7 +31,30 @@ def test_build_explanation_without_detail_marks_weak():
     result = build_explanation(entry, fact, None, query_terms=("NLP",))
     assert result.weak_explanation is True
     assert result.missing_reason is not None
-    assert result.short_reasons == ()
+    # Previously pinned the empty-reason bug; spec §8 requires >= 1 item.
+    assert len(result.short_reasons) >= 1
+    assert result.weak_explanation is True
+    assert "缺少可回溯详情证据" in result.short_reasons[0]
+
+
+def test_explanation_detail_none_has_qualified_reason():
+    from dext_recommend.core.explanation import build_explanation
+    from dext_recommend.core.rerank import RerankEntry
+    entry = RerankEntry(
+        entity_id="e1", score=0.42,
+        score_components={"semantic_score": 0.5, "topic_statement_score": 0.0,
+                          "student_fit_score": 0.0, "eligibility_score": 0.0,
+                          "provenance_score": 0.0, "completeness_score": 0.0,
+                          "same_field_overlap": 0.0, "same_field_boost": 0.0},
+        match_level="possible", evidence_count=0,
+    )
+    expl = build_explanation(entry, None, None, query_terms=("cv",))
+    assert len(expl.short_reasons) >= 1
+    assert expl.weak_explanation is True
+    assert expl.missing_reason is not None
+    # must not present the composite entry.score as a semantic score
+    assert "semantic" not in expl.short_reasons[0].lower()
+    assert "score=" not in expl.short_reasons[0]
 
 
 def test_build_explanation_reasons_traceable_to_evidence():
