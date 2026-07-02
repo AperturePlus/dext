@@ -11,11 +11,13 @@ from dataclasses import replace
 from typing import Literal
 
 from dext_grounded import (
-    ConstrainedGenerationPipeline, ContentClass, FactBundle, GenerationResult,
-    GenerationWarning,
+    ConstrainedGenerationPipeline, ContentClass, FactBundle,
 )
-from dext_grounded._output import empty_output, remove_output_fragments
 from dext_recommend.config import RecommendSettings
+from dext_recommend.core.generation_support import (
+    map_generation_warnings as _map_generation_warnings,
+    validate_fact_index_support as _detail_support_validator,
+)
 from dext_recommend.errors import RecommendationErrorCode
 from dext_recommend.models import (
     ConversationContext, ConversationDispatchResult, DetailFollowupResponse,
@@ -137,65 +139,6 @@ def _merge_stored_context(current: ConversationContext,
 
 def _warn(code: RecommendationErrorCode, message: str, *, severity: str = "warning") -> RecommendationWarning:
     return RecommendationWarning(code=code.value, message=message, severity=severity)
-
-
-def _ref_key(ref) -> tuple[str, str, str]:
-    return (ref.doc_path, ref.heading_path, ref.chunk_hash)
-
-
-def _detail_support_validator(result: GenerationResult, bundle: FactBundle) -> GenerationResult:
-    """Enforce fact-index-to-reference ownership before citation validation."""
-    from dataclasses import replace as dc_replace
-    output_claims = result.output.get("claims", ()) if isinstance(result.output, dict) else ()
-    kept = []
-    dropped: list[str] = []
-    warnings = list(result.warnings)
-    for index, claim in enumerate(result.claims):
-        raw = output_claims[index] if index < len(output_claims) and isinstance(output_claims[index], dict) else {}
-        if claim.content_class == ContentClass.FACT:
-            indices = raw.get("fact_indices")
-            valid_indices = (
-                isinstance(indices, list) and bool(indices)
-                and all(isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(bundle.facts)
-                        for i in indices)
-            )
-            allowed = set()
-            if valid_indices:
-                for fact_index in indices:
-                    allowed.update(_ref_key(ref) for ref in bundle.facts[fact_index].source_refs)
-            refs_valid = bool(claim.fact_refs) and all(_ref_key(ref) in allowed for ref in claim.fact_refs)
-            if not valid_indices or not refs_valid:
-                dropped.append(claim.text)
-                warnings.append(GenerationWarning(
-                    code="insufficient_facts", message="fact claim failed support-map validation",
-                    claim_text=claim.text,
-                ))
-                continue
-        elif claim.content_class == ContentClass.UNCERTAIN and claim.fact_refs:
-            claim = dc_replace(claim, fact_refs=())
-        kept.append(claim)
-    output = remove_output_fragments(result.output, tuple(dropped))
-    if result.claims and not kept:
-        warnings.append(GenerationWarning(
-            code="no_grounded_output", message="all generated claims failed grounding",
-        ))
-        output = empty_output(result.output)
-    return dc_replace(result, claims=tuple(kept), output=output, warnings=warnings)
-
-
-def _map_generation_warnings(warnings) -> tuple[RecommendationWarning, ...]:
-    mapped = []
-    for warning in warnings:
-        code = warning.code
-        severity = "warning"
-        if code in {"generation_parse_error", "json_parse_failed", "schema_validation_failed"}:
-            code, severity = RecommendationErrorCode.GENERATION_PARSE_ERROR.value, "error"
-        elif code == "generation_unavailable":
-            code, severity = RecommendationErrorCode.FOLLOWUP_GENERATION_UNAVAILABLE.value, "error"
-        elif code == "no_grounded_output":
-            severity = "error"
-        mapped.append(RecommendationWarning(code=code, message=warning.message, severity=severity))
-    return tuple(mapped)
 
 
 class ConversationDispatcher:
@@ -380,6 +323,12 @@ class ConversationDispatcher:
                               "implicit output not a dict")
         intent = output.get("intent")
         confidence = output.get("confidence")
+        if any(w.code == "content_policy_refusal" for w in result.warnings):
+            return ctx, _warn(
+                RecommendationErrorCode.CONTENT_POLICY_REFUSAL,
+                "request refused by content policy",
+                severity="error",
+            )
         blocking = {"generation_unavailable", "generation_parse_error",
                     "json_parse_failed", "schema_validation_failed", "unsafe_advice"}
         if any(w.code in blocking for w in result.warnings):
@@ -429,6 +378,7 @@ class ConversationDispatcher:
                 generation_profile_version=gen_profile.version,
                 safety_domain="recommend", include_contacts=False,
                 operation_id="detail_followup",
+                subject_kind="mentor",
                 support_validator=_detail_support_validator,
             ), timeout=op.timeout)
         except Exception:

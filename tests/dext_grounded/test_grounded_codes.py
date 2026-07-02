@@ -20,13 +20,19 @@ EXPECTED_CODES = {
     "UNSAFE_ADVICE": "unsafe_advice",
     "UNAUTHORIZED_CONTACT": "unauthorized_contact",
     "STALE_FACT": "stale_fact",
+    "CONTENT_POLICY_REFUSAL": "content_policy_refusal",
+    "POLITICAL_SENSITIVE": "political_sensitive",
+    "PERSONAL_ATTACK": "personal_attack",
+    "SEXUAL_CONTENT": "sexual_content",
+    "VIOLENT_CONTENT": "violent_content",
+    "MENTOR_ATTACK": "mentor_attack",
     "GENERATION_UNAVAILABLE": "generation_unavailable",
     "GENERATION_PARSE_ERROR": "generation_parse_error",
     "INSUFFICIENT_FACTS": "insufficient_facts",
 }
 
 
-def test_all_twelve_codes_exist_with_correct_string_values():
+def test_all_codes_exist_with_correct_string_values():
     for member_name, expected_value in EXPECTED_CODES.items():
         assert hasattr(GenerationWarningCode, member_name), (
             f"GenerationWarningCode missing member {member_name!r}"
@@ -53,8 +59,8 @@ def test_each_code_value_is_non_empty_string():
         assert " " not in member.value
 
 
-def test_exactly_twelve_codes():
-    assert len(list(GenerationWarningCode)) == 12
+def test_exactly_expected_codes():
+    assert len(list(GenerationWarningCode)) == len(EXPECTED_CODES)
 
 
 def test_enum_is_str_enum():

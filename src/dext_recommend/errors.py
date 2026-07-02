@@ -50,6 +50,13 @@ class RecommendationErrorCode(str, Enum):
     FOLLOWUP_GENERATION_UNAVAILABLE = "followup_generation_unavailable"
     GENERATION_PARSE_ERROR = "generation_parse_error"
     NO_GROUNDED_OUTPUT = "no_grounded_output"
+    INSUFFICIENT_STUDENT_CONTEXT = "insufficient_student_context"
+    CONTENT_POLICY_REFUSAL = "content_policy_refusal"
+    POLITICAL_SENSITIVE = "political_sensitive"
+    PERSONAL_ATTACK = "personal_attack"
+    SEXUAL_CONTENT = "sexual_content"
+    VIOLENT_CONTENT = "violent_content"
+    MENTOR_ATTACK = "mentor_attack"
 
 
 @dataclass(frozen=True, slots=True)

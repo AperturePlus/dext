@@ -49,6 +49,21 @@ def _profile():
                 "system_prompt": "detail prompt",
                 "json_schema": {"type": "object"}, "timeout": 15.0, "token_budget": 2048,
             },
+            "match_analysis": {
+                "system_prompt_id": "dext_recommend.match_analysis.v1",
+                "system_prompt": "match prompt",
+                "json_schema": {"type": "object"}, "timeout": 15.0, "token_budget": 2048,
+            },
+            "outreach_email": {
+                "system_prompt_id": "dext_recommend.outreach_email.v1",
+                "system_prompt": "email prompt",
+                "json_schema": {"type": "object"}, "timeout": 15.0, "token_budget": 2048,
+            },
+            "professor_comparison": {
+                "system_prompt_id": "dext_recommend.professor_comparison.v1",
+                "system_prompt": "compare prompt",
+                "json_schema": {"type": "object"}, "timeout": 20.0, "token_budget": 3072,
+            },
         },
     })
 

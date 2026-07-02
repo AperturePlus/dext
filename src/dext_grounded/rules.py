@@ -12,6 +12,20 @@ import yaml
 
 
 @dataclass(frozen=True, slots=True)
+class ContentPolicyCategoryRule:
+    patterns: tuple[str, ...]
+    subject_terms: tuple[str, ...] = ()
+    attack_terms: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ContentPolicyRules:
+    refusal_message: str
+    safe_alternative: str
+    categories: dict[str, ContentPolicyCategoryRule]
+
+
+@dataclass(frozen=True, slots=True)
 class CompetitionWhitelistMislabelRule:
     report_dir: str
     fake_whitelist_label: str
@@ -24,6 +38,7 @@ class SafetyRules:
     unsafe_advice_patterns: tuple[str, ...]
     contact_regexes: tuple[str, ...]
     stale_patterns: tuple[str, ...]
+    content_policy: ContentPolicyRules
     competition_report_dir_whitelist_mislabel: CompetitionWhitelistMislabelRule
 
 
@@ -88,6 +103,12 @@ def _as_frozenset(raw: object, key: str) -> frozenset[str]:
     return frozenset(str(item) for item in raw)
 
 
+def _as_optional_tuple(raw: object, key: str) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    return _as_tuple(raw, key)
+
+
 def _parse_completeness_buckets(raw: object) -> CompletenessBuckets:
     if not isinstance(raw, dict):
         raise ValueError("grounded rules completeness_buckets must be a mapping")
@@ -109,6 +130,48 @@ def _parse_completeness_buckets(raw: object) -> CompletenessBuckets:
     if not any(name == "none" for name, _ in pairs):
         pairs.append(("none", 0.0))
     return CompletenessBuckets(thresholds=tuple(pairs))
+
+
+def _parse_content_policy(raw: object) -> ContentPolicyRules:
+    if not isinstance(raw, dict):
+        raise ValueError("grounded safety content_policy must be a mapping")
+    required = {"refusal_message", "safe_alternative", "categories"}
+    missing = sorted(required - raw.keys())
+    if missing:
+        raise ValueError("grounded safety content_policy missing keys: " + ", ".join(missing))
+    categories_raw = raw["categories"]
+    if not isinstance(categories_raw, dict):
+        raise ValueError("grounded safety content_policy.categories must be a mapping")
+    required_categories = {
+        "political_sensitive", "personal_attack", "sexual_content",
+        "violent_content", "mentor_attack",
+    }
+    missing_categories = sorted(required_categories - categories_raw.keys())
+    if missing_categories:
+        raise ValueError(
+            "grounded safety content_policy.categories missing keys: "
+            + ", ".join(missing_categories)
+        )
+    categories: dict[str, ContentPolicyCategoryRule] = {}
+    for name, cfg in categories_raw.items():
+        if not isinstance(cfg, dict):
+            raise ValueError(f"grounded safety content_policy category {name!r} must be a mapping")
+        if "patterns" not in cfg:
+            raise ValueError(f"grounded safety content_policy category {name!r} missing patterns")
+        categories[str(name)] = ContentPolicyCategoryRule(
+            patterns=_as_tuple(cfg["patterns"], f"content_policy.{name}.patterns"),
+            subject_terms=_as_optional_tuple(
+                cfg.get("subject_terms"), f"content_policy.{name}.subject_terms"
+            ),
+            attack_terms=_as_optional_tuple(
+                cfg.get("attack_terms"), f"content_policy.{name}.attack_terms"
+            ),
+        )
+    return ContentPolicyRules(
+        refusal_message=str(raw["refusal_message"]),
+        safe_alternative=str(raw["safe_alternative"]),
+        categories=categories,
+    )
 
 
 def parse_grounded_rules(raw: dict[str, Any]) -> GroundedRules:
@@ -133,7 +196,7 @@ def parse_grounded_rules(raw: dict[str, Any]) -> GroundedRules:
 
     safety_required = {
         "probability_patterns", "unsafe_advice_patterns", "contact_regexes",
-        "stale_patterns", "competition_report_dir_whitelist_mislabel",
+        "stale_patterns", "content_policy", "competition_report_dir_whitelist_mislabel",
     }
     missing_safety = sorted(safety_required - safety.keys())
     if missing_safety:
@@ -171,6 +234,7 @@ def parse_grounded_rules(raw: dict[str, Any]) -> GroundedRules:
             ),
             contact_regexes=_as_tuple(safety["contact_regexes"], "safety.contact_regexes"),
             stale_patterns=_as_tuple(safety["stale_patterns"], "safety.stale_patterns"),
+            content_policy=_parse_content_policy(safety["content_policy"]),
             competition_report_dir_whitelist_mislabel=CompetitionWhitelistMislabelRule(
                 report_dir=str(competition_rule["report_dir"]),
                 fake_whitelist_label=str(competition_rule["fake_whitelist_label"]),
@@ -195,6 +259,8 @@ def load_grounded_rules() -> GroundedRules:
 __all__ = [
     "CompletenessBuckets",
     "CompetitionWhitelistMislabelRule",
+    "ContentPolicyCategoryRule",
+    "ContentPolicyRules",
     "GroundedRules",
     "SafetyRules",
     "load_grounded_rules",

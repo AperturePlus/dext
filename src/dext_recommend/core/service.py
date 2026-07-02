@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from dext_grounded import SafetyGuard
 from dext_recommend.config import RecommendSettings
 from dext_recommend.errors import RecommendationErrorCode
 from dext_recommend.models import (
@@ -168,6 +169,26 @@ class RecommendationCore:
             resp = _error_response(
                 snapshot=None, profile=None, embedding_fingerprint=None,
                 warning=_warn(RecommendationErrorCode.INVALID_REQUEST, err, severity="error"),
+                phase_diagnostics=(),
+            )
+            validate(resp)
+            return resp
+
+        refusal = SafetyGuard().inspect_input(
+            {"query_text": request.query_text},
+            domain="recommend",
+            operation="recommendation",
+            subject_kind="mentor",
+            output_template="",
+        )
+        if refusal is not None:
+            resp = _error_response(
+                snapshot=None, profile=None, embedding_fingerprint=None,
+                warning=_warn(
+                    RecommendationErrorCode.CONTENT_POLICY_REFUSAL,
+                    refusal.warnings[0].message,
+                    severity="error",
+                ),
                 phase_diagnostics=(),
             )
             validate(resp)

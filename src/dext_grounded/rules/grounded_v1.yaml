@@ -54,11 +54,89 @@ warning_messages:
   unsafe_advice: ERROR
   unauthorized_contact: output contained contact info without include_contacts
   stale_fact: downgraded stale fact to uncertain
+  content_policy_refusal: 我不能生成或传播政治敏感、人身攻击、色情暴力或攻击导师的内容；可以改为基于公开事实讨论研究方向、招生信息、沟通策略或学习规划。
+  political_sensitive: refused political-sensitive content
+  personal_attack: refused personal attack content
+  sexual_content: refused sexual content
+  violent_content: refused violent content
+  mentor_attack: refused mentor attack content
   generation_unavailable: generation unavailable
   generation_parse_error: generation parse error
   insufficient_facts: insufficient facts
 
 safety:
+  content_policy:
+    refusal_message: 我不能生成或传播政治敏感、人身攻击、色情暴力或攻击导师的内容。
+    safe_alternative: 可以改为基于公开事实讨论研究方向、招生信息、沟通策略、学习规划或礼貌沟通措辞。
+    categories:
+      political_sensitive:
+        patterns:
+          - 政治敏感
+          - 敏感政治
+          - 政治攻击
+          - 推翻政府
+          - 煽动颠覆
+          - 国家领导人
+          - 党和国家
+      personal_attack:
+        patterns:
+          - 人身攻击
+          - 傻逼
+          - 垃圾
+          - 废物
+          - 人渣
+          - 弱智
+          - 蠢货
+          - 侮辱他
+          - 骂他
+          - 骂她
+      sexual_content:
+        patterns:
+          - 色情
+          - 黄图
+          - 裸照
+          - 性行为
+          - 性暗示
+          - 三级片
+      violent_content:
+        patterns:
+          - 暴力
+          - 打死
+          - 杀死
+          - 砍死
+          - 伤害他
+          - 伤害她
+          - 血腥
+      mentor_attack:
+        patterns:
+          - 攻击导师
+          - 侮辱导师
+          - 骂导师
+          - 导师垃圾
+          - 导师很垃圾
+          - 导师人品差
+          - 导师不行
+          - 避雷导师
+        subject_terms:
+          - 导师
+          - 教授
+          - 老师
+          - mentor
+          - professor
+        attack_terms:
+          - 垃圾
+          - 傻逼
+          - 废物
+          - 人渣
+          - 人品差
+          - 不行
+          - 避雷
+          - 骂
+          - 侮辱
+          - 攻击
+          - 贬低
+          - 嘲讽
+
   probability_patterns:
     - 录取概率
     - 保研概率

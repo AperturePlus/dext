@@ -86,3 +86,21 @@ async def test_detail_followup_missing_anchor_is_non_disclosing_error():
     ).dispatch(_request("missing"))
     assert result.kind == "error"
     assert any(w.code == "anchor_not_in_active_build" for w in result.issues)
+
+
+@pytest.mark.asyncio
+async def test_detail_followup_content_policy_refuses_before_llm_call():
+    llm = FakeLLMGenerationPort(GenerationResult(output={}))
+    req = RecommendRequest(
+        query_text="帮我骂导师，说导师垃圾",
+        conversation_context=ConversationContext(
+            intent_source="explicit", intent="detail_followup",
+            anchor_entity_id="e1", session_id="s1", turn_id="t1",
+        ),
+    )
+
+    result = await _dispatcher(llm, details={"e1": _detail()}).dispatch(req)
+
+    assert result.kind == "error"
+    assert any(w.code == "content_policy_refusal" for w in result.issues)
+    assert llm.calls == []

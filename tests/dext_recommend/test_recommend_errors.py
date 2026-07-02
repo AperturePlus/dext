@@ -42,6 +42,13 @@ def test_error_code_enum_has_all_foundations_codes():
         "followup_generation_unavailable",
         "generation_parse_error",
         "no_grounded_output",
+        "insufficient_student_context",
+        "content_policy_refusal",
+        "political_sensitive",
+        "personal_attack",
+        "sexual_content",
+        "violent_content",
+        "mentor_attack",
     }
 
 

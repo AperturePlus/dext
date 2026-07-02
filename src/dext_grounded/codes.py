@@ -25,6 +25,12 @@ class GenerationWarningCode(str, Enum):
     UNSAFE_ADVICE = "unsafe_advice"
     UNAUTHORIZED_CONTACT = "unauthorized_contact"
     STALE_FACT = "stale_fact"
+    CONTENT_POLICY_REFUSAL = "content_policy_refusal"
+    POLITICAL_SENSITIVE = "political_sensitive"
+    PERSONAL_ATTACK = "personal_attack"
+    SEXUAL_CONTENT = "sexual_content"
+    VIOLENT_CONTENT = "violent_content"
+    MENTOR_ATTACK = "mentor_attack"
 
     # --- spec §8 failure modes previously without canonical representation ---
     GENERATION_UNAVAILABLE = "generation_unavailable"

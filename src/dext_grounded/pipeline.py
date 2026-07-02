@@ -56,8 +56,18 @@ class ConstrainedGenerationPipeline:
         safety_domain: str,
         include_contacts: bool = False,
         operation_id: str | None = None,
+        subject_kind: str | None = None,
         support_validator: SupportValidator | None = None,
     ) -> GenerationResult:
+        preflight = self._safety.inspect_input(
+            user_inputs,
+            domain=safety_domain,
+            operation=operation_id,
+            subject_kind=subject_kind,
+            output_template={} if json_schema is not None else "",
+        )
+        if preflight is not None:
+            return preflight
         raw = await self._llm_port.generate(
             system_prompt_id=system_prompt_id,
             user_inputs=user_inputs,
@@ -72,6 +82,7 @@ class ConstrainedGenerationPipeline:
         result = self._citation.validate(result, fact_bundle, student_context)
         result = self._safety.inspect(
             result, domain=safety_domain, include_contacts=include_contacts,
+            operation=operation_id, subject_kind=subject_kind,
         )
         return result
 

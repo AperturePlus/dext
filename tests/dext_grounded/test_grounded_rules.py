@@ -46,10 +46,36 @@ def test_grounded_rule_hash_is_stable():
         "completeness_buckets": {"high": 0.5, "medium": 0.2, "low": 0.01, "none": 0.0},
         "warning_messages": {"fact_ref_missing": "message"},
         "safety": {
+            "content_policy": {
+                "refusal_message": "refuse",
+                "safe_alternative": "safe alternative",
+                "categories": {
+                    "political_sensitive": {"patterns": []},
+                    "personal_attack": {"patterns": []},
+                    "sexual_content": {"patterns": []},
+                    "violent_content": {"patterns": []},
+                    "mentor_attack": {
+                        "patterns": [],
+                        "subject_terms": ["导师"],
+                        "attack_terms": ["垃圾"],
+                    },
+                },
+            },
             "probability_patterns": [],
             "unsafe_advice_patterns": [],
             "contact_regexes": [],
             "stale_patterns": [],
+            "content_policy": {
+                "refusal_message": "refuse",
+                "safe_alternative": "safe",
+                "categories": {
+                    "political_sensitive": {"patterns": []},
+                    "personal_attack": {"patterns": []},
+                    "sexual_content": {"patterns": []},
+                    "violent_content": {"patterns": []},
+                    "mentor_attack": {"patterns": []},
+                },
+            },
             "competition_report_dir_whitelist_mislabel": {
                 "report_dir": "report",
                 "fake_whitelist_label": "label",
@@ -58,6 +84,17 @@ def test_grounded_rule_hash_is_stable():
         },
     }
     assert parse_grounded_rules(raw).manifest_hash == parse_grounded_rules(raw).manifest_hash
+
+
+def test_content_policy_rules_are_required_and_loaded():
+    rules = load_grounded_rules()
+    categories = rules.safety.content_policy.categories
+    assert set(categories) >= {
+        "political_sensitive", "personal_attack", "sexual_content",
+        "violent_content", "mentor_attack",
+    }
+    assert "导师" in categories["mentor_attack"].subject_terms
+    assert rules.safety.content_policy.refusal_message
 
 
 def test_warning_message_codes_are_canonical():
