@@ -33,19 +33,30 @@ class RankingProfile:
     same_field_boost_max: float
 
     def __post_init__(self) -> None:
+        import math
         if not self.version:
             raise ValueError("RankingProfile.version must be non-empty")
         missing = [k for k in _REQUIRED_WEIGHTS if k not in self.weights]
         if missing:
             raise ValueError(f"RankingProfile.weights missing: {missing}")
+        for k in _REQUIRED_WEIGHTS:
+            w = self.weights[k]
+            if not isinstance(w, (int, float)) or isinstance(w, bool):
+                raise ValueError(f"RankingProfile.weights[{k!r}] must be a number, got {w!r}")
+            if math.isnan(w) or math.isinf(w):
+                raise ValueError(f"RankingProfile.weights[{k!r}] must be finite, got {w!r}")
+            if w < 0:
+                raise ValueError(f"RankingProfile.weights[{k!r}] must be non-negative, got {w!r}")
         total = sum(self.weights[k] for k in _REQUIRED_WEIGHTS)
-        if abs(total - 1.0) > _WEIGHT_SUM_TOLERANCE:
+        if math.isnan(total) or abs(total - 1.0) > _WEIGHT_SUM_TOLERANCE:
             raise ValueError(
                 f"RankingProfile.weights must sum to 1.0±{_WEIGHT_SUM_TOLERANCE}, got {total}"
             )
         steps = tuple(self.oversample_steps)
         if not steps or any(steps[i] >= steps[i + 1] for i in range(len(steps) - 1)):
             raise ValueError("RankingProfile.oversample_steps must be strictly increasing")
+        if any(s <= 0 for s in steps):
+            raise ValueError("RankingProfile.oversample_steps must all be positive")
         if self.rrf_k < 1:
             raise ValueError("RankingProfile.rrf_k must be >= 1")
         if self.detail_rerank_window < 1:

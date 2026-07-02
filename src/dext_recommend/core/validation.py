@@ -48,6 +48,7 @@ def make_error_response(
     *, build_id: str, ranking_profile_version: str, embedding_fingerprint: str,
     taxonomy_version: str | None, warning: RecommendationWarning,
     phase_diagnostics: tuple[PhaseDiagnostic, ...] = (),
+    prior_warnings: tuple[RecommendationWarning, ...] = (),
 ) -> RecommendResponse:
     qu = QueryUnderstanding(
         research_interests=(), preferred_universities=(), preferred_cities=(),
@@ -59,11 +60,12 @@ def make_error_response(
         query_length=0, language_summary=None, filter_summary=None,
         recall_count=0, post_filter_count=0, returned_count=0,
     )
+    warnings = tuple(prior_warnings) + (warning,)
     return RecommendResponse(
         build_id=build_id, ranking_profile_version=ranking_profile_version,
         embedding_fingerprint=embedding_fingerprint, taxonomy_version=taxonomy_version,
         query_understanding=qu, query=diag, results=(),
-        suggested_followups=(), warnings=(warning,),
+        suggested_followups=(), warnings=warnings,
         phase_diagnostics=phase_diagnostics,
     )
 
