@@ -64,6 +64,10 @@ class RecommendSettings(BaseSettings):
     coverage_threshold_role_status: float = Field(default=0.95, gt=0.0, le=1.0)
     coverage_threshold_eligibility: float = Field(default=0.95, gt=0.0, le=1.0)
 
+    # R4 catalog fact reads
+    fact_read_timeout: float = Field(default=5.0, gt=0.0)
+    fact_chunk_size: int = Field(default=900, ge=1)
+
     def safe_snapshot(self) -> dict[str, object]:
         return self.model_dump(
             mode="json",
