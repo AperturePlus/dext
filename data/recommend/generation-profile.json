@@ -1,0 +1,50 @@
+{
+  "version": "generation-v1",
+  "grounded_rules_manifest_hash": "grules-v1-placeholder",
+  "operations": {
+    "implicit_intent": {
+      "system_prompt_id": "dext_recommend.implicit_intent.v1",
+      "json_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["intent", "confidence", "rationale"],
+        "properties": {
+          "intent": {"enum": ["new_search", "more_mentors", "same_field", "refine_direction", "detail_followup"]},
+          "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+          "rationale": {"type": "string", "maxLength": 200}
+        }
+      },
+      "timeout": 8.0,
+      "token_budget": 1024,
+      "confidence_threshold": 0.6,
+      "query_max_chars": 4096,
+      "summary_max_chars": 500
+    },
+    "detail_followup": {
+      "system_prompt_id": "dext_recommend.detail_followup.v1",
+      "json_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["answer", "claims"],
+        "properties": {
+          "answer": {"type": "string"},
+          "claims": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["text", "content_class", "fact_indices", "fact_refs"],
+              "properties": {
+                "text": {"type": "string"},
+                "content_class": {"enum": ["fact", "advice", "uncertain"]},
+                "fact_indices": {"type": "array", "items": {"type": "integer"}},
+                "fact_refs": {"type": "array"}
+              }
+            }
+          }
+        }
+      },
+      "timeout": 15.0,
+      "token_budget": 2048
+    }
+  }
+}

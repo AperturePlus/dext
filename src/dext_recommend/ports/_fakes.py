@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 from dext_recommend.ports.vector_search import AliasReadback, VectorHit
 from dext_recommend.readiness import ActiveBuildSnapshot
 
+from dext_recommend.core.generation_profile import RecommendGenerationProfile
+
 
 class FakeActiveSnapshotProvider:
     def __init__(self, snapshot: ActiveBuildSnapshot | None) -> None:
@@ -217,6 +219,16 @@ class FakeProfessorFactPort:
         return {eid: self._facts[eid] for eid in entity_ids if eid in self._facts}
 
 
+class FakeRecommendGenerationProfilePort:
+    def __init__(self, profile: "RecommendGenerationProfile") -> None:
+        self._profile = profile
+        self.read_profile_calls: list[dict] = []
+
+    async def read_profile(self, path: Path) -> "RecommendGenerationProfile":
+        self.read_profile_calls.append({"path": path})
+        return self._profile
+
+
 __all__ = [
     "FakeActiveSnapshotProvider",
     "FakeCatalogReleasePort",
@@ -224,6 +236,7 @@ __all__ = [
     "FakeProfessorFactPort",
     "FakeQueryEmbeddingPort",
     "FakeRankingProfilePort",
+    "FakeRecommendGenerationProfilePort",
     "FakeVectorReleasePort",
     "FakeVectorSearchPort",
 ]

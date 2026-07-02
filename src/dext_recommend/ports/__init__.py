@@ -1,8 +1,12 @@
 """Port protocols for validated snapshots and published artifact readback."""
+from dext_recommend.core.generation_profile import (
+    OperationConfig, RecommendGenerationProfile,
+)
 from dext_recommend.core.ranking_profile import RankingProfile
 from dext_recommend.ports.active_snapshot import ActiveSnapshotProvider
 from dext_recommend.ports.embedding import EmbeddingResult, QueryEmbeddingPort
 from dext_recommend.ports.generation import FakeLLMGenerationPort, LLMGenerationPort
+from dext_recommend.ports.generation_profile import RecommendGenerationProfilePort
 from dext_recommend.ports.professor_facts import (
     ProfessorDetail,
     ProfessorFact,
@@ -30,6 +34,7 @@ from dext_recommend.ports._fakes import (
     FakeProfessorFactPort,
     FakeQueryEmbeddingPort,
     FakeRankingProfilePort,
+    FakeRecommendGenerationProfilePort,
     FakeVectorReleasePort,
     FakeVectorSearchPort,
 )
@@ -47,11 +52,13 @@ __all__ = [
     "FakeProfessorFactPort",
     "FakeQueryEmbeddingPort",
     "FakeRankingProfilePort",
+    "FakeRecommendGenerationProfilePort",
     "FakeVectorReleasePort",
     "FakeVectorSearchPort",
     "GraphReleaseObservation",
     "GraphReleasePort",
     "LLMGenerationPort",
+    "OperationConfig",
     "PayloadCoverageObservation",
     "ProfessorDetail",
     "ProfessorFact",
@@ -62,6 +69,8 @@ __all__ = [
     "RankingProfile",
     "RankingProfilePort",
     "ReadinessSourceError",
+    "RecommendGenerationProfile",
+    "RecommendGenerationProfilePort",
     "VectorHit",
     "VectorReleaseObservation",
     "VectorReleasePort",
