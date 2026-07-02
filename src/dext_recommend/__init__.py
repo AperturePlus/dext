@@ -14,14 +14,16 @@ from dext_grounded import SourceRef, StudentContext
 
 from dext_recommend.config import RecommendSettings
 from dext_recommend.core import ConversationDispatcher, RecommendDeps, RecommendationCore
+from dext_recommend.generation import AuxiliaryGenerationService
 from dext_recommend.errors import (
     ErrorSeverity, RecommendationError, RecommendationErrorCode,
 )
 from dext_recommend.models import (
+    AuxiliaryGenerationResult,
     ConversationContext, ConversationDispatchResult, ConversationSummary,
-    DetailFollowupResponse, QueryDiagnostics, QueryUnderstanding, RecommendRequest,
-    RecommendResponse, RecommendationFilters, RecommendationWarning,
-    RecommendedProfessor,
+    DetailFollowupResponse, MatchAnalysis, OutreachDraft, ProfessorComparison,
+    QueryDiagnostics, QueryUnderstanding, RecommendRequest, RecommendResponse,
+    RecommendationFilters, RecommendationWarning, RecommendedProfessor,
 )
 from dext_recommend.ports import (
     ActiveSnapshotProvider, AliasReadback, CatalogReleaseObservation,
@@ -51,6 +53,8 @@ __all__: list[str] = [
     "ActiveBuildSnapshot",
     "ActiveSnapshotProvider",
     "AliasReadback",
+    "AuxiliaryGenerationResult",
+    "AuxiliaryGenerationService",
     "CatalogProfessorFactAdapter",
     "CatalogProfessorFactReader",
     "CatalogReleaseObservation",
@@ -79,10 +83,13 @@ __all__: list[str] = [
     "GraphReleaseObservation",
     "GraphReleasePort",
     "LLMGenerationPort",
+    "MatchAnalysis",
     "OperationConfig",
     "OpenAICompatibleLLMGenerationAdapter",
+    "OutreachDraft",
     "PayloadCoverageObservation",
     "ProfessorDetail",
+    "ProfessorComparison",
     "ProfessorFact",
     "ProfessorFactNotFound",
     "ProfessorFactPort",

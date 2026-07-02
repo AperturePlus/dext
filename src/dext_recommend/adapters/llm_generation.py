@@ -9,6 +9,7 @@ from typing import Any
 
 from dext_grounded import (
     Claim, ContentClass, GenerationResult, GenerationWarning, SourceRef,
+    UserContextRef,
 )
 from dext_recommend.core.generation_profile import RecommendGenerationProfile
 
@@ -88,6 +89,21 @@ def _source_ref(raw: Any) -> SourceRef | None:
         return None
 
 
+def _user_context_ref(raw: Any) -> UserContextRef | None:
+    if isinstance(raw, UserContextRef):
+        return raw
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return UserContextRef(
+            field=str(raw["field"]),
+            value_bucket=raw.get("value_bucket"),
+            quote_or_summary=str(raw["quote_or_summary"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _claims(output: dict) -> tuple[Claim, ...]:
     claims: list[Claim] = []
     for raw in output.get("claims", ()):
@@ -96,7 +112,12 @@ def _claims(output: dict) -> tuple[Claim, ...]:
         try:
             content_class = ContentClass(raw["content_class"])
             refs = tuple(ref for item in raw.get("fact_refs", ()) if (ref := _source_ref(item)))
-            claims.append(Claim(text=str(raw["text"]), content_class=content_class, fact_refs=refs))
+            claims.append(Claim(
+                text=str(raw["text"]),
+                content_class=content_class,
+                fact_refs=refs,
+                user_context_ref=_user_context_ref(raw.get("user_context_ref")),
+            ))
         except (KeyError, TypeError, ValueError):
             continue
     return tuple(claims)

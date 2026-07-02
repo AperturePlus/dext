@@ -13,7 +13,14 @@ from typing import Any
 from dext_grounded import load_grounded_rules
 from dext_recommend._immutable import freeze_mapping
 
-_REQUIRED_OPERATIONS = frozenset({"query_understanding", "implicit_intent", "detail_followup"})
+_REQUIRED_OPERATIONS = frozenset({
+    "query_understanding",
+    "implicit_intent",
+    "detail_followup",
+    "match_analysis",
+    "outreach_email",
+    "professor_comparison",
+})
 _REQUIRED_SCHEMA_FIELDS = {
     "query_understanding": frozenset({
         "research_interests", "preferred_universities", "preferred_cities",
@@ -22,6 +29,11 @@ _REQUIRED_SCHEMA_FIELDS = {
     }),
     "implicit_intent": frozenset({"intent", "confidence", "rationale"}),
     "detail_followup": frozenset({"answer", "claims"}),
+    "match_analysis": frozenset({"summary", "dimension_scores", "next_steps", "claims"}),
+    "outreach_email": frozenset({"subject", "body", "claims"}),
+    "professor_comparison": frozenset({
+        "summary", "professor_notes", "evidence_gaps", "claims",
+    }),
 }
 
 

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from dext_grounded import FactBundle
+from dext_grounded import FactBundle, StudentContext
 from dext_recommend.adapters import OpenAICompatibleLLMGenerationAdapter
 from tests.dext_recommend._recfixtures import generation_profile
 
@@ -74,3 +74,31 @@ async def test_adapter_returns_stable_parse_and_schema_warnings():
         dict(op.json_schema), profile.version,
     )
     assert invalid.warnings[0].code == "schema_validation_failed"
+
+
+@pytest.mark.asyncio
+async def test_adapter_parses_user_context_refs_on_claims():
+    profile = generation_profile()
+    op = profile.operations["detail_followup"]
+    client, _ = _client(json.dumps({
+        "answer": "You can mention your NLP background.",
+        "claims": [{
+            "text": "You can mention your NLP background.",
+            "content_class": "advice",
+            "fact_indices": [],
+            "fact_refs": [],
+            "user_context_ref": {
+                "field": "research_interests",
+                "value_bucket": None,
+                "quote_or_summary": "NLP",
+            },
+        }],
+    }))
+    adapter = OpenAICompatibleLLMGenerationAdapter(client=client, model="m", profile=profile)
+    result = await adapter.generate(
+        op.system_prompt_id, {}, FactBundle("b", "e1", (), ()),
+        StudentContext(research_interests=["NLP"]), dict(op.json_schema), profile.version,
+    )
+    assert len(result.claims) == 1
+    assert result.claims[0].user_context_ref is not None
+    assert result.claims[0].user_context_ref.field == "research_interests"

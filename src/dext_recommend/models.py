@@ -247,11 +247,119 @@ class ConversationDispatchResult:
                 raise ValueError("kind=error requires at least one severity=error issue")
 
 
+@dataclass(frozen=True, slots=True)
+class MatchAnalysis:
+    build_id: str
+    ranking_profile_version: str
+    generation_profile_version: str
+    grounded_rules_manifest_hash: str
+    embedding_fingerprint: str
+    taxonomy_version: str | None
+    entity_id: str
+    display_name: str
+    summary: str
+    dimension_scores: Mapping[str, float]
+    next_steps: tuple[str, ...]
+    claims: tuple
+    cited_refs: tuple
+    warnings: tuple[RecommendationWarning, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "dimension_scores", freeze_mapping(self.dimension_scores))
+        for _f in ("next_steps", "claims", "cited_refs", "warnings"):
+            object.__setattr__(self, _f, tuple(getattr(self, _f) or ()))
+
+
+@dataclass(frozen=True, slots=True)
+class OutreachDraft:
+    build_id: str
+    ranking_profile_version: str
+    generation_profile_version: str
+    grounded_rules_manifest_hash: str
+    embedding_fingerprint: str
+    taxonomy_version: str | None
+    entity_id: str
+    display_name: str
+    subject: str
+    body: str
+    tone: str
+    language: str
+    authorized_contacts: Mapping[str, str] = field(default_factory=dict)
+    claims: tuple = ()
+    cited_refs: tuple = ()
+    warnings: tuple[RecommendationWarning, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "authorized_contacts", freeze_mapping(self.authorized_contacts))
+        for _f in ("claims", "cited_refs", "warnings"):
+            object.__setattr__(self, _f, tuple(getattr(self, _f) or ()))
+
+
+@dataclass(frozen=True, slots=True)
+class ProfessorComparison:
+    build_id: str
+    ranking_profile_version: str
+    generation_profile_version: str
+    grounded_rules_manifest_hash: str
+    embedding_fingerprint: str
+    taxonomy_version: str | None
+    entity_ids: tuple[str, ...]
+    display_names: Mapping[str, str]
+    summary: str
+    professor_notes: Mapping[str, tuple[str, ...]]
+    evidence_gaps: Mapping[str, tuple[str, ...]]
+    claims: tuple
+    cited_refs: tuple
+    warnings: tuple[RecommendationWarning, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "entity_ids", tuple(self.entity_ids or ()))
+        object.__setattr__(self, "display_names", freeze_mapping(self.display_names))
+        object.__setattr__(self, "professor_notes", freeze_mapping(self.professor_notes))
+        object.__setattr__(self, "evidence_gaps", freeze_mapping(self.evidence_gaps))
+        for _f in ("claims", "cited_refs", "warnings"):
+            object.__setattr__(self, _f, tuple(getattr(self, _f) or ()))
+
+
+@dataclass(frozen=True, slots=True)
+class AuxiliaryGenerationResult:
+    kind: str  # match_analysis|outreach_email|professor_comparison|error
+    match_analysis: MatchAnalysis | None = None
+    outreach_draft: OutreachDraft | None = None
+    professor_comparison: ProfessorComparison | None = None
+    issues: tuple[RecommendationWarning, ...] = ()
+    generation_profile_version: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "issues", tuple(self.issues or ()))
+        payloads = {
+            "match_analysis": self.match_analysis,
+            "outreach_email": self.outreach_draft,
+            "professor_comparison": self.professor_comparison,
+        }
+        if self.kind in payloads:
+            if payloads[self.kind] is None:
+                raise ValueError(f"kind={self.kind} requires matching payload")
+            if any(value is not None for key, value in payloads.items() if key != self.kind):
+                raise ValueError(f"kind={self.kind} carries mixed payloads")
+        elif self.kind == "error":
+            if any(value is not None for value in payloads.values()):
+                raise ValueError("kind=error must carry no payload")
+            if not any(w.severity == "error" for w in self.issues):
+                raise ValueError("kind=error requires at least one severity=error issue")
+        else:
+            raise ValueError(f"unknown kind: {self.kind!r}")
+
+
 __all__ = [
+    "AuxiliaryGenerationResult",
     "ConversationContext",
     "ConversationDispatchResult",
     "ConversationSummary",
     "DetailFollowupResponse",
+    "MatchAnalysis",
+    "OutreachDraft",
+    "ProfessorComparison",
     "QueryDiagnostics",
     "QueryUnderstanding",
     "PhaseDiagnostic",

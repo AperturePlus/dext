@@ -1,6 +1,6 @@
 {
   "version": "generation-v1",
-  "grounded_rules_manifest_hash": "5ab08fb94dea49a0a50f52da52ca1398bd49c54520932dcfb7acad4839898ac9",
+  "grounded_rules_manifest_hash": "23531ed9edf058fedff7c7d8e04cdad046a163481dee0b0d81b6e7d07996b625",
   "operations": {
     "query_understanding": {
       "system_prompt_id": "dext_recommend.query_understanding.v1",
@@ -69,6 +69,95 @@
       },
       "timeout": 15.0,
       "token_budget": 2048
+    },
+    "match_analysis": {
+      "system_prompt_id": "dext_recommend.match_analysis.v1",
+      "system_prompt": "Analyze mentor-student fit only from the supplied fact bundle and authorized student context. Return JSON only. Dimension scores are explanatory fit scores, never admission probability. Every factual claim must cite fact_indices and fact_refs.",
+      "json_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["summary", "dimension_scores", "next_steps", "claims"],
+        "properties": {
+          "summary": {"type": "string"},
+          "dimension_scores": {"type": "object"},
+          "next_steps": {"type": "array", "items": {"type": "string"}},
+          "claims": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["text", "content_class", "fact_indices", "fact_refs"],
+              "properties": {
+                "text": {"type": "string"},
+                "content_class": {"enum": ["fact", "advice", "uncertain"]},
+                "fact_indices": {"type": "array", "items": {"type": "integer"}},
+                "fact_refs": {"type": "array"},
+                "user_context_ref": {"type": ["object", "null"]}
+              }
+            }
+          }
+        }
+      },
+      "timeout": 15.0,
+      "token_budget": 2048
+    },
+    "outreach_email": {
+      "system_prompt_id": "dext_recommend.outreach_email.v1",
+      "system_prompt": "Draft an editable outreach email from the supplied fact bundle and authorized student context. Do not send email, invent experience, include contacts, or make admission/probability claims. Return JSON only.",
+      "json_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["subject", "body", "claims"],
+        "properties": {
+          "subject": {"type": "string"},
+          "body": {"type": "string"},
+          "claims": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["text", "content_class", "fact_indices", "fact_refs"],
+              "properties": {
+                "text": {"type": "string"},
+                "content_class": {"enum": ["fact", "advice", "uncertain"]},
+                "fact_indices": {"type": "array", "items": {"type": "integer"}},
+                "fact_refs": {"type": "array"},
+                "user_context_ref": {"type": ["object", "null"]}
+              }
+            }
+          }
+        }
+      },
+      "timeout": 15.0,
+      "token_budget": 2048
+    },
+    "professor_comparison": {
+      "system_prompt_id": "dext_recommend.professor_comparison.v1",
+      "system_prompt": "Compare 2-3 professors only from the merged fact bundle and authorized student context. Explicitly mark evidence gaps. Do not hide insufficient evidence or make admission/probability claims. Return JSON only.",
+      "json_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["summary", "professor_notes", "evidence_gaps", "claims"],
+        "properties": {
+          "summary": {"type": "string"},
+          "professor_notes": {"type": "object"},
+          "evidence_gaps": {"type": "object"},
+          "claims": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["text", "content_class", "fact_indices", "fact_refs"],
+              "properties": {
+                "text": {"type": "string"},
+                "content_class": {"enum": ["fact", "advice", "uncertain"]},
+                "fact_indices": {"type": "array", "items": {"type": "integer"}},
+                "fact_refs": {"type": "array"},
+                "user_context_ref": {"type": ["object", "null"]}
+              }
+            }
+          }
+        }
+      },
+      "timeout": 20.0,
+      "token_budget": 3072
     }
   }
 }

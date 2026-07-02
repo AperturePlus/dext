@@ -1,2 +1,4 @@
 """Constrained generation services (R6)."""
-__all__: list[str] = []
+from dext_recommend.generation.auxiliary import AuxiliaryGenerationService
+
+__all__ = ["AuxiliaryGenerationService"]

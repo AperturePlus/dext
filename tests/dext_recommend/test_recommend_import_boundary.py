@@ -38,6 +38,8 @@ def test_dext_recommend_all_submodules_importable():
         "dext_recommend.ports.generation",
         "dext_recommend.ports._fakes",
         "dext_recommend.core.service",
+        "dext_recommend.generation",
+        "dext_recommend.generation.auxiliary",
     ]
     saved = dict(sys.modules)
     try:
@@ -178,6 +180,14 @@ def test_catalog_fact_adapter_reexported_at_root():
     assert hasattr(dr, "CatalogProfessorFactAdapter")
     assert hasattr(dr, "CatalogSqliteFactReader")
     assert hasattr(dr, "ProfessorFactNotFound")
+
+
+def test_auxiliary_generation_reexported_at_root():
+    import dext_recommend as dr
+    assert hasattr(dr, "AuxiliaryGenerationService")
+    assert hasattr(dr, "MatchAnalysis")
+    assert hasattr(dr, "OutreachDraft")
+    assert hasattr(dr, "ProfessorComparison")
 
 
 def test_recommend_settings_has_fact_knobs():
