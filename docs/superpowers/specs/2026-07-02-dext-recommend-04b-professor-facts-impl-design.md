@@ -4,6 +4,8 @@
 >
 > 高层目标：[阶段 4 professor facts](2026-06-30-dext-recommendation-04-professor-facts-design.md)
 >
+> 内容安全关系：R4b 只产出中性事实与 provenance，不执行内容政策分类；导师攻击、人身攻击等由 R5/R6 生成链路统一拒答。
+>
 > 后续阶段：[Conversation adapter](2026-06-30-dext-recommendation-05-conversation-design.md)、[Auxiliary generation](2026-06-30-dext-recommendation-06-auxiliary-generation-design.md)
 >
 > 日期：2026-07-02
@@ -29,6 +31,7 @@
 | source URLs | `entity_observations` → `professor_observations` → `source_documents` | canonical URL 去重，保留 verified 时间 |
 | findings/risk flags | `quality_findings` + role reason codes | 只读当前 build、当前 entity 的未解决 finding |
 | contacts | `canonical_professors.email/phone` | 仅双重授权后进入 detail；永不进入 FactBundle |
+| content-safety text | 无事实权威来源 | 不在 R4b 生成导师人格评价、攻击性摘要或“避雷”文案；只暴露中性 finding code/evidence |
 
 facts contract 最低版本为 `MIN_FACT_CATALOG_SCHEMA_VERSION = 1`，同时必须通过 required table/column capability check。
 只满足版本号但缺少 `professor_profiles`、topic/evidence 表的 catalog 仍不可用于 R4 live 验收。
@@ -73,6 +76,7 @@ ProfessorDetail
 - `detail.provenance_refs == fact_bundle.source_refs`。
 - 每个 `FactItem` 有对应 `SourceRef`；确无来源时必须是 `ContentClass.UNCERTAIN`。
 - contacts 不进入 `FactItem`、`FactBundle.source_refs` 或任何 generation prompt。
+- risk/findings 只以中性 code、evidence、source ref 进入事实包；不得预渲染成攻击性自然语言结论。
 
 SourceRef key 使用发布产物可重建标识，例如：
 `catalog:entity:{entity_id}:build:{build_id}`、
@@ -93,6 +97,7 @@ SourceRef key 使用发布产物可重建标识，例如：
 - 临时 SQLite fixture 使用生产表名、列名、约束与典型 JSON payload，覆盖完整/缺失/冲突数据。
 - hydrate 覆盖稳定去重、分块、build pin、excluded/review 语义与 authority 字段映射。
 - detail 覆盖 statements/publications/topics/source refs/findings、FactBundle 不变量与 contacts 双重权限。
+- findings/risk flags 的输出保持中性字段，不含导师人格攻击或无来源负面定性；内容政策测试留给 R5/R6。
 - snapshot 切换并发测试证明同一 adapter 不混合 build。
 - event-loop heartbeat 测试证明 SQLite I/O 已线程卸载。
 - schema capability 缺失、JSON 非法、timeout 均产生稳定安全错误。

@@ -13,6 +13,8 @@
 >
 > 与 3b 的关系：本稿**逐条 supersedes 3b 对应条款**，不改 3b 的高层验收方向（spec §10 不变）。
 > 凡 3b 已正确之处本稿不重复；只列行为变更点。
+>
+> 内容安全增量：R3c/W7 的 admission boundary 包含共享 `SafetyGuard.inspect_input`；命中内容政策时零外部 port 调用并返回 `content_policy_refusal` error。
 
 ## 1. 背景与缺陷清单
 
@@ -41,6 +43,7 @@ R3（3b 实现）已落 205 tests passing，但自我验收未达。7 个阻断/
 | 7 | composition root 厚度 | 本轮只提供 `build_test_core` 与显式依赖注入的 `assemble_core(deps, settings)`；**不提供会成功构造但调用必定 `NotImplementedError` 的生产 factory**。附默认 ranking profile 并补 `RankingProfileAdapter.read_profile` |
 | 8 | 韧性 | `asyncio.wait_for(total_timeout)` 包请求；每个请求创建局部 `RecommendExecutionContext`，保存 snapshot/profile/fingerprint/phase diagnostics。`_guarded(ctx, phase, operation)` 在真实 port await 的位置计时和分类；Core 实例不保存任何请求可变状态 |
 | 9 | 请求与权限 | core 在入口校验 `RecommendRequest` 与 filters 枚举/范围。`ViewerPermissions` 必须由可信调用方注入；请求中的 `include_contacts` 只表达“想返回”，不能自行授予权限。R3 默认权限全部关闭 |
+| 10 | 违规内容过滤 | `validate_request` 通过后立即调用 `SafetyGuard.inspect_input`；命中政治敏感/人身攻击/色情/暴力/导师攻击时返回 `content_policy_refusal`，不读取 snapshot、不调 LLM/vector/facts，日志只留分类 code |
 
 ## 3. 关键事实核对（实现前确认）
 
@@ -404,6 +407,8 @@ phase_diagnostics: tuple[PhaseDiagnostic, ...] = ()
 - filters：eligibility 只允许 `any|confirmed`，topic mode 只允许 `soft|hard`；ID/name tuple 中不得有空字符串。
 - `RecommendSettings.total_timeout` 改为 `Field(default=30.0, gt=0.0)`；`oversample_max/limit_max/query_max_chars` 均需正值校验。
 
+`validate_request` 通过后、任何 snapshot/profile/LLM/vector/facts port 前执行 `SafetyGuard.inspect_input({query_text}, domain="recommend", operation="recommendation", subject_kind="mentor")`。命中时返回 `CONTENT_POLICY_REFUSAL` error response；warning message 使用 grounded 规则的拒答模板，不包含敏感原文。
+
 权限不从请求自授予：
 
 - `recommend(request, *, viewer_permissions: ViewerPermissions | None = None)`；默认 `ViewerPermissions()` 全关闭。
@@ -412,7 +417,7 @@ phase_diagnostics: tuple[PhaseDiagnostic, ...] = ()
 - `diagnostics_level=debug` 且 `viewer_permissions.diagnostics=False` → core 仍执行，但 response diagnostics 在 adapter 层不可见；R3 不把 debug 请求字段当授权凭据。
 - 调 `get_detail` 时传 `effective_include_contacts = request.include_contacts and viewer_permissions.include_contacts`，并原样传可信 permissions。
 
-新增 `INVALID_REQUEST`、`UNAUTHORIZED_REVIEW` code；`UNAUTHORIZED_CONTACT` 已存在。测试必须断言未授权路径零 detail 调用，并覆盖非法 limit/oversample/枚举不触发任何外部 port。
+新增 `INVALID_REQUEST`、`UNAUTHORIZED_REVIEW`、`CONTENT_POLICY_REFUSAL` code；`UNAUTHORIZED_CONTACT` 已存在。测试必须断言未授权路径零 detail 调用，并覆盖非法 limit/oversample/枚举和内容政策拒答均不触发任何外部 port。
 
 既有 `include_downranked`/`include_contacts` 正向测试必须显式传入对应 `ViewerPermissions`，不得为了维持旧测试而放宽默认权限。
 
@@ -423,7 +428,7 @@ phase_diagnostics: tuple[PhaseDiagnostic, ...] = ()
 | `VectorSearchPort` | `hybrid_recall` | 增 required kw `rrf_k: int`、optional `sparse_vector: Mapping \| None = None`；前者是有意 breaking change | W4a；protocol/fake/所有实现原子同步 |
 | `QueryDiagnostics` | 字段 | 增 `steps_used: int = 0` | W4 |
 | `RecommendResponse` | 字段 | 增 `phase_diagnostics: tuple[PhaseDiagnostic, ...] = ()` | W6 |
-| `RecommendationErrorCode` | enum | 增 timeout/llm/embedding/vector/hydrate/details/invalid_request/unauthorized_review code | W6/W7 |
+| `RecommendationErrorCode` | enum | 增 timeout/llm/embedding/vector/hydrate/details/invalid_request/unauthorized_review/content_policy_refusal code；分类码由 grounded 层透传用于诊断 | W6/W7 |
 | `RankingProfile` | 字段/校验 | 增 same-field boost 两字段；tie-break 改为四项完整排列校验 | W2/W4b |
 | `payload_prefilter` | 签名 | 增 kw `org_unit_degraded: bool = False` | W3 |
 | `rerank` | 签名 | 增 `anchor_topics: tuple[str, ...] = ()` | W2 |
@@ -444,7 +449,7 @@ phase_diagnostics: tuple[PhaseDiagnostic, ...] = ()
 - **W4**：`rrf_k`/`tie_break`/`sparse_vector`/`total_timeout`/`steps_used` 全部进入运行时行为，可被测试观测改变结果。
 - **W5**：每条 result `len(short_reasons) >= 1`；detail None 时给限定性综合 reason + `weak_explanation=True`，不伪称 semantic score。
 - **W6**：`assemble_core/build_test_core` 只做显式注入，不存在伪 live adapter；默认 profile 可加载；port 异常分类稳定；detail 单点失败降级；总超时可定位在飞 phase；同一 Core 上并发请求 diagnostics 完全隔离。
-- **W7**：非法请求在零外部调用下返回 `invalid_request`；contacts/review 权限不能由请求自授予；默认 permissions 全关闭。
+- **W7**：非法请求在零外部调用下返回 `invalid_request`；内容政策拒答在零外部调用下返回 `content_policy_refusal`；contacts/review 权限不能由请求自授予；默认 permissions 全关闭。
 
 ### 6.1 验收测试矩阵增量
 
@@ -480,6 +485,7 @@ phase_diagnostics: tuple[PhaseDiagnostic, ...] = ()
 - 新 `test_recommend_ranking_profile_json_loads`（W6：默认 profile 文件可被 `RankingProfile.from_dict` 解析）。
 - 新 `test_recommend_ranking_profile_adapter_normalizes_malformed_input`（W6）。
 - 新 `test_recommend_invalid_request_calls_no_ports`（W7）。
+- 新 `test_recommend_content_policy_refusal_calls_no_ports`（W7）。
 - 新 `test_recommend_unauthorized_contacts_calls_no_detail`（W7）。
 - 新 `test_recommend_unauthorized_review_policy`（W7）。
 - 新 `test_recommend_early_returns_preserve_accumulated_warnings`（W6）。
@@ -506,6 +512,7 @@ phase_diagnostics: tuple[PhaseDiagnostic, ...] = ()
 ## 8. 非目标（本轮不做）
 
 - live LLM/Qdrant/Neo4j 调用（R4/R5/R7）。
+- 内容政策规则维护或分类语料调优（归 `dext_grounded`；R3c 只复用共享规则并验证映射）。
 - HTTP/OpenAPI 契约（R7）——`phase_diagnostics` 字段虽加到 `RecommendResponse`，但其 HTTP 序列化形态留 R7。
 - 真实 facts package adapter（R4）；本轮不创建 stub。
 - `tie_break` 方向翻转 schema（YAGNI，方向固定）。

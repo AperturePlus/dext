@@ -7,6 +7,8 @@
 > 前置依赖：[阶段 2 readiness](2026-06-30-dext-recommendation-02-readiness-design.md) 已落地（`ActiveBuildSnapshot` 可由 fake ports 构建，三端一致性 / coverage / org_unit 降级语义已实现）
 >
 > 后续阶段：[R3d closure](2026-07-02-dext-recommend-03d-r3-closure-design.md) → [R4b professor facts](2026-07-02-dext-recommend-04b-professor-facts-impl-design.md)
+>
+> 内容安全增量：R3 推荐入口必须在任何 snapshot/LLM/vector/facts 调用前执行 `SafetyGuard.inspect_input`；命中返回 `content_policy_refusal` error response。
 
 ## 1. 范围与目标
 
@@ -24,6 +26,7 @@
 | 6 | score components | 6 个分量全部真计算，按数据可得性分层（detail rerank window 有 detail 全算；detail 缺失候选按缺省分量降级但仍可进入低分结果并标 warning）。权重 / 归一化 / tie-break / match_level 阈值全版本化 |
 | 7 | ranking profile 载体 | 扩展 `RankingProfilePort.read_profile(path) -> RankingProfile`；core 通过 port 读，不碰文件 I/O。`RankingProfile` schema 固化 |
 | 8 | 测试 fixture | 显式 factory 模块 `tests/dext_recommend/_recfixtures.py`，覆盖真实拓扑；先回填 R1 遗留的 `alias_readback`/`count_readback`/`hydrate` 行为测试 |
+| 9 | 输入内容政策 | `validate_request` 之后、snapshot/profile/LLM/vector 前调用共享 `SafetyGuard.inspect_input({query_text}, domain="recommend", operation="recommendation", subject_kind="mentor")`；命中直接返回 `content_policy_refusal` error，不累计敏感原文 |
 
 ## 2. 依赖增量
 
@@ -115,6 +118,9 @@ org_units: tuple[str, ...]             # display names, for card only
 `service.recommend` 内部，snapshot 在入口固定一次后贯穿（foundations §5）：
 
 ```text
+validate_request(request, settings)              # 非法类型/范围 -> invalid_request
+if SafetyGuard.inspect_input({query_text}, domain="recommend", subject_kind="mentor"):
+    return content_policy_refusal error response # 不读 snapshot / profile / LLM / vector / facts
 snapshot = snapshot_port.get_snapshot()        # 同步；None -> active_build_unavailable error response
 if snapshot is None:
     return active_build_unavailable error response
@@ -248,6 +254,7 @@ final filter **权威性**：payload 过了但 fact 被刷掉的情况（payload
 | 触发 | code | severity | 来源 |
 |---|---|---|---|
 | 无 ACTIVE build / snapshot None | `active_build_unavailable` | error | service 入口 |
+| 输入命中内容政策 | `content_policy_refusal` | error | service admission boundary |
 | embedding fingerprint 与 snapshot 不符 | `embedding_fingerprint_mismatch` | error | service 入口 |
 | `needs_clarification=True` 不召回 | `needs_clarification` | warning | query_understanding |
 | `detail_followup` | `unsupported_for_recommend_core` | warning | intent |
@@ -258,7 +265,7 @@ final filter **权威性**：payload 过了但 fact 被刷掉的情况（payload
 | `0 < post_filter_count < limit` | `no_candidates_after_filters`（message 写明 returned < limit） | warning | recall 循环 |
 | top 候选缺证据 | `weak_explanation` | warning | explanation |
 
-新增 code：`unsupported_for_recommend_core`、`needs_clarification`、`invalid_intent`、`missing_prior_results`、`missing_anchor`、`weak_explanation`。这些 code 需要补进 `RecommendationErrorCode` 或单独建立 `RecommendationWarningCode`；R3 推荐采用统一 `RecommendationErrorCode`（当前项目已混用 error+warning）。`weak_explanation` 复用 §13 语义。
+新增 code：`unsupported_for_recommend_core`、`needs_clarification`、`invalid_intent`、`missing_prior_results`、`missing_anchor`、`weak_explanation`。内容政策复用 grounded 层 `content_policy_refusal`，推荐侧注册同名 `RecommendationErrorCode`，并把分类码（`mentor_attack` 等）仅用于诊断/测试。R3 推荐采用统一 `RecommendationErrorCode`（当前项目已混用 error+warning）。`weak_explanation` 复用 §13 语义。
 
 ### 5.4 error response 最小结构
 
@@ -451,6 +458,7 @@ R3 起手先补齐 `alias_readback` / `count_readback` / `hydrate` 三个 fake �
 6. `test_recommend_oversample_step_progression` — 断言 hybrid_recall 调用次数 = step 数，oversample 递增。
 7. `test_recommend_needs_clarification_no_recall` — LLM preset needs_clarification=True，不调 vector_port。
 8. `test_recommend_query_understanding_parse_failure` — LLM 输出非法 dict，退化为 needs_clarification。
+8a. `test_recommend_content_policy_refusal_short_circuits_ports` — 敏感 query 返回 `content_policy_refusal` error，snapshot/profile/LLM/vector/facts 均未调用，response validation 通过。
 9. `test_recommend_more_mentors_excludes_prior` — exclude_entity_ids 生效。
 10. `test_recommend_same_field_anchor_boost` — anchor entity 排名提升。
 11. `test_recommend_refine_direction_merge` — 新限制合并进 effective filters。
@@ -504,5 +512,6 @@ R3 起手先补齐 `alias_readback` / `count_readback` / `hydrate` 三个 fake �
 - fork / session / turn 状态管理（留 R5）。
 - R4 真实事实包 adapter（`get_detail` 在 R3 用 fake `ProfessorDetail`）。
 - live LLM（R3 全程 `FakeLLMGenerationPort`）。
+- 内容政策规则维护（规则在 `dext_grounded`；R3 只调用共享 `SafetyGuard` 并映射错误码）。
 - HTTP / OpenAPI 契约（留 R7）。
 - 匹配分析 / 套磁邮件 / 导师对比生成（留 R6）。

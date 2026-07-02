@@ -10,7 +10,7 @@
 >
 > 前置产物：catalog 只读库存在经 READY/ACTIVE 发布的唯一指针与 validation manifest，并具备 Neo4j active pointer 和 Qdrant current alias
 >
-> 本文是 `dext_recommend` 的 **overview spec**：只定义跨子 spec 的架构、模块边界、共享不变量、语义与依赖序。每个落地步骤的详细数据结构、算法、接口与验收标准见对应子 spec。共享的受约束生成与事实引用契约见 [dext-grounded-generation](2026-06-30-dext-grounded-generation-design.md)。
+> 本文是 `dext_recommend` 的 **overview spec**：只定义跨子 spec 的架构、模块边界、共享不变量、语义与依赖序。每个落地步骤的详细数据结构、算法、接口与验收标准见对应子 spec。共享的受约束生成与事实引用契约见 [dext-grounded-generation](2026-06-30-dext-grounded-generation-design.md)；违规内容过滤器与导师保护见 [defensive content safety](2026-07-02-dext-defensive-content-safety-design.md)。
 
 ## 1. 审查结论
 
@@ -20,6 +20,7 @@
 - 对话页需要支持“更多导师 / 同领域 / 换方向 / 细节追问”的路由，并支持围绕某位导师的 fork 式追问。
 - 导师详情页需要稳定的事实包、数据来源和可回到原会话的上下文标识。
 - 匹配分析、套磁邮件和导师对比都必须基于导师事实与用户档案生成，不能产生无来源事实，也不能预测录取概率。
+- 所有用户可见 AI 回复必须经过输入/输出内容政策审查；政治敏感、人身攻击、色情、暴力、导师攻击等命中时硬拒答，不进入召回或交付半清洗输出。
 - 收藏、历史、个人档案属于 App/API 应用层能力；推荐核心可以消费脱敏后的用户背景，但不应把用户画像写入建图事实层。
 - `dext_recommend` 必须与 `dext`、`dext_graph`、`dext_monitor` 保持平级关系，不 import、不调用、不复用这些模块的内部 Python API，只消费已发布的 ACTIVE 产物契约。
 - App 侧 OpenAPI 契约已提供在 `docs/appside/openapi.yaml`。本文固化推荐核心能力面与语义；HTTP adapter 的正式字段名与精确路径以该 OpenAPI 为准。
@@ -266,6 +267,7 @@ src/dext_recommend/
 HTTP request
   -> API auth/profile/session adapter
   -> RecommendRequest
+  -> input policy review (SafetyGuard.inspect_input; content_policy_refusal 短路)
   -> ReadinessService.get_snapshot()
   -> QueryUnderstanding + intent routing
   -> await query embedding
@@ -290,19 +292,23 @@ entity_id
 
 ```text
 session/fork context + anchor_entity_id + user question
+  -> input policy review
   -> validate anchor in ACTIVE build
   -> ProfessorDetail fact bundle
-  -> grounded answer or same_field/refine recommendation route
+  -> constrained generation + CitationValidator + SafetyGuard.inspect
+  -> grounded answer or content_policy_refusal / same_field/refine recommendation route
 ```
 
 匹配分析、套磁邮件、导师对比：
 
 ```text
 entity_id(s) + authorized StudentContext
+  -> input policy review
   -> ProfessorDetail fact bundle(s)
   -> fact trimming and citation map
   -> constrained LLM JSON/Markdown output
   -> grounding validation
+  -> SafetyGuard.inspect (content_policy_refusal is terminal)
   -> response with warnings when evidence is missing
 ```
 
@@ -573,6 +579,7 @@ intent 来源必须显式区分：
 
 - `explicit` intent 来自 App 按钮、菜单或其它枚举动作，例如“更多导师”“找同领域导师”。后端只做枚举校验、状态转移校验和上下文完整性校验；校验通过后按枚举执行，不再让 LLM 重新解释。
 - `implicit` intent 来自自由文本追问。后端用轻量约束分类器或 LLM JSON 输出 `{intent, confidence, rationale}`，只接受白名单枚举；输出无法解析、枚举非法、缺少必要上下文或置信度低于版本化阈值时，返回 `needs_clarification`，不得直接触发宽召回。
+- 自由文本命中内容政策时优先返回 `content_policy_refusal` error，不进入 implicit 分类、宽召回或细节追问生成；不能把拒答伪装成 `needs_clarification`。
 - `conversation routing accuracy` 只评估 `implicit` intent；`explicit` intent 通过 API contract、枚举校验和状态转移测试覆盖。
 
 fork 式追问约束：
@@ -588,6 +595,7 @@ fork 式追问约束：
 
 ```text
 query_text + student_context + conversation_context
+  -> input policy review (content_policy_refusal 短路)
   -> validate/normalize
   -> query understanding and intent routing
   -> query embedding with ACTIVE build embedding settings
@@ -602,14 +610,15 @@ query_text + student_context + conversation_context
 默认策略：
 
 1. `query_text` 为空、过长或只含无意义字符时返回结构化错误。
-2. query 使用与 ACTIVE build 相同的 embedding provider、model、dimension、prefix、tokenizer identity 和 sparse tokenizer。
-3. Qdrant 召回默认初始 `oversample=200`；这不是固定候选数。存在学校、院系、导师资格、职称族等强硬过滤时，召回层必须按过滤选择性动态放大 candidate pool，配置上限默认不超过 1000。
-4. payload filter 用于提前缩小候选；最终过滤必须基于 hydrated catalog/Neo4j 事实重新执行。若强硬过滤依赖的 payload 字段缺失、覆盖率不足或 readback 不达标，不得静默退化为固定 200 后过滤。
-5. `excluded` 永不返回。
-6. `review` 默认不返回；`include_downranked` 时可以返回，但必须降权并显示原因。
-7. 没有 ResearchStatement 的教师只在强过滤命中或语义分数很高时进入候选，并显示 `missing_research_statement`。
-8. Topic 是增强信号，不是默认硬依赖；无 Topic link 不应直接排除候选。
-9. `prior_result_entity_ids` 用于“更多导师”时默认排除已展示结果；普通新搜索不默认排除。
+2. `query_text`、自由文本追问和用户提供草稿命中内容政策时返回 `content_policy_refusal`，不读取 snapshot、不调用 LLM/vector/facts。
+3. query 使用与 ACTIVE build 相同的 embedding provider、model、dimension、prefix、tokenizer identity 和 sparse tokenizer。
+4. Qdrant 召回默认初始 `oversample=200`；这不是固定候选数。存在学校、院系、导师资格、职称族等强硬过滤时，召回层必须按过滤选择性动态放大 candidate pool，配置上限默认不超过 1000。
+5. payload filter 用于提前缩小候选；最终过滤必须基于 hydrated catalog/Neo4j 事实重新执行。若强硬过滤依赖的 payload 字段缺失、覆盖率不足或 readback 不达标，不得静默退化为固定 200 后过滤。
+6. `excluded` 永不返回。
+7. `review` 默认不返回；`include_downranked` 时可以返回，但必须降权并显示原因。
+8. 没有 ResearchStatement 的教师只在强过滤命中或语义分数很高时进入候选，并显示 `missing_research_statement`。
+9. Topic 是增强信号，不是默认硬依赖；无 Topic link 不应直接排除候选。
+10. `prior_result_entity_ids` 用于“更多导师”时默认排除已展示结果；普通新搜索不默认排除。
 
 强硬过滤下的 adaptive oversample 规则：
 
@@ -713,6 +722,7 @@ fact_bundle                 # 共享受约束生成输入；contacts 永不进�
 - 输入为 `ProfessorDetail` 与 `StudentContext`。
 - 输出维度可包括研究方向相关性、经历背景相关性、准备程度、信息完整度和建议下一步。
 - 明确禁止输出录取概率、保研概率、导师是否会接收等承诺。
+- 明确禁止输出导师人格攻击、无来源负面指控或“避雷/垃圾”等攻击性结论；命中内容政策时返回 `content_policy_refusal`。
 - 雷达图维度分数必须是解释性分数，不是招生预测。
 
 套磁邮件：
@@ -728,6 +738,7 @@ fact_bundle                 # 共享受约束生成输入；contacts 永不进�
 - 输出横向对比报告，覆盖研究方向、适合背景、潜在优势、准备建议和信息缺口。
 - 对比中每个结论应能追溯到至少一个教师事实或用户背景字段。
 - 如果某位导师证据不足，应在对比中显式标注，不得用流畅文案掩盖缺口。
+- 对比只允许事实维度和证据缺口比较，不得扩展为导师人格评价或攻击性推荐。
 
 ## 15. 发布产物契约要求
 
@@ -766,6 +777,7 @@ v1 需要沿用阶段 0 查询集，并增加真实学生 query 与 App 闭环�
 - 对话样本拆分为 `explicit` route contract/transition validation 和 `implicit` routing accuracy dataset；显式按钮 intent 不计入自然语言路由准确率。
 - 增加带用户档案的个性化样本，验证推荐变化可解释且不输出录取概率。
 - 增加导师详情、匹配分析、套磁邮件、导师对比的 groundedness 样本。
+- 增加内容政策拒答样本，覆盖推荐 query、implicit 追问、detail follow-up、匹配分析、套磁邮件和导师对比。
 - 增加强硬过滤召回场景，覆盖院系硬过滤、payload filter 可用、payload filter 缺失、候选不足和达到 oversample 上限后仍无候选五类情况。
 - 每个 ranking profile 必须跑 score component ablation、component correlation check 和排序回归，避免不可比分量或冗余分量主导最终分数。
 - 标注样本绑定 build ID、entity ID、profile hash、ranking profile version 和 source evidence。
@@ -787,6 +799,7 @@ v1 需要沿用阶段 0 查询集，并增加真实学生 query 与 App 闭环�
 | ranking ablation regression | score components 调整是否提升或至少不回退排序质量 |
 | grounded generation precision | 匹配分析、邮件、对比是否只基于事实包 |
 | no-admission-probability rate | 匹配分析是否避免录取概率承诺 |
+| content-policy refusal correctness | 违规输入/输出是否硬拒答且不泄露敏感原文 |
 
 推荐模块发布门禁由产品侧最终定阈值；工程侧必须保证评测可复现、可按 build 和 ranking profile 追踪。
 
@@ -805,6 +818,7 @@ v1 需要沿用阶段 0 查询集，并增加真实学生 query 与 App 闭环�
 - 细节追问缺少或找不到锚定导师。
 - 匹配分析/套磁/对比缺少用户授权的背景字段。
 - 联系方式请求缺少权限。
+- 用户输入、隐式追问或生成输出命中内容政策。
 - OpenAPI 契约与内部 adapter 映射不一致。
 
 错误与 warning 需要结构化返回：
@@ -820,6 +834,7 @@ user_action: optional
 ```
 
 不得静默返回空列表伪装成功；真正无候选时应返回 `no_candidates_after_filters`，并带上过滤诊断。
+命中内容政策时返回 `content_policy_refusal`（severity=`error`），可附内部分类 code 用于诊断；不得继续召回、生成或返回半清洗文本。
 
 ## 18. 隐私、日志与历史
 
@@ -830,6 +845,7 @@ user_action: optional
 - 是否使用用户档案、档案完成度 bucket、会话 intent。
 - recall count、post-filter count、returned count。
 - warning/error code、耗时分解。
+- 内容政策命中时的分类 code、operation、action（不含原文）。
 
 不得记录：
 
@@ -837,6 +853,7 @@ user_action: optional
 - 未脱敏联系方式。
 - 可识别用户身份的长 query 原文。
 - 用户档案原文、GPA 原值、排名原值、科研经历全文。
+- 被内容政策拒绝的敏感输入、攻击性文本或原始 LLM 输出。
 - source document 全文。
 
 收藏、历史和 profile 存储原则：
@@ -860,6 +877,7 @@ v1 不做：
 - 个性化长期画像、点击反馈学习或 A/B ranking 自动调参。
 - 自动发送套磁邮件。
 - 预测录取概率、获奖概率或导师接收意愿。
+- 生成政治敏感、人身攻击、色情、暴力或攻击导师的内容。
 - 竞赛推荐和备赛计划生成；这些能力由独立竞赛助手模块和 `data/竞赛助手/` 事实库承接。
 
 ## 20. 落地步骤与子 spec 拆分
@@ -875,7 +893,7 @@ v1 不做：
 | 3d | [R3 closure](2026-07-02-dext-recommend-03d-r3-closure-design.md) | R3c 已实现 | 权限、异常、warning、输入/profile 校验闭环，全仓绿 |
 | 4b | [Professor facts implementation](2026-07-02-dext-recommend-04b-professor-facts-impl-design.md) | R3d 验收完成 | catalog-only facts adapter、`ProfessorDetail.fact_bundle` 与证据权限契约可用 |
 | 5 | [Conversation adapter](2026-06-30-dext-recommendation-05-conversation-design.md) | R4b 事实包稳定 | 状态校验、implicit 分类与 context 组装可用；推荐执行仍归 R3 |
-| 6 | [Auxiliary generation](2026-06-30-dext-recommendation-06-auxiliary-generation-design.md) | R4b + grounded-generation | 匹配/邮件/对比只消费 `fact_bundle`，最终 output 通过 citation/safety |
+| 6 | [Auxiliary generation](2026-06-30-dext-recommendation-06-auxiliary-generation-design.md) | R4b + grounded-generation + content policy | 匹配/邮件/对比只消费 `fact_bundle`，最终 output 通过 citation/safety/content-policy |
 | 7a | [Live runtime/composition](2026-07-02-dext-recommend-07a-runtime-composition-design.md) | R4/R5/R6 live ports + 发布产物就绪 | startup readiness、live adapters 与 production root fail-fast |
 | 7b | [HTTP/application state](2026-07-02-dext-recommend-07b-http-app-state-design.md) | R7a runtime 可启动 | 推荐域 OpenAPI 子集、鉴权、PostgreSQL owner-scoped state 全绿 |
 | 7c | [Production acceptance](2026-07-02-dext-recommend-07c-production-acceptance-design.md) | R7b 完成 + 真实 ACTIVE build | E2E、故障注入、质量/性能/隐私门禁通过后才可放量 |

@@ -4,6 +4,8 @@
 >
 > 前置依赖：[阶段 2 readiness](2026-06-30-dext-recommendation-02-readiness-design.md)可读 ACTIVE build
 >
+> 内容安全增量：推荐入口在任何 snapshot/LLM/vector 调用前执行 `SafetyGuard.inspect_input`；命中即返回 `content_policy_refusal` error
+>
 > 后续阶段：[Professor facts](2026-06-30-dext-recommendation-04-professor-facts-design.md)
 
 ## 1. 目标
@@ -16,6 +18,7 @@
 
 ```text
 RecommendRequest
+  -> SafetyGuard.inspect_input(query_text, domain="recommend", subject_kind="mentor")（命中内容政策则硬拒答，不取 snapshot、不调 LLM/vector/facts）
   -> ReadinessService.get_snapshot()（请求入口固定一次，全程传同一份）
   -> validate/normalize
   -> await QueryUnderstanding + intent routing (new_search 路径调用 LLM 时)
@@ -61,7 +64,7 @@ needs_clarification
 confidence
 ```
 
-`new_search` 路径下 query understanding 调用共享 `LLMGenerationPort`，输出必须能映射回结构化字段；无法解析时返回 `needs_clarification=true`，不直接触发宽召回。
+`new_search` 路径下 query understanding 调用共享 `LLMGenerationPort`，输出必须能映射回结构化字段；无法解析时返回 `needs_clarification=true`，不直接触发宽召回。若共享生成层返回 `content_policy_refusal` 或其分类码（`mentor_attack` 等），推荐侧必须把它映射为 severity=`error` 的 `content_policy_refusal`，不得降级为澄清问题。
 
 ## 5. 召回与 RRF
 
@@ -105,11 +108,14 @@ suggested_followups
 warnings: list[RecommendationWarning]
 ```
 
+命中违规内容过滤器的响应是合法 error response：`results=()`、至少一个 `RecommendationWarning(code="content_policy_refusal", severity="error")`，且在拒答前不调用 snapshot、ranking、query understanding、embedding、vector 或 facts port。
+
 真正无候选时返回 `no_candidates_after_filters` 并带过滤诊断，不得静默返回空列表。
 
 ## 10. 验收标准
 
 - `await RecommendationCore.recommend(RecommendRequest) -> RecommendResponse` 全链路可用，单测可完全用 async fake ports 覆盖核心逻辑。
+- `content_policy_refusal` 在零外部 port 调用下返回结构化 error response，且 response validation 通过。
 - 混合召回使用 RRF，无 raw 分数直接相加；oversample 步进与上限可配置。
 - 过滤语义严格：`excluded` 永不返回，`review` 默认不返回，硬过滤候选不足时返回 `no_candidates_after_filters` 而非补位。
 - 重排权重与 tie-break 全部配置化，响应写明 `ranking_profile_version`。

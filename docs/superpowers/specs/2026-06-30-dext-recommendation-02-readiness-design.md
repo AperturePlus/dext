@@ -4,6 +4,8 @@
 >
 > 前置依赖：[阶段 1 foundations](2026-06-30-dext-recommendation-01-foundations-design.md)骨架就绪
 >
+> 内容安全关系：readiness 不读取用户文本、不调用 LLM，但它必须保持结构化错误无敏感原文，为后续 `content_policy_refusal` 路径提供同一套 safe-error 语义
+>
 > 后续阶段：[Recommend core](2026-06-30-dext-recommendation-03-recommend-core-design.md)
 
 ## 1. 目标
@@ -93,7 +95,9 @@ ReadinessReport
 
 ## 7. 与共享契约对齐
 
-readiness 不读取用户数据、不调用 LLM。`ActiveBuildSnapshot` 是后续所有阶段请求绑定的上下文，但不携带 `StudentContext` 或 `FactBundle`——这些由调用层在请求时传入。
+readiness 不读取用户数据、不调用 LLM，也不执行内容政策判定。`ActiveBuildSnapshot` 是后续所有阶段请求绑定的上下文，但不携带 `StudentContext` 或 `FactBundle`——这些由调用层在请求时传入。
+
+readiness 返回的 `RecommendationError.message` 只能描述发布产物、schema、覆盖率或 readback 状态；不得包含 query、用户档案、LLM 输出或被内容政策拒绝的文本。内容安全拒答由 R3/R5/R6 的请求/生成链路负责。
 
 ## 8. 验收标准
 

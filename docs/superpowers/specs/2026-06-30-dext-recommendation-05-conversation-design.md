@@ -1,10 +1,14 @@
 # 阶段 5：dext_recommend conversation adapter
 
-> 状态：设计稿
+> 状态：已实现；2026-07-02 本地验收通过
 >
 > 前置依赖：[R4b professor facts](2026-07-02-dext-recommend-04b-professor-facts-impl-design.md) 事实包稳定
 >
+> 内容安全增量：自由文本追问、implicit intent 分类和 detail follow-up 均必须执行输入/输出内容政策审查；命中时返回 `content_policy_refusal` error，不进入召回或回答生成
+>
 > 后续阶段：与 [Auxiliary generation](2026-06-30-dext-recommendation-06-auxiliary-generation-design.md) 可并行；共同进入 [R7a runtime](2026-07-02-dext-recommend-07a-runtime-composition-design.md)
+
+> 验收记录：离线模块 `tests/dext_grounded/` 134 passed，`tests/dext_recommend/` 380 passed / 1 skipped；R5 live LLM smoke `test_recommend_llm_live.py` 在 `DEXT_RECOMMEND_RUN_LIVE_LLM=1` 下 1 passed；全 Python pytest `.\.venv\Scripts\python.exe -m pytest -q --tb=short` 980 passed / 19 skipped。
 
 ## 1. 目标
 
@@ -78,13 +82,16 @@ timeout、连接池与 generation profile，不能复用请求级 mutable client
 
 conversation 请求统一进入 dispatcher，由后端完成 classify → route → recommend/detail dispatch。HTTP adapter 不得在 implicit 分类前预选 `recommend` 或 `detail_followup` 入口。单次 dispatch 只 pin 一次 ACTIVE snapshot 与 generation profile。
 
-R5/R6 共用 `ConstrainedGenerationPipeline`：raw `LLMGenerationPort` 之后固定执行 schema/support validation、`CitationValidator`、`SafetyGuard`。业务层不得重复执行 citation validation；prompt、schema、阈值和 token budget 统一进入版本化 generation profile。
+R5/R6 共用 `ConstrainedGenerationPipeline`：用户输入先经 `SafetyGuard.inspect_input`；raw `LLMGenerationPort` 之后固定执行 schema/support validation、`CitationValidator`、`SafetyGuard.inspect`。业务层不得重复执行 citation validation 或复制内容安全规则；prompt、schema、阈值、token budget 与 grounded rules manifest hash 统一进入版本化 generation profile。
+
+`implicit` intent 分类若命中内容政策，返回 `ConversationDispatchResult(kind="error", issues=[content_policy_refusal/error])`，不得降级为 `needs_clarification`。`detail_followup` 命中内容政策时不得返回半清洗 answer 或 claims。
 
 ## 7. 验收标准
 
 - `ConversationContext` 字段与 overview §8 一致；推荐核心无状态，可被多次独立调用。
 - 五种 intent 各自按路由语义表执行；`explicit` intent 不触发 LLM 重新解释，只做枚举与状态转移校验。
 - `implicit` intent 解析失败、枚举非法、缺上下文、低置信时返回 `needs_clarification`，不触发宽召回。
+- 内容政策拒答覆盖 implicit 分类和 detail follow-up：敏感输入不调 LLM；敏感输出清空 claims 并映射为 `content_policy_refusal` error。
 - implicit 分类为 `detail_followup` 时由统一 dispatcher 直接进入 detail 分支，不要求 HTTP 层提前知道分类结果。
 - fork 会话不污染主会话结果集；`anchor_entity_id` 不在 ACTIVE build 时返回结构化错误。
 - `implicit conversation routing accuracy` 与 `explicit route contract pass rate` 指标可评测，评测样本按 overview §16 拆分。

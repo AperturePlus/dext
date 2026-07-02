@@ -4,6 +4,8 @@
 >
 > 前置依赖：[R7b HTTP/application state](2026-07-02-dext-recommend-07b-http-app-state-design.md) 完成
 >
+> 内容安全增量：生产验收必须证明违规内容过滤器在推荐、对话和辅助生成全链路 fail-closed，且日志/持久化不泄露被拒绝原文。
+>
 > 后续阶段：仅在本稿全部门禁通过后进入受控发布
 
 ## 1. 目标
@@ -18,12 +20,14 @@ fixture/fake ports 绿不能替代本阶段，任何门禁失败都禁止上线�
 - embedding dimension/fingerprint/tokenizer identity、profile hash、expected counts 对账。
 - org-unit/profile/role/eligibility/topic coverage 达到 readiness policy；不达标能力必须关闭而非读取 staging。
 - ranking/generation profiles 可加载且版本进入 response/eval manifest。
+- generation profile 的 `grounded_rules_manifest_hash` 与当前 grounded rules 完全一致，确认内容政策规则已随 runtime 启动加载。
 
 ## 3. E2E 与故障注入
 
 - mentor recommendation、detail、conversation、match/email/compare、profile/favorites/history/account cleanup 全链路。
 - alias/pointer 切换、catalog 锁、Qdrant/Neo4j/LLM/embedding/Postgres timeout、stream disconnect、进程 shutdown。
 - 权限硬门禁：contacts/review/debug/cross-owner leakage 必须为 0；默认 review leakage 为 0；filter correctness 为 100%。
+- 内容安全硬门禁：content-policy false negative 为 0；被拒绝文本不得出现在 response、stream、日志、history 或 trace 中。
 - 任一错误必须结构化且日志无秘密、联系人、用户原文或 embedding 泄漏。
 
 ## 4. 离线质量与性能
@@ -34,6 +38,7 @@ fixture/fake ports 绿不能替代本阶段，任何门禁失败都禁止上线�
 - explanation/filter：explanation precision、filter correctness、review leakage。
 - conversation：explicit contract pass rate、implicit routing accuracy。
 - generation：grounded precision、no-admission-probability rate、最终 output 清洗。
+- content safety：political_sensitive/personal_attack/sexual_content/violent_content/mentor_attack 样本全部拒答，正常导师事实问答不过度拒答。
 - performance：p50/p95/p99、dependency phase latency、timeout/cancellation 与 pool saturation。
 
 排序类数值阈值存放在 checked-in eval policy，不写死在 handler；policy 未经产品批准或 baseline 尚未生成时，
@@ -44,5 +49,5 @@ fixture/fake ports 绿不能替代本阶段，任何门禁失败都禁止上线�
 - 先 shadow/offline，再内部流量，再小比例 canary；每步使用同一 eval manifest。
 - rollback 只切回上一组已验证 runtime/profile/build 组合，不混搭 build 与 profile。
 - rollout 期间 build pointer、错误率、超时、空结果率、权限拒绝率或质量指标越界立即停止并回滚。
+- rollout 期间 content-policy refusal rate 异常、拒答绕过、日志泄露或 manifest hash 不匹配立即停止并回滚。
 - 形成可复现验收报告后，才可将推荐系统状态标为 production-ready。
-

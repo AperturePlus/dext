@@ -4,6 +4,8 @@
 >
 > 前置依赖：[R3d closure](2026-07-02-dext-recommend-03d-r3-closure-design.md) 验收完成
 >
+> 内容安全关系：facts 层只组装可引用事实，不做内容政策分类；任何面向用户的导师评价/对比必须在 R5/R6 生成链路由 `SafetyGuard` 拦截攻击性表述
+>
 > 后续阶段：[Conversation adapter](2026-06-30-dext-recommendation-05-conversation-design.md)、[Auxiliary generation](2026-06-30-dext-recommendation-06-auxiliary-generation-design.md)
 
 ## 1. 目标
@@ -65,6 +67,7 @@ ProfessorDetail
 
 `ProfessorDetail` 通过组合持有共享 `FactBundle`，不继承、不冒充 `FactBundle`。`FactBundle.subject_id = entity_id`，
 `facts` 由 identity/eligibility/research_statement 等映射为 `FactItem`；阶段 6 只消费该 bundle。
+findings/risk flags 进入事实包时必须保持中性、可证据化字段，不得预先生成“导师垃圾/避雷”等攻击性结论；导师保护由上层生成链路统一执行。
 精确模型与不变量以 R4b 为准。
 
 ## 7. 缓存
@@ -78,6 +81,7 @@ snapshot 切换不得混合版本。
 - `ProfessorDetail` 可按 `entity_id` 组装，字段覆盖 overview §13 全部块。
 - 每条事实附 `SourceRef`，可回溯到 catalog/Neo4j 证据；缺证据显式标注 `uncertain`。
 - 联系方式默认不返回；`include_contacts` + 权限校验通过才返回；缺权限返回 `unauthorized_contact`。
+- `ProfessorDetail`/`FactBundle` 本身不得包含需要内容政策拒答的攻击性自然语言摘要；若源数据存在负面 finding，只暴露中性 code、evidence 与 provenance。
 - `ProfessorDetail.fact_bundle` 是必需的共享事实输入；阶段 6 不把展示 DTO 本身当作 `FactBundle`。
 - R4 adapter 在无缓存条件下通过全部正确性测试；任何后续缓存必须满足 §7 的 key 与失效约束。
 - 单测可用 fake `ProfessorFactPort` 覆盖组装逻辑，不依赖真实 catalog。

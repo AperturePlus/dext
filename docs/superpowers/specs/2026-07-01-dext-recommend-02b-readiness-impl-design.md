@@ -7,6 +7,8 @@
 > 依赖：[阶段 2 readiness 契约 spec](2026-06-30-dext-recommendation-02-readiness-design.md)（已含 async 边界修订）、[阶段 1 foundations](2026-06-30-dext-recommendation-01-foundations-design.md)
 >
 > 范围：本文是 R2 的**实现设计**，固化 `ReadinessService.check()` 编排、真实只读 adapter 分层、确定性抽样、覆盖率阈值与测试矩阵。契约级字段、失败模式、验收标准以上述原 spec 为准；本文不重复契约，只补实现细节。两者冲突时以原 spec 为准，本文随之修订。
+>
+> 内容安全关系：R2 不处理用户文本或 LLM 输出；所有 readback/coverage error message 必须保持 safe，不得承载后续 `content_policy_refusal` 相关原文。
 
 ## 1. 目标与非目标
 
@@ -23,6 +25,7 @@
 - 不连真实 Qdrant/Neo4j 跑端到端集成（ACTIVE build 未就绪，留 R7 上线前）。
 - 不修改 R1 已冻结的 port 签名（已随 async 修订对齐）。
 - 不改原 R2 契约 spec 的失败模式表与验收标准。
+- 不实现违规内容过滤器；只保证 readiness 错误归一化不会泄露 query、用户档案或 LLM 输出。
 
 ## 2. adapter 分层：方言 seam 与映射层分离
 

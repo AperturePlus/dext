@@ -4,6 +4,8 @@
 >
 > 前置依赖：[共享 grounded-generation 契约](2026-06-30-dext-grounded-generation-design.md)已定义；[recommend overview](2026-06-30-dext-recommendation-system-design.md)的模块边界与 §6.3 包结构已确定
 >
+> 内容安全增量：[防御性内容安全与导师保护](2026-07-02-dext-defensive-content-safety-design.md) 已纳入推荐系统共享错误码和生成边界
+>
 > 后续阶段：[Readiness](2026-06-30-dext-recommendation-02-readiness-design.md)
 
 ## 1. 目标
@@ -85,6 +87,8 @@ RecommendationError
 - `insufficient_facts`
 - `unauthorized_contact`
 - `generation_unavailable`（re-export 共享）
+- `content_policy_refusal`（命中内容政策时的推荐侧硬拒答）
+- `political_sensitive` / `personal_attack` / `sexual_content` / `violent_content` / `mentor_attack`（grounded 层分类码；推荐侧可作为诊断/测试断言，但面向用户的终止码统一为 `content_policy_refusal`）
 
 ## 5. Ports
 
@@ -123,6 +127,8 @@ LLMGenerationPort
   async generate(...) -> GenerationResult  # re-export 共享契约，不在本模块重复定义
 ```
 
+所有用户可见 AI 回复最终都必须经过共享 `ConstrainedGenerationPipeline`/`SafetyGuard`；本阶段只固化 re-export 与错误码，不允许在 `dext_recommend` 内复制一套内容安全规则或正则。
+
 **两层端口边界**：R2 原始 readback ports 不得接收 `ActiveBuildSnapshot`，否则会形成“先有 snapshot 才能验证 snapshot”的循环依赖。R2 校验完成后通过 `ActiveSnapshotProvider` 暴露缓存 snapshot。业务数据端口 `hybrid_recall`/`hydrate`/`get_detail`/`alias_readback`/`count_readback`/`embed` 仍显式接收 `ActiveBuildSnapshot`，保证单次请求不混用新旧 build。
 
 **异步边界**：所有可能执行文件、SQLite、Qdrant、Neo4j、embedding 或 LLM I/O 的 port 方法均为 `async def`，调用方必须 `await`。`ActiveSnapshotProvider.get_snapshot()` 仅执行进程内、无阻塞的原子缓存读取，保持同步；纯校验、过滤、排序、DTO 映射也保持同步。真实 adapter 不得在 async 方法内直接调用阻塞客户端；没有原生异步驱动时必须显式线程卸载并设置超时/并发上限。
@@ -138,6 +144,7 @@ LLMGenerationPort
 - `FakeActiveSnapshotProvider`：可注入预设 snapshot 或 `null`。
 - `FakeCatalogReleasePort` / `FakeVectorReleasePort` / `FakeGraphReleasePort` / `FakeRankingProfilePort`：可独立模拟缺 pointer/alias、三端 build 不一致、embedding 不一致、覆盖率不足与安全的 readback error。
 - `FakeVectorSearchPort`：可注入预设 hits 与 readback 结果。
+- `FakeLLMGenerationPort`：必须能返回 `content_policy_refusal` 及其分类 warning，供 R3/R5/R6 断言推荐侧不会在命中内容政策时继续召回、生成或交付半清洗输出。
 - `FakeProfessorFactPort`：可注入预设 detail bundle。
 - `FakeQueryEmbeddingPort`：返回固定向量与一致 fingerprint。
 

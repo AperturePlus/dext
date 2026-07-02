@@ -7,6 +7,8 @@
 > 依赖：[R2 readiness 契约 spec](2026-06-30-dext-recommendation-02-readiness-design.md)、[R2 readiness 实现设计](2026-07-01-dext-recommend-02b-readiness-impl-design.md)
 >
 > 范围：补齐 R2 实现相对 02b impl-design 的四处契约偏差，并钉住对应单测。不新增 port 签名、不新增错误码、不新增 config 阈值。本文是 R2 的**补丁设计**，与 02b 并列；冲突时以原契约 spec + 02b 为准，本文随之修订。
+>
+> 内容安全关系：本文仍不触用户文本或 LLM；新增/修复的 readiness 错误必须继续使用安全摘要，不记录或传播被内容政策拒绝的原文。
 
 ## 1. 背景
 
@@ -106,6 +108,7 @@ qdrant_alias_target=vector_obs.target_collection if vector_obs else ""
 - **不新增** 错误码或 config 阈值（`ELIGIBILITY_COVERAGE_INSUFFICIENT`、`coverage_threshold_eligibility` 已存在）。
 - **不连** 真实 Qdrant/Neo4j（ACTIVE build 未就绪，R7 上线前）。所有修复用 fake ports / 注入 fake async client 单测。
 - **不实现** R3 召回/排序/解释。
+- **不实现** 违规内容过滤器；R2.1 只保证发布产物一致性与 safe readback error。
 - catalog / graph reader adapter 不改——SQL/Cypher 已返回对账所需字段。
 - `dext_professors__<build_id>` 命名约定是 build pipeline 契约，readiness 在读侧强制；build pipeline 实现不属本文范围，但需在本文记录该约定供 build 侧遵循。
 

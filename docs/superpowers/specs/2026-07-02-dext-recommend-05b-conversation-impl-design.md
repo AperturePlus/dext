@@ -1,14 +1,18 @@
 # 阶段 5：dext_recommend conversation adapter 实现设计
 
-> 状态：设计稿；待 TDD 落地
+> 状态：已实现；2026-07-02 本地验收通过
 >
 > 高层目标：[阶段 5 conversation adapter](2026-06-30-dext-recommendation-05-conversation-design.md)
 >
 > 前置依赖：[R4b professor facts](2026-07-02-dext-recommend-04b-professor-facts-impl-design.md) 事实包稳定
 >
+> 内容安全增量：implicit intent 与 detail follow-up 均必须复用 `SafetyGuard.inspect_input`/`SafetyGuard.inspect`；命中 `content_policy_refusal` 时返回 terminal error，不降级为澄清或半清洗回答。
+>
 > 后续阶段：先冻结本文定义的共享 generation profile 与 constrained-generation seam；随后 [R6 auxiliary generation](2026-06-30-dext-recommendation-06-auxiliary-generation-design.md) 可并行实现；共同进入 [R7a runtime](2026-07-02-dext-recommend-07a-runtime-composition-design.md)
 >
 > 日期：2026-07-02
+
+> 验收记录：`uv run pytest tests/dext_grounded/ -q --tb=short` → 134 passed；`uv run pytest tests/dext_recommend/ -q --tb=short -rs` → 380 passed, 1 skipped（live LLM 需显式开关）；`DEXT_RECOMMEND_RUN_LIVE_LLM=1 uv run pytest tests/dext_recommend/test_recommend_llm_live.py -q --tb=short -rs` → 1 passed；`.\.venv\Scripts\python.exe -m pytest -q --tb=short` → 980 passed, 19 skipped。
 
 ## 1. 目标与范围
 
@@ -17,7 +21,7 @@
 本阶段不实现 PostgreSQL 持久化，也不实现匹配/套磁/对比生成（归 R6）。
 
 R5 的核心定位是 **fact-based 受约束生成的第一个推荐域消费者**：`detail_followup` 走共享
-`ConstrainedGenerationPipeline`（`LLMGenerationPort` raw generation → `CitationValidator` → `SafetyGuard`）。
+`ConstrainedGenerationPipeline`（`SafetyGuard.inspect_input` → `LLMGenerationPort` raw generation → `CitationValidator` → `SafetyGuard.inspect`）。
 R5 与 R6 都依赖该共享 seam；R5 不拥有一条只能由 R6 事后复制的私有管线。
 
 ### 1.1 决策摘要
@@ -25,6 +29,7 @@ R5 与 R6 都依赖该共享 seam；R5 不拥有一条只能由 R6 事后复制�
 - 模块组织选方案 A：新增 `core/conversation.py`，定义统一 `ConversationDispatcher`；纯函数负责 `_validate_context`、`_assemble_context` 与 route 校验，async 方法负责 implicit 分类和 pinned-snapshot dispatch。
 - `detail_followup` 在 R5 完整落地：锚定验证 + `ProfessorDetail.fact_bundle` 输入 + 受约束生成回答。
 - implicit intent 走共享 `ConstrainedGenerationPipeline` 的 JSON 分类模式，不新建第二条 LLM client；空 FactBundle 分类不执行 fact-claim 校验，但仍执行 schema/安全检查。
+- 内容政策拒答是 terminal error：输入拒答不调用 LLM，输出拒答清空 claims/cited refs；推荐侧统一映射为 `content_policy_refusal` severity=`error`。
 - conversation 对外统一由 `ConversationDispatcher.dispatch(...) -> ConversationDispatchResult` 处理。它先分类、再 route、最后选择 recommend/detail 分支，消除 HTTP 层在 implicit 分类前无法选入口的问题。
 - 为兼容现有 `RecommendResponse`，本阶段不新增第二套 error collection：结构化终止问题继续使用 `RecommendationWarning(code=..., severity="error")`。`RecommendationError` 保留给 readiness/内部诊断，不塞入 `RecommendRoute` 后再丢失。
 - `ConversationStorePort` 为 store-neutral port + fake；真实 PostgreSQL 归 R7b。
@@ -196,7 +201,7 @@ generation_profile_version = generation_profile.version
 
 `FactBundle` 构造器字段无默认值但接受空集合（`tuple(x) if x is not None else ()`），R5 在 `core/conversation.py` 直接构造空 bundle：`FactBundle(build_id=snapshot.build_id, subject_id="implicit-intent", facts=(), source_refs=())`。grounded 契约已允许空 bundle（§4 "可为空"）。
 
-分类调用通过 `ConstrainedGenerationPipeline.generate(...)`。该 operation 的 FactBundle 为空，因此结果不得产生 `fact` claim；pipeline 仍负责 provider 调用、JSON schema parse 与 SafetyGuard。`CitationValidator` 对空 claims 是 no-op，分类器不会伪装成 fact-based generation。
+分类调用通过 `ConstrainedGenerationPipeline.generate(...)`。该 operation 的 FactBundle 为空，因此结果不得产生 `fact` claim；pipeline 仍负责输入内容政策审查、provider 调用、JSON schema parse 与 SafetyGuard 输出审查。`CitationValidator` 对空 claims 是 no-op，分类器不会伪装成 fact-based generation。
 
 ### 4.3 分类结果处理（`ConversationDispatcher._classify_implicit`，async）
 
@@ -205,6 +210,7 @@ generation_profile_version = generation_profile.version
 | LLM 返回合法 JSON，`intent` 在白名单，`confidence >= threshold` | 用 `dataclasses.replace` 写回 `intent_source="implicit"`、`intent`、`confidence`，执行 resolved-phase validation，再转 §3 路由 |
 | `confidence < threshold`（版本化阈值，默认 `0.6`） | 结构化错误 `needs_clarification` (warning)，不触发宽召回 |
 | `intent` 枚举非法 / JSON 无法解析 | 结构化错误 `needs_clarification` (warning) |
+| 输入或输出命中内容政策 | 结构化错误 `content_policy_refusal` (error)，不触发宽召回或 fallback |
 | 状态转移校验失败（如分类出 `more_mentors` 但缺 prior） | 结构化错误（按 §3.2 规则，`more_mentors_requires_prior` 等） |
 | LLM provider 不可用 / 超时 | 结构化错误 `intent_classification_unavailable` (error) |
 
@@ -280,7 +286,8 @@ R5 第一个推荐域 fact-based 受约束生成消费者。`detail_followup` �
 `ConstrainedGenerationPipeline` 落在共享 `src/dext_grounded/pipeline.py` 并从 `dext_grounded` 顶层 re-export，是唯一 caller-facing 保证：
 
 ```text
-raw LLMGenerationPort.generate
+SafetyGuard.inspect_input (before provider call)
+  -> raw LLMGenerationPort.generate
   -> JSON/schema parse
   -> operation-specific support-map validation
   -> CitationValidator.validate
@@ -339,8 +346,9 @@ DetailFollowupResponse
 - JSON 无法解析 → `generation_parse_error` (error)
 - 引用校验全部失败 → `no_grounded_output` (error)，不返回无引用纯 LLM 文本
 - 事实包为空却要求 fact 输出 → `insufficient_facts` (warning/error，按 grounded §8）
+- 输入或输出命中内容政策 → `content_policy_refusal` (error)，不返回 answer/claims/cited refs 中的被拒绝文本
 
-pipeline 的 `GenerationWarning` 不直接塞入 recommendation response；dispatcher 通过固定 mapping 转为 `RecommendationWarning`。其中 `json_parse_failed/schema_validation_failed` → `generation_parse_error`，`no_grounded_output` → 同名 terminal error，`unauthorized_contact/no_probability_claim` 保留 warning code 与清洗后的 output。禁止按 message 文本分类。
+pipeline 的 `GenerationWarning` 不直接塞入 recommendation response；dispatcher 通过固定 mapping 转为 `RecommendationWarning`。其中 `json_parse_failed/schema_validation_failed` → `generation_parse_error`，`no_grounded_output` → 同名 terminal error，`content_policy_refusal` 及分类码（`mentor_attack` 等）→ `content_policy_refusal` terminal error，`unauthorized_contact/no_probability_claim` 保留 warning code 与清洗后的 output。禁止按 message 文本分类。
 
 ### 5.5 与 R6 的复用
 
@@ -441,9 +449,9 @@ profile loader 必须拒绝缺 operation、空 prompt id、非法 schema、非�
 |---|---|
 | `test_recommend_conversation_context.py` | §2 `_validate_context`/`_assemble_context`：字段校验、session/turn 同进同出、fork 同进同出、prior 去重、不可变 |
 | `test_recommend_intent.py`（改） | §3 严格状态转移：more_mentors 缺 prior→error、same_field/detail_followup 缺 anchor→error、invalid intent→error（替代旧 fallback 断言）；R3 排序语义不动 |
-| `test_recommend_conversation_implicit.py` | §4 两阶段校验 + LLM 分类：未解析 implicit 可进入、外部预填被拒；高置信→统一 dispatch、低置信/非法枚举→clarification、状态转移失败→error、LLM 不可用→intent_classification_unavailable |
+| `test_recommend_conversation_implicit.py` | §4 两阶段校验 + LLM 分类：未解析 implicit 可进入、外部预填被拒；高置信→统一 dispatch、低置信/非法枚举→clarification、状态转移失败→error、LLM 不可用→intent_classification_unavailable、内容政策→content_policy_refusal |
 | `test_recommend_conversation_dispatch.py` | implicit 分类为 detail 时直接进入 detail branch；分类为 recommend intent 时进入 `_recommend_pinned`；两路 snapshot/profile 都只 pin 一次；HTTP 不参与 intent 分派 |
-| `test_recommend_detail_followup.py` | §5 fact-based 生成：anchor 校验、FactBundle 注入、support-map 阻止无关合法引用、CitationValidator 剔除伪造引用、SafetyGuard 始终清洗 contacts/概率承诺、固定 JSON→answer 映射、ProfessorFactNotFound→error |
+| `test_recommend_detail_followup.py` | §5 fact-based 生成：anchor 校验、FactBundle 注入、support-map 阻止无关合法引用、CitationValidator 剔除伪造引用、SafetyGuard 始终清洗 contacts/概率承诺并硬拒答内容政策、固定 JSON→answer 映射、ProfessorFactNotFound→error |
 | `test_recommend_generation_profile.py` | checked-in profile/loader：required operations、prompt/schema/threshold/budget/manifest hash、版本进入 recommendation/detail/dispatch response |
 | `test_recommend_conversation_store.py` | §6 context/summary 往返：load/save 一致性、summary 优先级与脱敏上限、list_prior、resolve_fork、TurnSnapshot 不含敏感字段 |
 | `test_recommend_immutability.py`（改） | 新增 `DetailFollowupResponse`、`ConversationDispatchResult`、`ConversationSummary`、`TurnSnapshot` 深度不可变断言 |
@@ -458,7 +466,7 @@ profile loader 必须拒绝缺 operation、空 prompt id、非法 schema、非�
 ### 7.3 async 边界（R5 §7 最后一条）
 
 - `ConversationDispatcher.dispatch`、`_classify_implicit`、`_resolve_detail_followup_pinned`、`ConversationStorePort.*` 为 `async def`。
-- `_validate_context`、`_assemble_context`、`resolve_recommend_route`、support-map validator、`CitationValidator.validate`、`SafetyGuard.inspect` 保持同步。
+- `_validate_context`、`_assemble_context`、`resolve_recommend_route`、support-map validator、`CitationValidator.validate`、`SafetyGuard.inspect_input`、`SafetyGuard.inspect` 保持同步。
 - `SafetyGuard` 方法名固定为现有 `inspect`，不得在实现/测试中发明 `apply`。
 
 ### 7.4 import boundary

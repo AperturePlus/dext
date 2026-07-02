@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** Completed on 2026-07-02. R5 implementation is merged in `next3`; local acceptance passed with `tests/dext_grounded/` = 134 passed, `tests/dext_recommend/` = 380 passed / 1 skipped, live LLM smoke `tests/dext_recommend/test_recommend_llm_live.py` = 1 passed under `DEXT_RECOMMEND_RUN_LIVE_LLM=1`, and full Python pytest = 980 passed / 19 skipped.
+
 **Goal:** Implement the dext_recommend conversation adapter — strict conversation context validation, implicit intent LLM classification, a shared constrained-generation pipeline seam, and detail_followup fact-based grounded generation — as the first recommend-domain consumer of the grounded pipeline that R6 will reuse.
 
 **Architecture:** A shared `ConstrainedGenerationPipeline` (raw `LLMGenerationPort.generate` → JSON parse → operation-specific support-map → `CitationValidator` → `SafetyGuard`) lands in `dext_grounded` so R5 and R6 share one caller-facing boundary. `dext_recommend` adds a unified `ConversationDispatcher.dispatch(...)` single entry point returning `ConversationDispatchResult(kind="recommendation|detail_followup|clarification|error")`. `RecommendationCore.recommend` keeps a single `RecommendResponse` return type and only accepts already-resolved recommend-path context. Generation prompts/schemas/thresholds/budget come from a checked-in `data/recommend/generation-profile.json` loaded by `RecommendGenerationProfilePort`.
@@ -83,7 +85,7 @@ Copied verbatim from the spec + CLAUDE.md so every task implicitly includes them
 - Consumes: `dext_grounded.claims.GenerationResult`, `dext_grounded.fact_bundle.FactBundle`, `dext_grounded.citation.CitationValidator`, `dext_grounded.safety.SafetyGuard`, `dext_grounded.ports.LLMGenerationPort`, `dext_grounded.student_context.StudentContext`.
 - Produces: `ConstrainedGenerationPipeline` class with `async generate(self, *, system_prompt_id, user_inputs, fact_bundle, student_context, json_schema, generation_profile_version, safety_domain, include_contacts, operation_id=None, support_validator=None) -> GenerationResult`. The `support_validator` is `Callable[[GenerationResult, FactBundle], GenerationResult] | None`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/dext_grounded/test_pipeline.py`:
 
@@ -204,12 +206,12 @@ async def test_pipeline_does_not_double_validate(monkeypatch):
     assert not any(w.code == "fabricated_ref" for w in re_validated.warnings)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/dext_grounded/test_pipeline.py -v`
 Expected: FAIL with `ImportError: cannot import name 'ConstrainedGenerationPipeline' from 'dext_grounded'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `src/dext_grounded/pipeline.py`:
 
@@ -313,17 +315,17 @@ from dext_grounded.pipeline import ConstrainedGenerationPipeline
 ```
 and append `"ConstrainedGenerationPipeline"` to `__all__`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/dext_grounded/test_pipeline.py -v`
 Expected: PASS (3 tests).
 
-- [ ] **Step 5: Run full dext_grounded suite to confirm no regression**
+- [x] **Step 5: Run full dext_grounded suite to confirm no regression**
 
 Run: `uv run pytest tests/dext_grounded/ -q`
 Expected: all green (was 131 passed pre-R5).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/dext_grounded/pipeline.py src/dext_grounded/ports.py src/dext_grounded/__init__.py tests/dext_grounded/test_pipeline.py
@@ -347,7 +349,7 @@ git commit -m "feat(grounded): ConstrainedGenerationPipeline seam — raw genera
 - Consumes: `pathlib.Path`, `RecommendSettings.generation_profile_path`.
 - Produces: `RecommendGenerationProfile` (frozen dataclass: `version`, `grounded_rules_manifest_hash`, `operations: Mapping[str, OperationConfig]`), `OperationConfig` (`system_prompt_id`, `json_schema: Mapping`, `timeout: float`, `token_budget: int`, plus optional `confidence_threshold`/`query_max_chars`/`summary_max_chars` for `implicit_intent`), `RecommendGenerationProfilePort` (`async read_profile(path) -> RecommendGenerationProfile`), `FakeRecommendGenerationProfilePort`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/dext_recommend/test_recommend_generation_profile.py`:
 
@@ -430,12 +432,12 @@ async def test_fake_profile_port_returns_preset() -> None:
     assert got is prof
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/dext_recommend/test_recommend_generation_profile.py -v`
 Expected: FAIL with `ImportError: cannot import name 'FakeRecommendGenerationProfilePort'`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `src/dext_recommend/core/generation_profile.py`:
 
@@ -631,17 +633,17 @@ Create `data/recommend/generation-profile.json`:
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest tests/dext_recommend/test_recommend_generation_profile.py -v`
 Expected: PASS (round-trip + 6 parametrized rejects + fake = 8 tests).
 
-- [ ] **Step 5: Run module suite to confirm no import regression**
+- [x] **Step 5: Run module suite to confirm no import regression**
 
 Run: `uv run pytest tests/dext_recommend/ -q`
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add data/recommend/generation-profile.json src/dext_recommend/core/generation_profile.py src/dext_recommend/ports/generation_profile.py src/dext_recommend/ports/_fakes.py src/dext_recommend/ports/__init__.py src/dext_recommend/__init__.py tests/dext_recommend/test_recommend_generation_profile.py
@@ -662,7 +664,7 @@ git commit -m "feat(rec): R5 generation profile artifact + loader/port/fake — 
 - Consumes: `dext_grounded.Claim`, `dext_grounded.SourceRef`, existing `RecommendationWarning`, `PhaseDiagnostic`, `ConversationContext`, `RecommendResponse`.
 - Produces: `ConversationSummary`, `ConversationDispatchResult`, `DetailFollowupResponse`; `RecommendResponse.generation_profile_version: str | None = None`; 9 new `RecommendationErrorCode` values.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/dext_recommend/test_recommend_models.py`:
 
@@ -760,12 +762,12 @@ def test_dispatch_result_issues_immutable():
         r.issues.append(RecommendationWarning("y", "z"))
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/dext_recommend/test_recommend_models.py tests/dext_recommend/test_recommend_immutability.py -v`
 Expected: FAIL with `ImportError` / `AttributeError` for missing names.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `src/dext_recommend/errors.py`, append to the `RecommendationErrorCode` enum (after `DETAILS_UNAVAILABLE`):
 
@@ -864,17 +866,17 @@ Add `ConversationSummary`, `ConversationDispatchResult`, `DetailFollowupResponse
 
 Update `src/dext_recommend/__init__.py` imports + `__all__` to include the three new model names.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/dext_recommend/test_recommend_models.py tests/dext_recommend/test_recommend_immutability.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Run module suite**
+- [x] **Step 5: Run module suite**
 
 Run: `uv run pytest tests/dext_recommend/ -q`
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/dext_recommend/models.py src/dext_recommend/errors.py src/dext_recommend/__init__.py tests/dext_recommend/test_recommend_models.py tests/dext_recommend/test_recommend_immutability.py
@@ -895,7 +897,7 @@ git commit -m "feat(rec): R5 models — ConversationSummary/ConversationDispatch
 - Consumes: `ConversationContext`, `RecommendationWarning`, `RecommendationErrorCode`, `dataclasses.replace`.
 - Produces: `ConversationValidationError(code, safe_message)`, `_validate_context(context, *, phase) -> ConversationContext`, `_assemble_context(**fields) -> ConversationContext`; modified `RecommendRoute` (drop `unsupported`, add `terminal_issues: tuple[RecommendationWarning,...]` + `detail_followup: bool`); modified `resolve_recommend_route` returning strict errors.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/dext_recommend/test_recommend_conversation_context.py`:
 
@@ -1051,12 +1053,12 @@ def test_detail_followup_without_anchor_returns_terminal_error():
     assert "detail_followup_requires_anchor" in codes
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/dext_recommend/test_recommend_conversation_context.py tests/dext_recommend/test_recommend_intent.py -v`
 Expected: FAIL (module import error + 4 renamed tests fail).
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `src/dext_recommend/core/conversation.py` (context validation only for this task):
 
@@ -1266,17 +1268,17 @@ def resolve_recommend_route(request: RecommendRequest) -> RecommendRoute:
 
 Update `intent.py` `__all__` to keep `["RecommendRoute", "resolve_recommend_route"]`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/dext_recommend/test_recommend_conversation_context.py tests/dext_recommend/test_recommend_intent.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Run full module suite to catch R3 regressions**
+- [x] **Step 5: Run full module suite to catch R3 regressions**
 
 Run: `uv run pytest tests/dext_recommend/ -q`
 Expected: Some `test_recommend_core.py` tests that assert old fallback behavior may fail — fix only the assertions that depended on the old fallback (the route.warnings fallback codes). If failures appear, update those tests to assert `route.terminal_issues` codes instead of `route.warnings`. Do NOT change R3 ranking/filter semantics.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/dext_recommend/core/conversation.py src/dext_recommend/core/intent.py tests/dext_recommend/test_recommend_conversation_context.py tests/dext_recommend/test_recommend_intent.py tests/dext_recommend/test_recommend_core.py
@@ -1295,7 +1297,7 @@ git commit -m "feat(rec): R5 two-phase context validation + strict RecommendRout
 - Consumes: existing `RecommendExecutionContext`, `_guarded_*` helpers.
 - Produces: `RecommendationCore._recommend_pinned(request, vp, ctx) -> RecommendResponse` (package-private); `recommend` validates that conversation_context is None or already-resolved recommend-path (not implicit-unclassified, not detail_followup) before delegating.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/dext_recommend/test_recommend_core.py`:
 
@@ -1328,12 +1330,12 @@ async def test_recommend_rejects_detail_followup_context(build_core_with_fakes):
 
 (If `build_core_with_fakes` is not a fixture in this file, use the existing helper that constructs a `RecommendationCore` with fake ports — inspect the file's existing `@pytest.mark.asyncio` tests and reuse its setup. The helper name is whatever already builds the core.)
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/dext_recommend/test_recommend_core.py::test_recommend_rejects_unresolved_implicit_context tests/dext_recommend/test_recommend_core.py::test_recommend_rejects_detail_followup_context -v`
 Expected: FAIL (the request currently proceeds to recall).
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `src/dext_recommend/core/service.py`, refactor `recommend`:
 
@@ -1435,17 +1437,17 @@ Rename the existing `_recommend_inner` to `_recommend_pinned(self, request, vp, 
 
 Also update `_recommend_pinned` to fill `generation_profile_version` on success responses — but R5 generation_profile_version is only meaningful when QU/implicit generation ran. For direct `recommend`, QU runs; set `generation_profile_version` from `self._deps.generation_profile_port` if present. Minimal: leave it `None` for direct recommend in this task (QU versioning fix is a follow-up tracked in spec §3.5); add a TODO comment referencing spec §3.5. The dispatcher (Task 6) sets it properly.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/dext_recommend/test_recommend_core.py -v`
 Expected: PASS (new rejection tests + existing R3 tests).
 
-- [ ] **Step 5: Run module suite**
+- [x] **Step 5: Run module suite**
 
 Run: `uv run pytest tests/dext_recommend/ -q`
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/dext_recommend/core/service.py tests/dext_recommend/test_recommend_core.py
@@ -1466,7 +1468,7 @@ git commit -m "feat(rec): R5 _recommend_pinned extraction + recommend rejects un
 - Consumes: `RecommendationCore`, `ConstrainedGenerationPipeline`, `RecommendSettings`, `RecommendGenerationProfilePort`, `ConversationStorePort`, `LLMGenerationPort` (via pipeline), `RecommendGenerationProfile`.
 - Produces: `ConversationDispatcher` class with `async dispatch(request, *, viewer_permissions, conversation_summary=None) -> ConversationDispatchResult`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `tests/dext_recommend/test_recommend_conversation_implicit.py`:
 
@@ -1669,12 +1671,12 @@ async def test_dispatch_pins_snapshot_once():
     assert snap_port.get_snapshot() is not None
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/dext_recommend/test_recommend_conversation_dispatch.py tests/dext_recommend/test_recommend_conversation_implicit.py -v`
 Expected: FAIL (`ConversationDispatcher` not defined).
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Add to `src/dext_recommend/core/service.py` `RecommendDeps`:
 
@@ -1875,17 +1877,17 @@ Add a tiny public helper on `RecommendationCore` in `service.py`:
         )
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/dext_recommend/test_recommend_conversation_dispatch.py tests/dext_recommend/test_recommend_conversation_implicit.py -v`
 Expected: PASS (the detail_followup test asserts the pre-route terminal error, which doesn't reach `_resolve_detail_followup_pinned`).
 
-- [ ] **Step 5: Run module suite**
+- [x] **Step 5: Run module suite**
 
 Run: `uv run pytest tests/dext_recommend/ -q`
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/dext_recommend/core/conversation.py src/dext_recommend/core/service.py tests/dext_recommend/test_recommend_conversation_dispatch.py tests/dext_recommend/test_recommend_conversation_implicit.py
@@ -1904,7 +1906,7 @@ git commit -m "feat(rec): R5 ConversationDispatcher.dispatch — unified entry, 
 - Consumes: `ProfessorFactPort.get_detail`, `ProfessorFactNotFound`, `ConstrainedGenerationPipeline.generate`, `RecommendGenerationProfile.operations["detail_followup"]`, `Claim`/`ContentClass`/`SourceRef`/`FactItem`.
 - Produces: `DetailFollowupResponse`; support-map validator callback; GenerationWarning→RecommendationWarning mapping.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/dext_recommend/test_recommend_detail_followup.py`:
 
@@ -2070,12 +2072,12 @@ async def test_detail_followup_anchor_not_found_is_error():
 
 (If `tests/dext_recommend/_factfixtures.py::make_fact_bundle` does not exist with that exact signature, inspect the existing `_factfixtures.py` and use the real helper name/signature — the R4 tests build FactBundles there. Adjust the call accordingly.)
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/dext_recommend/test_recommend_detail_followup.py -v`
 Expected: FAIL (`_resolve_detail_followup_pinned` raises `NotImplementedError`).
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Append to `src/dext_recommend/core/conversation.py`:
 
@@ -2238,17 +2240,17 @@ Note: the dispatch method's detail branch currently does `det = await self._reso
 
 (Import `DetailFollowupResponse` at top of conversation.py.)
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/dext_recommend/test_recommend_detail_followup.py -v`
 Expected: PASS (3 tests). If the support-map test (`test_detail_followup_support_map_drops_unrelated_fact_ref`) fails because the current `_detail_support_validator` is a no-op for index validation, tighten `_detail_support_validator` to also read `result.output["claims"][i]["fact_indices"]` and drop the claim when any index is out of range for `bundle.facts`. Implement that check by iterating `zip(result.claims, result.output["claims"])` if `output` is a dict with a `claims` list.
 
-- [ ] **Step 5: Run module suite**
+- [x] **Step 5: Run module suite**
 
 Run: `uv run pytest tests/dext_recommend/ -q`
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/dext_recommend/core/conversation.py tests/dext_recommend/test_recommend_detail_followup.py
@@ -2270,7 +2272,7 @@ git commit -m "feat(rec): R5 detail_followup grounded generation — support-map
 - Consumes: `ConversationContext`, `ConversationSummary` (Task 3).
 - Produces: `ConversationStorePort` protocol, `TurnSnapshot` model, `FakeConversationStorePort`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/dext_recommend/test_recommend_conversation_store.py`:
 
@@ -2345,12 +2347,12 @@ def test_turn_snapshot_rejects_contacts_in_fields():
     assert "query_text" not in fields
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/dext_recommend/test_recommend_conversation_store.py -v`
 Expected: FAIL (`FakeConversationStorePort`, `TurnSnapshot` import errors).
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `src/dext_recommend/ports/conversation_store.py`:
 
@@ -2457,17 +2459,17 @@ add `FakeConversationStorePort,` to the `_fakes` import block; add `Conversation
 
 Modify `src/dext_recommend/__init__.py` — add `ConversationStorePort`, `FakeConversationStorePort`, `ConversationSummary`, `TurnSnapshot` to imports and `__all__` (`ConversationSummary` was added in Task 3 to models; ensure it's exported).
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/dext_recommend/test_recommend_conversation_store.py -v`
 Expected: PASS (5 tests).
 
-- [ ] **Step 5: Run module suite + import boundary**
+- [x] **Step 5: Run module suite + import boundary**
 
 Run: `uv run pytest tests/dext_recommend/ -q && uv run pytest tests/dext_recommend/test_recommend_import_boundary.py -v`
 Expected: all green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/dext_recommend/ports/conversation_store.py src/dext_recommend/ports/_fakes.py src/dext_recommend/ports/__init__.py src/dext_recommend/__init__.py tests/dext_recommend/test_recommend_conversation_store.py
@@ -2487,7 +2489,7 @@ git commit -m "feat(rec): R5 ConversationStorePort + TurnSnapshot + Conversation
 - Consumes: `ConversationDispatchResult`, `generation_profile_version`.
 - Produces: eval contract types (`ConversationEvalSample`, `ImplicitRoutingMetric`) + sample shape; no live baseline values (R7c runs full).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/dext_recommend/test_recommend_eval_conversation.py`:
 
@@ -2543,12 +2545,12 @@ def test_sample_binds_profile_version():
     assert s.build_id == "b1"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/dext_recommend/test_recommend_eval_conversation.py -v`
 Expected: FAIL (module missing).
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `src/dext_recommend/eval/conversation.py`:
 
@@ -2609,22 +2611,22 @@ __all__ = [
 
 Modify `tests/dext_recommend/test_recommend_import_boundary.py` — add an assertion (if not present) that `dext_recommend` does not import `dext_competition`. Inspect the existing test first; if it already enumerates forbidden modules, add `"dext_competition"` to that set.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/dext_recommend/test_recommend_eval_conversation.py tests/dext_recommend/test_recommend_import_boundary.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Run full module suite + dext_grounded suite**
+- [x] **Step 5: Run full module suite + dext_grounded suite**
 
 Run: `uv run pytest tests/dext_recommend/ tests/dext_grounded/ -q`
 Expected: all green.
 
-- [ ] **Step 6: Run the whole repo suite**
+- [x] **Step 6: Run the whole repo suite**
 
 Run: `uv run pytest -q`
 Expected: all green (modulo known LLM skips without `DEEPSEEK_API_KEY`).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/dext_recommend/eval/conversation.py tests/dext_recommend/test_recommend_eval_conversation.py tests/dext_recommend/test_recommend_import_boundary.py

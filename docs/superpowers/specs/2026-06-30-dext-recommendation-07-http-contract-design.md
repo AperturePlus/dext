@@ -4,6 +4,8 @@
 >
 > 前置依赖：`docs/appside/openapi.yaml`；[阶段 3/4/5/6](2026-06-30-dext-recommendation-system-design.md)核心能力可用
 >
+> 内容安全增量：HTTP adapter 只映射 `content_policy_refusal` 结构化拒答，不在 handler 中重新实现或绕过违规内容过滤器
+>
 > 后续阶段：R7a → R7b → R7c；仅 R7c 通过后允许受控发布
 
 ## 1. 目标
@@ -45,6 +47,7 @@ state 实现与真实上线验收分别由 R7a/R7b/R7c 承担。字段与路径�
 4. 执行身份、权限、收藏/历史/profile 存储等应用层逻辑。
 
 不得在 HTTP handler 中实现排序、过滤、证据查询、降权、解释生成或联系方式权限以外的推荐业务逻辑。
+也不得在 HTTP handler 中实现第二套内容安全规则；`content_policy_refusal`、`mentor_attack` 等 code 只能来自 core/dispatcher/generation service 对共享 `SafetyGuard` 的映射。
 
 ## 5. 应用层职责
 
@@ -63,13 +66,14 @@ profile、session、fork、favorites、history 与远端资料删除由应用层
 
 ## 7. 隐私与日志
 
-按 overview §18 记录 request ID、build ID、ranking profile version、query 长度/语言摘要、过滤摘要、是否使用档案、完成度 bucket、recall/post-filter/returned count、warning/error 与耗时分解。不得记录 API key、完整 embedding 向量、未脱敏联系方式、可识别身份的长 query 原文、用户档案原文、source document 全文。AI trace 仅在显式开关下采样记录并脱敏截断。
+按 overview §18 记录 request ID、build ID、ranking profile version、query 长度/语言摘要、过滤摘要、是否使用档案、完成度 bucket、recall/post-filter/returned count、warning/error 与耗时分解。内容政策命中时只记录 `content_policy_refusal` 与分类 code、operation、action；不得记录被拒绝原文。不得记录 API key、完整 embedding 向量、未脱敏联系方式、可识别身份的长 query 原文、用户档案原文、source document 全文。AI trace 仅在显式开关下采样记录并脱敏截断。
 
 ## 8. 契约测试
 
 - 端到端契约测试覆盖 §3 中由推荐模块拥有的端点；其他领域端点由对应模块验收。
 - adapter 字段映射与 OpenAPI 一致；契约变更触发测试失败。
 - 鉴权与 `include_contacts` 权限边界测试覆盖。
+- `content_policy_refusal` 映射测试覆盖 recommendations/chat/detail-followup/match/email/compare：HTTP response 保留结构化 code，日志无敏感原文，handler 不触发额外生成或召回。
 - PostgreSQL repository 测试覆盖 owner scoping、匿名身份撤销、远端资料清理和幂等历史写入。
 - 推荐核心测试可绕过 HTTP 直接调用 core（overview §6.7 退出标准）。
 
