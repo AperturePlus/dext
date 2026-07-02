@@ -25,3 +25,6 @@ webui/dist/
 .debug-scripts/
 
 .playwright*/
+
+# Local git worktrees (parallel agent workspaces)
+.worktrees/
