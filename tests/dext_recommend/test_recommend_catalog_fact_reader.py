@@ -4,7 +4,7 @@ import importlib
 import sqlite3
 from contextlib import closing
 
-from tests.dext_recommend._factfixtures import build_catalog_db
+from tests.dext_recommend._factfixtures import build_catalog_db, dumps
 
 
 def test_catalog_fact_schema_constants():
@@ -106,3 +106,123 @@ def test_check_capability_missing_required_table_raises_safe(tmp_path):
     with pytest.raises(ReadinessSourceError) as exc:
         asyncio.run(reader.check_capability())
     assert "statement_topic_links" in exc.value.reason
+
+
+def _profile_payload(entity_id, *, university_id="u1", org_unit_ids=("ou_cs",),
+                     city=None, topic_ids=(), profile_hash=None):
+    return dumps({
+        "university_id": university_id,
+        "org_unit_ids": list(org_unit_ids),
+        "city": city,
+        "topic_ids": list(topic_ids),
+        "profile_hash": profile_hash or f"h_{entity_id}",
+    })
+
+
+def test_read_fact_rows_returns_active_non_excluded(tmp_path):
+    profs = [
+        # e1 included, has profile
+        ("e1", "b1", "A", "Prof.", "professor", "included", "[]",
+         "confirmed", "unknown", None, None, None, None, "https://x/e1", None, 1, 0.9),
+        # e2 excluded -> must NOT appear
+        ("e2", "b1", "B", "Prof.", "professor", "excluded", "[]",
+         "confirmed", "unknown", None, None, None, None, "https://x/e2", None, 1, 0.5),
+        # e3 inactive -> must NOT appear
+        ("e3", "b1", "C", "Prof.", "professor", "included", "[]",
+         "confirmed", "unknown", None, None, None, None, "https://x/e3", None, 0, 0.5),
+    ]
+    profiles = [
+        ("b1", "e1", "h1", "tv", "ti", "np", 10, _profile_payload("e1"), "2026-01-01T00:00:00+00:00"),
+        ("b1", "e2", "h2", "tv", "ti", "np", 10, _profile_payload("e2"), "2026-01-01T00:00:00+00:00"),
+        ("b1", "e3", "h3", "tv", "ti", "np", 10, _profile_payload("e3"), "2026-01-01T00:00:00+00:00"),
+    ]
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=[_active_build()],
+        canonical_professors=profs, professor_profiles=profiles,
+    )
+    reader = CatalogSqliteFactReader(path, timeout=5.0)
+    rows = asyncio.run(reader.read_fact_rows("b1", ["e1", "e2", "e3"]))
+    ids = [r["entity_id"] for r in rows]
+    assert ids == ["e1"]  # e2 excluded, e3 inactive
+
+
+def test_read_fact_rows_parses_payload_authority_fields(tmp_path):
+    profs = [
+        ("e1", "b1", "A", "Prof.", "professor", "included", "[]",
+         "confirmed", "unknown", None, None, None, None, None, None, 1, 0.9),
+    ]
+    profiles = [
+        ("b1", "e1", "h1", "tv", "ti", "np", 10,
+         _profile_payload("e1", university_id="u_tsinghua",
+                          org_unit_ids=("ou_cs", "ou_ai"),
+                          city="Beijing", topic_ids=("t1", "t2")),
+         "2026-01-01T00:00:00+00:00"),
+    ]
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=[_active_build()],
+        canonical_professors=profs, professor_profiles=profiles,
+    )
+    reader = CatalogSqliteFactReader(path, timeout=5.0)
+    rows = asyncio.run(reader.read_fact_rows("b1", ["e1"]))
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["entity_id"] == "e1"
+    assert r["display_name"] == "A"
+    assert r["university_id"] == "u_tsinghua"
+    assert tuple(r["org_unit_ids"]) == ("ou_cs", "ou_ai")
+    assert r["city_name"] == "Beijing"
+    assert tuple(r["topic_ids"]) == ("t1", "t2")
+    assert r["profile_hash"] == "h1"
+    assert r["master_eligibility"] == "confirmed"
+    assert r["role_status"] == "included"
+
+
+def test_read_fact_rows_empty_ids_returns_empty(tmp_path):
+    path = build_catalog_db(tmp_path, schema_version=6, graph_builds=[_active_build()])
+    reader = CatalogSqliteFactReader(path, timeout=5.0)
+    rows = asyncio.run(reader.read_fact_rows("b1", []))
+    assert rows == ()
+
+
+def test_read_fact_rows_chunked_over_param_limit(tmp_path):
+    # 1200 entities, reader must chunk below FACT_SQLITE_PARAM_LIMIT
+    profs = [
+        (f"e{i}", "b1", f"N{i}", "Prof.", "professor", "included", "[]",
+         "confirmed", "unknown", None, None, None, None, None, None, 1, 0.5)
+        for i in range(1200)
+    ]
+    profiles = [
+        ("b1", f"e{i}", f"h{i}", "tv", "ti", "np", 10,
+         _profile_payload(f"e{i}"), "2026-01-01T00:00:00+00:00")
+        for i in range(1200)
+    ]
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=[_active_build()],
+        canonical_professors=profs, professor_profiles=profiles,
+    )
+    reader = CatalogSqliteFactReader(path, timeout=10.0)
+    ids = [f"e{i}" for i in range(1200)]
+    rows = asyncio.run(reader.read_fact_rows("b1", ids))
+    got = {r["entity_id"] for r in rows}
+    assert len(got) == 1200
+    assert got == set(ids)
+
+
+def test_read_fact_rows_invalid_payload_raises_safe_error(tmp_path):
+    profs = [
+        ("e1", "b1", "A", "Prof.", "professor", "included", "[]",
+         "confirmed", "unknown", None, None, None, None, None, None, 1, 0.9),
+    ]
+    profiles = [
+        ("b1", "e1", "h1", "tv", "ti", "np", 10, "not-json{", "2026-01-01T00:00:00+00:00"),
+    ]
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=[_active_build()],
+        canonical_professors=profs, professor_profiles=profiles,
+    )
+    reader = CatalogSqliteFactReader(path, timeout=5.0)
+    with pytest.raises(ReadinessSourceError) as exc:
+        asyncio.run(reader.read_fact_rows("b1", ["e1"]))
+    assert exc.value.source == "catalog"
+    # raw payload must NOT leak into the reason
+    assert "not-json{" not in exc.value.reason
