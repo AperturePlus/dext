@@ -11,6 +11,7 @@ Both consumer modules import this package but never import each other.
 __version__ = "0.1.0"
 
 from dext_grounded.citation import CitationValidator
+from dext_grounded.pipeline import ConstrainedGenerationPipeline
 from dext_grounded.claims import Claim, GenerationResult, GenerationWarning
 from dext_grounded.codes import GenerationWarningCode
 from dext_grounded.content import ContentClass
@@ -28,6 +29,7 @@ __all__ = [
     "AcceptanceSample",
     "CitationValidator",
     "Claim",
+    "ConstrainedGenerationPipeline",
     "ContentClass",
     "FactBundle",
     "FactItem",

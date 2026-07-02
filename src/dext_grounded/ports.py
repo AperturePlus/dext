@@ -1,9 +1,10 @@
 """LLM generation port — the constrained-generation protocol (spec §4).
 
-``generate`` MUST run citation validation immediately after the LLM returns;
-callers never receive un-validated output. The concrete LLM client lives in
-each consumer module (recommend/competition); this package only fixes the
-contract and a test fake.
+``generate`` is a raw provider generation call. It returns a GenerationResult
+that is NOT yet citation/safety-validated — callers MUST pass it through
+ConstrainedGenerationPipeline.generate before handing it to business code.
+The concrete LLM client lives in each consumer module (recommend/
+competition); this package only fixes the contract and a test fake.
 """
 from __future__ import annotations
 
