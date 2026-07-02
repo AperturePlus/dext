@@ -272,9 +272,6 @@ class CatalogSqliteFactReader:
                 d["topic_ids"] = _coerce_str_tuple(payload.get("topic_ids"))
                 if not d.get("profile_hash"):
                     d["profile_hash"] = None
-                ph = payload.get("profile_hash")
-                if ph and not d.get("profile_hash"):
-                    d["profile_hash"] = str(ph)
                 out.append(d)
             return tuple(out)
 

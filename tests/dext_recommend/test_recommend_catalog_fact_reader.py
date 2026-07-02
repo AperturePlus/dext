@@ -177,6 +177,28 @@ def test_read_fact_rows_parses_payload_authority_fields(tmp_path):
     assert r["role_status"] == "included"
 
 
+def test_read_fact_rows_profile_hash_column_is_sole_authority(tmp_path):
+    # column is empty string, payload carries a hash -> result must be None (column is authority per R4b §2)
+    profs = [
+        ("e1", "b1", "A", "Prof.", "professor", "included", "[]",
+         "confirmed", "unknown", None, None, None, None, None, None, 1, 0.9),
+    ]
+    # profile_hash column = "" (empty string, allowed by TEXT NOT NULL)
+    profiles = [
+        ("b1", "e1", "", "tv", "ti", "np", 10,
+         _profile_payload("e1", profile_hash="h_from_payload"),
+         "2026-01-01T00:00:00+00:00"),
+    ]
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=[_active_build()],
+        canonical_professors=profs, professor_profiles=profiles,
+    )
+    reader = CatalogSqliteFactReader(path, timeout=5.0)
+    rows = asyncio.run(reader.read_fact_rows("b1", ["e1"]))
+    assert len(rows) == 1
+    assert rows[0]["profile_hash"] is None  # NOT "h_from_payload"
+
+
 def test_read_fact_rows_empty_ids_returns_empty(tmp_path):
     path = build_catalog_db(tmp_path, schema_version=6, graph_builds=[_active_build()])
     reader = CatalogSqliteFactReader(path, timeout=5.0)
