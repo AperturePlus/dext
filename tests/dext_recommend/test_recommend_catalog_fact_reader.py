@@ -324,3 +324,98 @@ def test_read_detail_rows_review_entity_returned_for_gating(tmp_path):
     rows = asyncio.run(reader.read_detail_rows("b1", "e1"))
     assert rows is not None
     assert rows.canonical["role_status"] == "review"
+
+
+# --- Task 6: read-only / thread-offload / timeout invariants ---
+
+import time  # noqa: E402
+
+
+def test_fact_reader_connect_ro_blocks_writes(tmp_path):
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=[_active_build()],
+        canonical_professors=[
+            ("e1", "b1", "A", "Prof.", "professor", "included", "[]",
+             "confirmed", "unknown", None, None, None, None, None, None, 1, 0.5),
+        ],
+        professor_profiles=[
+            ("b1", "e1", "h1", "tv", "ti", "np", 10, _profile_payload("e1"),
+             "2026-01-01T00:00:00+00:00"),
+        ],
+    )
+    reader = CatalogSqliteFactReader(path, timeout=5.0)
+    conn = reader._connect_ro()
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("INSERT INTO graph_builds(id,status,curation_version,graph_schema_version,vector_schema_version,settings_json) VALUES('x','ACTIVE','c',1,1,'{}')")
+    finally:
+        conn.close()
+
+
+async def test_fact_reader_does_not_block_event_loop(tmp_path):
+    # 800 entities; while read_fact_rows runs, a heartbeat task must keep ticking.
+    profs = [
+        (f"e{i}", "b1", f"N{i}", "Prof.", "professor", "included", "[]",
+         "confirmed", "unknown", None, None, None, None, None, None, 1, 0.5)
+        for i in range(800)
+    ]
+    profiles = [
+        ("b1", f"e{i}", f"h{i}", "tv", "ti", "np", 10, _profile_payload(f"e{i}"),
+         "2026-01-01T00:00:00+00:00")
+        for i in range(800)
+    ]
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=[_active_build()],
+        canonical_professors=profs, professor_profiles=profiles,
+    )
+    reader = CatalogSqliteFactReader(path, timeout=10.0)
+    ticks = 0
+
+    async def heartbeat():
+        nonlocal ticks
+        for _ in range(20):
+            await asyncio.sleep(0.005)
+            ticks += 1
+
+    ids = [f"e{i}" for i in range(800)]
+    hb = asyncio.create_task(heartbeat())
+    await reader.read_fact_rows("b1", ids)
+    await hb
+    # if SQLite blocked the loop, ticks would be 0-1; thread offload => many ticks
+    assert ticks >= 10
+
+
+def test_fact_reader_timeout_raises_safe_error(tmp_path):
+    # use a path that exists but force a tiny timeout while reading many rows
+    profs = [
+        (f"e{i}", "b1", f"N{i}", "Prof.", "professor", "included", "[]",
+         "confirmed", "unknown", None, None, None, None, None, None, 1, 0.5)
+        for i in range(2000)
+    ]
+    profiles = [
+        ("b1", f"e{i}", f"h{i}", "tv", "ti", "np", 10, _profile_payload(f"e{i}"),
+         "2026-01-01T00:00:00+00:00")
+        for i in range(2000)
+    ]
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=[_active_build()],
+        canonical_professors=profs, professor_profiles=profiles,
+    )
+    reader = CatalogSqliteFactReader(path, timeout=0.001)
+    with pytest.raises(ReadinessSourceError) as exc:
+        asyncio.run(reader.read_fact_rows("b1", [f"e{i}" for i in range(2000)]))
+    assert exc.value.source == "catalog"
+    assert exc.value.retryable is True
+
+
+def test_check_capability_corrupt_file_raises_safe_error(tmp_path):
+    # a file that exists but is not a valid SQLite database
+    path = tmp_path / "corrupt.db"
+    path.write_bytes(b"not a database")
+    reader = CatalogSqliteFactReader(path, timeout=5.0)
+    with pytest.raises(ReadinessSourceError) as exc:
+        asyncio.run(reader.check_capability())
+    assert exc.value.source == "catalog"
+    # the raw sqlite3 message must NOT leak
+    assert "not a database" not in exc.value.reason
+    assert "database disk image is malformed" not in exc.value.reason.lower()

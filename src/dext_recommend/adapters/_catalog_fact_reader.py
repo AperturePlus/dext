@@ -161,6 +161,17 @@ def _safe_json(payload: str | None, *, entity_id: str) -> dict[str, Any]:
     return value
 
 
+async def _guarded_read(coro, timeout: float):
+    """Wrap a blocking-read coroutine: normalize asyncio.TimeoutError to a
+    safe, retryable ReadinessSourceError so callers never see raw TimeoutError."""
+    try:
+        return await asyncio.wait_for(coro, timeout)
+    except asyncio.TimeoutError as exc:
+        raise ReadinessSourceError(
+            "catalog", f"read timed out after {timeout}s", retryable=True,
+        ) from exc
+
+
 def _coerce_str_tuple(value: Any) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -179,51 +190,55 @@ class CatalogSqliteFactReader:
 
     async def check_capability(self) -> int:
         def _check() -> int:
-            with closing(self._connect_ro()) as conn:
-                version_row = conn.execute(SCHEMA_VERSION_SQL).fetchone()
-                if version_row is None:
-                    raise ReadinessSourceError(
-                        "catalog", "schema_version not recorded in catalog_meta",
-                    )
-                try:
-                    version = int(version_row[0])
-                except (TypeError, ValueError) as exc:
-                    raise ReadinessSourceError(
-                        "catalog", f"unparseable schema_version: {version_row[0]!r}",
-                    ) from exc
-                if version < MIN_FACT_CATALOG_SCHEMA_VERSION:
-                    raise ReadinessSourceError(
-                        "catalog",
-                        f"schema_version {version} < required "
-                        f"{MIN_FACT_CATALOG_SCHEMA_VERSION}",
-                    )
-                present = {
-                    str(r[0]) for r in conn.execute(TABLE_LIST_SQL)
-                }
-                missing_tables = [
-                    t for t in REQUIRED_FACT_TABLES if t not in present
-                ]
-                if missing_tables:
-                    raise ReadinessSourceError(
-                        "catalog",
-                        f"missing required tables: {missing_tables}",
-                    )
-                for table, required_cols in REQUIRED_FACT_COLUMNS.items():
-                    actual = {
-                        str(r[1]) for r in conn.execute(
-                            COLUMN_LIST_SQL.format(table=table)
+            try:
+                with closing(self._connect_ro()) as conn:
+                    version_row = conn.execute(SCHEMA_VERSION_SQL).fetchone()
+                    if version_row is None:
+                        raise ReadinessSourceError(
+                            "catalog", "schema_version not recorded in catalog_meta",
                         )
-                    }
-                    missing_cols = [c for c in required_cols if c not in actual]
-                    if missing_cols:
+                    try:
+                        version = int(version_row[0])
+                    except (TypeError, ValueError) as exc:
+                        raise ReadinessSourceError(
+                            "catalog", f"unparseable schema_version: {version_row[0]!r}",
+                        ) from exc
+                    if version < MIN_FACT_CATALOG_SCHEMA_VERSION:
                         raise ReadinessSourceError(
                             "catalog",
-                            f"table {table} missing columns: {missing_cols}",
+                            f"schema_version {version} < required "
+                            f"{MIN_FACT_CATALOG_SCHEMA_VERSION}",
                         )
-                return version
-        return await asyncio.wait_for(
-            asyncio.to_thread(_check), self._timeout,
-        )
+                    present = {
+                        str(r[0]) for r in conn.execute(TABLE_LIST_SQL)
+                    }
+                    missing_tables = [
+                        t for t in REQUIRED_FACT_TABLES if t not in present
+                    ]
+                    if missing_tables:
+                        raise ReadinessSourceError(
+                            "catalog",
+                            f"missing required tables: {missing_tables}",
+                        )
+                    for table, required_cols in REQUIRED_FACT_COLUMNS.items():
+                        actual = {
+                            str(r[1]) for r in conn.execute(
+                                COLUMN_LIST_SQL.format(table=table)
+                            )
+                        }
+                        missing_cols = [c for c in required_cols if c not in actual]
+                        if missing_cols:
+                            raise ReadinessSourceError(
+                                "catalog",
+                                f"table {table} missing columns: {missing_cols}",
+                            )
+                    return version
+            except sqlite3.Error as exc:
+                raise ReadinessSourceError(
+                    "catalog",
+                    f"sqlite capability check failed: {exc.__class__.__name__}",
+                ) from exc
+        return await _guarded_read(asyncio.to_thread(_check), self._timeout)
 
     async def read_fact_rows(
         self, build_id: str, entity_ids: list[str],
@@ -236,8 +251,14 @@ class CatalogSqliteFactReader:
         def _read_chunk(chunk: tuple[str, ...]) -> tuple[Mapping[str, Any], ...]:
             placeholders = ",".join("?" for _ in chunk)
             sql = _FACT_ROWS_SQL % placeholders
-            with closing(self._connect_ro()) as conn:
-                rows = conn.execute(sql, (build_id, *chunk)).fetchall()
+            try:
+                with closing(self._connect_ro()) as conn:
+                    rows = conn.execute(sql, (build_id, *chunk)).fetchall()
+            except sqlite3.Error as exc:
+                raise ReadinessSourceError(
+                    "catalog",
+                    f"sqlite read failed: {exc.__class__.__name__}",
+                ) from exc
             out: list[Mapping[str, Any]] = []
             for raw in rows:
                 d = dict(raw)
@@ -265,70 +286,76 @@ class CatalogSqliteFactReader:
                 results.extend(await asyncio.to_thread(_read_chunk, chunk))
             return tuple(results)
 
-        return await asyncio.wait_for(_read_all(), self._timeout)
+        return await _guarded_read(_read_all(), self._timeout)
 
     async def read_detail_rows(
         self, build_id: str, entity_id: str,
     ) -> CatalogProfessorDetailRows | None:
         def _read() -> CatalogProfessorDetailRows | None:
-            with closing(self._connect_ro()) as conn:
-                canon = conn.execute(
-                    _CANONICAL_SQL, (build_id, entity_id),
-                ).fetchone()
-                if canon is None:
-                    return None
-                canon = dict(canon)
-                profile_row = conn.execute(
-                    _PROFILE_SQL, (build_id, entity_id),
-                ).fetchone()
-                profile_payload: dict[str, Any] = {}
-                profile_hash: str | None = None
-                if profile_row is not None:
-                    profile_hash = str(profile_row["profile_hash"] or "") or None
-                    profile_payload = _safe_json(
-                        profile_row["payload_json"], entity_id=entity_id,
-                    )
-                university_name: str | None = None
-                uni_id = profile_payload.get("university_id")
-                if uni_id is not None:
-                    u = conn.execute(
-                        _UNIVERSITY_NAME_SQL, (build_id, str(uni_id)),
+            try:
+                with closing(self._connect_ro()) as conn:
+                    canon = conn.execute(
+                        _CANONICAL_SQL, (build_id, entity_id),
                     ).fetchone()
-                    if u is not None:
-                        university_name = u["university_name"]
-                observations = tuple(
-                    dict(r) for r in conn.execute(
-                        _OBSERVATIONS_SQL, (build_id, entity_id),
+                    if canon is None:
+                        return None
+                    canon = dict(canon)
+                    profile_row = conn.execute(
+                        _PROFILE_SQL, (build_id, entity_id),
+                    ).fetchone()
+                    profile_payload: dict[str, Any] = {}
+                    profile_hash: str | None = None
+                    if profile_row is not None:
+                        profile_hash = str(profile_row["profile_hash"] or "") or None
+                        profile_payload = _safe_json(
+                            profile_row["payload_json"], entity_id=entity_id,
+                        )
+                    university_name: str | None = None
+                    uni_id = profile_payload.get("university_id")
+                    if uni_id is not None:
+                        u = conn.execute(
+                            _UNIVERSITY_NAME_SQL, (build_id, str(uni_id)),
+                        ).fetchone()
+                        if u is not None:
+                            university_name = u["university_name"]
+                    observations = tuple(
+                        dict(r) for r in conn.execute(
+                            _OBSERVATIONS_SQL, (build_id, entity_id),
+                        )
                     )
-                )
-                statements = tuple(
-                    dict(r) for r in conn.execute(_STATEMENTS_SQL, (build_id, entity_id))
-                )
-                mentions = tuple(
-                    dict(r) for r in conn.execute(_MENTIONS_SQL, (build_id, entity_id))
-                )
-                topic_links = tuple(
-                    dict(r) for r in conn.execute(_TOPIC_LINKS_SQL, (build_id, entity_id))
-                )
-                findings = tuple(
-                    dict(r) for r in conn.execute(_FINDINGS_SQL, (build_id, entity_id))
-                )
-                source_urls = tuple(
-                    dict(r) for r in conn.execute(_SOURCE_URLS_SQL, (build_id, entity_id))
-                )
-                return CatalogProfessorDetailRows(
-                    canonical=canon,
-                    profile_payload=profile_payload,
-                    profile_hash=profile_hash,
-                    university_name=university_name,
-                    observations=observations,
-                    statements=statements,
-                    mentions=mentions,
-                    topic_links=topic_links,
-                    findings=findings,
-                    source_urls=source_urls,
-                )
-        return await asyncio.wait_for(asyncio.to_thread(_read), self._timeout)
+                    statements = tuple(
+                        dict(r) for r in conn.execute(_STATEMENTS_SQL, (build_id, entity_id))
+                    )
+                    mentions = tuple(
+                        dict(r) for r in conn.execute(_MENTIONS_SQL, (build_id, entity_id))
+                    )
+                    topic_links = tuple(
+                        dict(r) for r in conn.execute(_TOPIC_LINKS_SQL, (build_id, entity_id))
+                    )
+                    findings = tuple(
+                        dict(r) for r in conn.execute(_FINDINGS_SQL, (build_id, entity_id))
+                    )
+                    source_urls = tuple(
+                        dict(r) for r in conn.execute(_SOURCE_URLS_SQL, (build_id, entity_id))
+                    )
+                    return CatalogProfessorDetailRows(
+                        canonical=canon,
+                        profile_payload=profile_payload,
+                        profile_hash=profile_hash,
+                        university_name=university_name,
+                        observations=observations,
+                        statements=statements,
+                        mentions=mentions,
+                        topic_links=topic_links,
+                        findings=findings,
+                        source_urls=source_urls,
+                    )
+            except sqlite3.Error as exc:
+                raise ReadinessSourceError(
+                    "catalog",
+                    f"sqlite read failed: {exc.__class__.__name__}",
+                ) from exc
+        return await _guarded_read(asyncio.to_thread(_read), self._timeout)
 
 
 __all__ = [
