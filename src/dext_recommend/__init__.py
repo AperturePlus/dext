@@ -65,6 +65,7 @@ __all__: list[str] = [
     "FakeProfessorFactPort",
     "FakeQueryEmbeddingPort",
     "FakeRankingProfilePort",
+    "FakeRecommendGenerationProfilePort",
     "FakeVectorReleasePort",
     "FakeVectorSearchPort",
     "GraphReleaseObservation",

@@ -58,6 +58,10 @@ class RecommendGenerationProfile:
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "RecommendGenerationProfile":
+        if "version" not in payload:
+            raise ValueError("version required")
+        if "grounded_rules_manifest_hash" not in payload:
+            raise ValueError("grounded_rules_manifest_hash required")
         if "operations" not in payload:
             raise ValueError("operations key required")
         ops_raw = payload["operations"]
