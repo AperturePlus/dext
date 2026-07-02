@@ -6,10 +6,18 @@ sole public conversation entry point returning ConversationDispatchResult.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from typing import Literal
 
-from dext_recommend.models import ConversationContext
+from dext_grounded import ConstrainedGenerationPipeline, FactBundle, GenerationResult
+from dext_recommend.config import RecommendSettings
+from dext_recommend.errors import RecommendationErrorCode
+from dext_recommend.models import (
+    ConversationContext, ConversationDispatchResult, RecommendRequest,
+    RecommendationWarning,
+)
+from dext_recommend.core.intent import resolve_recommend_route
 
 _VALID_INTENTS = {
     "new_search", "more_mentors", "same_field", "refine_direction", "detail_followup",
@@ -108,6 +116,177 @@ def _assemble_context(
     return _validate_context(ctx, phase="input")
 
 
+def _warn(code: RecommendationErrorCode, message: str, *, severity: str = "warning") -> RecommendationWarning:
+    return RecommendationWarning(code=code.value, message=message, severity=severity)
+
+
+class ConversationDispatcher:
+    """Single public conversation entry point (R5 spec §5).
+
+    Orchestrates: input validation -> snapshot/profile pin -> implicit classify
+    (if needed, via ConstrainedGenerationPipeline) -> resolved validation ->
+    route -> recommend/detail branch.  Returns ConversationDispatchResult.
+
+    The instance holds only immutable deps/settings (deep immutability): the
+    ``core``, ``pipeline`` and ``settings`` are set once at construction and never
+    mutated.  Per-request mutable state (snapshot, exec_ctx) is kept local to
+    each ``dispatch`` call.
+    """
+
+    def __init__(
+        self,
+        core,
+        pipeline: ConstrainedGenerationPipeline,
+        settings: RecommendSettings,
+    ) -> None:
+        self._core = core
+        self._pipeline = pipeline
+        self._settings = settings
+
+    @property
+    def core(self):
+        return self._core
+
+    async def dispatch(
+        self,
+        request: RecommendRequest,
+        *,
+        viewer_permissions=None,
+        conversation_summary=None,
+    ) -> ConversationDispatchResult:
+        from dext_recommend.ports import ViewerPermissions
+        vp = viewer_permissions or ViewerPermissions()
+        ctx = request.conversation_context
+        try:
+            ctx = _validate_context(ctx or ConversationContext(), phase="input") if ctx else None
+        except ConversationValidationError as e:
+            return ConversationDispatchResult(
+                kind="error", context=None, recommendation=None, detail_followup=None,
+                issues=(_warn(RecommendationErrorCode.INVALID_CONVERSATION_STATE,
+                             e.safe_message, severity="error"),),
+            )
+
+        # pin snapshot + generation profile once
+        snapshot = self._core.deps.snapshot_port.get_snapshot()
+        if snapshot is None:
+            return ConversationDispatchResult(
+                kind="error", context=ctx, recommendation=None, detail_followup=None,
+                issues=(_warn(RecommendationErrorCode.ACTIVE_BUILD_UNAVAILABLE,
+                              "no ACTIVE build", severity="error"),),
+            )
+        gp_port = self._core.deps.generation_profile_port
+        if gp_port is None:
+            return ConversationDispatchResult(
+                kind="error", context=ctx, recommendation=None, detail_followup=None,
+                issues=(_warn(RecommendationErrorCode.INVALID_CONVERSATION_STATE,
+                              "generation_profile_port not configured", severity="error"),),
+            )
+        gen_profile = await gp_port.read_profile(self._settings.generation_profile_path)
+
+        needs_classify = ctx is not None and ctx.intent_source == "implicit" and ctx.intent is None
+        if needs_classify:
+            ctx, classify_issue = await self._classify_implicit(
+                ctx, snapshot, gen_profile, request, conversation_summary)
+            if classify_issue is not None:
+                if classify_issue.code == "needs_clarification":
+                    return ConversationDispatchResult(
+                        kind="clarification", context=ctx, recommendation=None,
+                        detail_followup=None, issues=(classify_issue,),
+                        generation_profile_version=gen_profile.version,
+                    )
+                return ConversationDispatchResult(
+                    kind="error", context=ctx, recommendation=None, detail_followup=None,
+                    issues=(classify_issue,), generation_profile_version=gen_profile.version,
+                )
+            ctx = _validate_context(ctx, phase="resolved")
+
+        # route
+        routed_req = replace(request, conversation_context=ctx)
+        route = resolve_recommend_route(routed_req)
+        if route.terminal_issues:
+            return ConversationDispatchResult(
+                kind="error", context=ctx, recommendation=None, detail_followup=None,
+                issues=tuple(route.terminal_issues),
+                generation_profile_version=gen_profile.version,
+            )
+
+        if route.detail_followup:
+            det = await self._resolve_detail_followup_pinned(
+                ctx, snapshot, gen_profile, request, vp)
+            return ConversationDispatchResult(
+                kind="detail_followup", context=ctx, recommendation=None,
+                detail_followup=det, issues=(),
+                generation_profile_version=gen_profile.version,
+            )
+
+        # recommend path
+        from dext_recommend.core._resilience import RecommendExecutionContext
+        exec_ctx = RecommendExecutionContext()
+        try:
+            resp = await asyncio.wait_for(
+                self._core._recommend_pinned(routed_req, vp, exec_ctx),
+                timeout=self._settings.total_timeout,
+            )
+        except asyncio.TimeoutError:
+            resp = self._core._error_response_public(
+                snapshot=snapshot, exec_ctx=exec_ctx,
+                code=RecommendationErrorCode.REQUEST_TIMEOUT,
+                message=f"recommend exceeded {self._settings.total_timeout}s",
+            )
+        resp = replace(resp, generation_profile_version=gen_profile.version)
+        return ConversationDispatchResult(
+            kind="recommendation", context=ctx, recommendation=resp,
+            detail_followup=None, issues=tuple(route.warnings),
+            generation_profile_version=gen_profile.version,
+        )
+
+    async def _classify_implicit(self, ctx, snapshot, gen_profile, request, conversation_summary):
+        op = gen_profile.operations["implicit_intent"]
+        empty_bundle = FactBundle(
+            build_id=snapshot.build_id, subject_id="implicit-intent",
+            facts=(), source_refs=(),
+        )
+        summary_text = conversation_summary.text if conversation_summary is not None else ""
+        try:
+            result = await self._pipeline.generate(
+                system_prompt_id=op.system_prompt_id,
+                user_inputs={
+                    "query_text": request.query_text[: op.query_max_chars],
+                    "conversation_summary": summary_text[: op.summary_max_chars],
+                    "has_anchor": ctx.anchor_entity_id is not None,
+                    "has_prior_results": bool(ctx.prior_result_entity_ids),
+                },
+                fact_bundle=empty_bundle, student_context=None,
+                json_schema=op.json_schema,
+                generation_profile_version=gen_profile.version,
+                safety_domain="recommend", include_contacts=False,
+                operation_id="implicit_intent",
+            )
+        except Exception:
+            return ctx, _warn(RecommendationErrorCode.INTENT_CLASSIFICATION_UNAVAILABLE,
+                              "implicit intent classification failed", severity="error")
+        output = result.output
+        if not isinstance(output, dict):
+            return ctx, _warn(RecommendationErrorCode.NEEDS_CLARIFICATION,
+                              "implicit output not a dict")
+        intent = output.get("intent")
+        confidence = output.get("confidence")
+        if intent not in _VALID_INTENTS or not isinstance(confidence, (int, float)) \
+                or isinstance(confidence, bool):
+            return ctx, _warn(RecommendationErrorCode.NEEDS_CLARIFICATION,
+                              "implicit intent illegal/missing")
+        if confidence < op.confidence_threshold:
+            return ctx, _warn(RecommendationErrorCode.NEEDS_CLARIFICATION,
+                              "implicit intent below confidence threshold")
+        ctx = replace(ctx, intent_source="implicit", intent=intent, intent_confidence=float(confidence))
+        return ctx, None
+
+    async def _resolve_detail_followup_pinned(self, ctx, snapshot, gen_profile, request, vp):
+        # Task 7 fills this in.
+        raise NotImplementedError
+
+
 __all__ = [
-    "ConversationValidationError", "_validate_context", "_assemble_context",
+    "ConversationDispatcher", "ConversationValidationError",
+    "_validate_context", "_assemble_context",
 ]

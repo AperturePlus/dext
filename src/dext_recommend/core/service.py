@@ -11,6 +11,7 @@ import dataclasses
 import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from dext_recommend.config import RecommendSettings
 from dext_recommend.errors import RecommendationErrorCode
@@ -23,6 +24,9 @@ from dext_recommend.ports import (
     QueryEmbeddingPort, RankingProfilePort, VectorSearchPort, ViewerPermissions,
 )
 from dext_recommend.readiness import ActiveBuildSnapshot
+
+if TYPE_CHECKING:
+    from dext_recommend.ports.generation_profile import RecommendGenerationProfilePort
 
 from dext_recommend.core._resilience import (
     ClassifiedRecommendError, RecommendExecutionContext,
@@ -48,6 +52,7 @@ class RecommendDeps:
     llm_port: LLMGenerationPort
     ranking_port: RankingProfilePort
     coverage_flags_by_build_id: Mapping[str, Mapping[str, bool]] = field(default_factory=dict)
+    generation_profile_port: "RecommendGenerationProfilePort | None" = None
 
 
 def _warn(code: RecommendationErrorCode, message: str, *, severity: str = "warning") -> RecommendationWarning:
@@ -132,6 +137,17 @@ class RecommendationCore:
     @property
     def deps(self) -> RecommendDeps:
         return self._deps
+
+    def _error_response_public(self, *, snapshot, exec_ctx, code, message):
+        """Public error-response builder for callers outside the core (e.g.
+        ConversationDispatcher) that hold a pinned snapshot + exec_ctx."""
+        return _error_response(
+            snapshot=snapshot, profile=exec_ctx.profile,
+            embedding_fingerprint=exec_ctx.embedding_fingerprint,
+            warning=_warn(code, message, severity="error"),
+            phase_diagnostics=exec_ctx.snapshot_phase_diagnostics(),
+            prior_warnings=exec_ctx.snapshot_warnings(),
+        )
 
     async def recommend(
         self,
