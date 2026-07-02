@@ -15,10 +15,11 @@ WEAK_EXPLANATION_TEXT = (
 )
 
 
-def select_statement_snippets(
+def select_statement_rows(
     statements: Sequence[Mapping], *, max_chars: int = 600, max_count: int = 5,
-) -> tuple[str, ...]:
-    out: list[str] = []
+) -> tuple[Mapping, ...]:
+    """Select the exact statement rows whose text may enter the fact bundle."""
+    out: list[Mapping] = []
     total = 0
     for row in statements:
         if len(out) >= max_count:
@@ -28,15 +29,27 @@ def select_statement_snippets(
             continue
         if total + len(text) > max_chars and out:
             break
-        out.append(text)
+        out.append(row)
         total += len(text)
     return tuple(out)
 
 
-def select_publication_snippets(
-    mentions: Sequence[Mapping], *, max_chars: int = 400, max_count: int = 5,
+def select_statement_snippets(
+    statements: Sequence[Mapping], *, max_chars: int = 600, max_count: int = 5,
 ) -> tuple[str, ...]:
-    out: list[str] = []
+    return tuple(
+        str(row.get("normalized_text") or "").strip()
+        for row in select_statement_rows(
+            statements, max_chars=max_chars, max_count=max_count,
+        )
+    )
+
+
+def select_publication_rows(
+    mentions: Sequence[Mapping], *, max_chars: int = 400, max_count: int = 5,
+) -> tuple[Mapping, ...]:
+    """Select displayable publication rows and exclude review-only evidence."""
+    out: list[Mapping] = []
     total = 0
     for row in mentions:
         if len(out) >= max_count:
@@ -48,9 +61,20 @@ def select_publication_snippets(
             continue
         if total + len(text) > max_chars and out:
             break
-        out.append(text)
+        out.append(row)
         total += len(text)
     return tuple(out)
+
+
+def select_publication_snippets(
+    mentions: Sequence[Mapping], *, max_chars: int = 400, max_count: int = 5,
+) -> tuple[str, ...]:
+    return tuple(
+        str(row.get("normalized_text") or "").strip()
+        for row in select_publication_rows(
+            mentions, max_chars=max_chars, max_count=max_count,
+        )
+    )
 
 
 def build_fact_items(
@@ -61,6 +85,16 @@ def build_fact_items(
     approved_topics: Sequence[str],
     publications: Sequence[str],
     source_refs_by_field: Mapping[str, Sequence[SourceRef]],
+    university: str = "",
+    org_units: Sequence[str] = (),
+    title: str = "",
+    title_family: str = "",
+    role_status: str = "",
+    profile_url: str | None = None,
+    bio_snippets: Sequence[str] = (),
+    source_urls: Sequence[str] = (),
+    quality_findings: Sequence[str] = (),
+    risk_flags: Sequence[str] = (),
 ) -> tuple[FactItem, ...]:
     refs = source_refs_by_field or {}
     items: list[FactItem] = []
@@ -74,20 +108,42 @@ def build_fact_items(
         ))
 
     _add("display_name", str(identity.get("display_name") or ""))
+    if university:
+        _add("university", university)
+    if org_units:
+        _add("org_units", "; ".join(org_units))
+    if title:
+        _add("title", title)
+    if title_family:
+        _add("title_family", title_family)
     _add("master_eligibility", str(eligibility.get("master_eligibility") or ""))
     _add("phd_eligibility", str(eligibility.get("phd_eligibility") or ""))
+    if role_status:
+        _add("role_status", role_status)
+    if profile_url:
+        _add("profile_url", profile_url)
     if research_statements:
         _add("research_statement", "; ".join(research_statements))
     if approved_topics:
         _add("approved_topics", "; ".join(approved_topics))
     if publications:
         _add("publications", "; ".join(publications))
+    if bio_snippets:
+        _add("bio", "; ".join(bio_snippets))
+    if source_urls:
+        _add("data_sources", "; ".join(source_urls))
+    if quality_findings:
+        _add("quality_findings", "; ".join(quality_findings))
+    if risk_flags:
+        _add("risk_flags", "; ".join(risk_flags))
     return tuple(items)
 
 
 __all__ = [
     "WEAK_EXPLANATION_TEXT",
     "build_fact_items",
+    "select_publication_rows",
     "select_publication_snippets",
+    "select_statement_rows",
     "select_statement_snippets",
 ]
