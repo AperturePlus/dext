@@ -66,3 +66,43 @@ def test_build_catalog_db_creates_real_schema(tmp_path):
             assert required in names
         ver = conn.execute("SELECT value FROM catalog_meta WHERE key='schema_version'").fetchone()
         assert ver is not None and ver[0] == "6"
+
+
+import asyncio
+import pytest
+
+from dext_recommend.adapters._catalog_fact_reader import CatalogSqliteFactReader
+from dext_recommend.ports.release_readback import ReadinessSourceError
+
+
+def _active_build():
+    return ("b1", "ACTIVE", "cur-v1", "tax-v1", 6, 6, "{}")
+
+
+def test_check_capability_returns_schema_version(tmp_path):
+    path = build_catalog_db(tmp_path, schema_version=6, graph_builds=[_active_build()])
+    reader = CatalogSqliteFactReader(path, timeout=5.0)
+    version = asyncio.run(reader.check_capability())
+    assert version == 6
+
+
+def test_check_capability_missing_file_raises_safe(tmp_path):
+    reader = CatalogSqliteFactReader(tmp_path / "missing.db", timeout=5.0)
+    with pytest.raises(ReadinessSourceError) as exc:
+        asyncio.run(reader.check_capability())
+    assert exc.value.source == "catalog"
+    # no raw path leak of credentials; the reason is safe
+    assert "not found" in exc.value.reason.lower() or "missing" in exc.value.reason.lower()
+
+
+def test_check_capability_missing_required_table_raises_safe(tmp_path):
+    # build a DB then drop a required table
+    path = build_catalog_db(tmp_path, schema_version=6, graph_builds=[_active_build()])
+    import sqlite3 as _sqlite3
+    with _sqlite3.connect(path) as conn:
+        conn.execute("DROP TABLE statement_topic_links")
+        conn.commit()
+    reader = CatalogSqliteFactReader(path, timeout=5.0)
+    with pytest.raises(ReadinessSourceError) as exc:
+        asyncio.run(reader.check_capability())
+    assert "statement_topic_links" in exc.value.reason
