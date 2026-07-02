@@ -1,6 +1,8 @@
 # 阶段 3c：dext_recommend R3 hardening（语义修正 + 配置接线 + 结构就绪）
 
-> 状态：设计稿（review 修订版，承接 [阶段 3b 实现详设](2026-07-02-dext-recommend-03b-recommend-core-impl-design.md)）
+> 状态：已实现
+>
+> 实现结果：tests/dext_recommend/ 全模块绿；新增/改写测试 246 条（见 §6.1）。
 >
 > 日期：2026-07-02
 >
