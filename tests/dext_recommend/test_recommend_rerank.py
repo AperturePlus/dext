@@ -7,6 +7,17 @@ from dext_recommend.core.intent import resolve_recommend_route
 from dext_recommend.core.ranking_profile import RankingProfile
 from dext_recommend.core.rerank import rerank
 from dext_recommend.models import RecommendRequest
+from dext_grounded import FactBundle, FactItem
+from dext_grounded.content import ContentClass
+
+
+def _empty_fact_bundle(*, build_id: str, entity_id: str) -> FactBundle:
+    return FactBundle(
+        build_id=build_id, subject_id=entity_id,
+        facts=(FactItem(field="display_name", value=entity_id,
+                        content_class=ContentClass.UNCERTAIN),),
+        source_refs=(),
+    )
 
 from tests.dext_recommend._recfixtures import (
     professor_details_case, professor_facts_case, ranking_profile_dict,
@@ -207,6 +218,7 @@ def test_rerank_tie_break_configurable():
         selected_publication_mentions=(), bio_snippets=(),
         source_urls=("u1", "u2", "u3", "u4", "u5"), provenance_refs=(),
         quality_findings=(), risk_flags=(),
+        fact_bundle=_empty_fact_bundle(build_id="b-1", entity_id="e_a"),
     )
     detail_b = ProfessorDetail(
         build_id="b-1", profile_hash=None, entity_id="e_b",
@@ -217,6 +229,7 @@ def test_rerank_tie_break_configurable():
         selected_publication_mentions=(), bio_snippets=(),
         source_urls=("u1", "u2", "u3", "u4", "u5", "u6", "u7", "u8", "u9", "u10"),
         provenance_refs=(), quality_findings=(), risk_flags=(),
+        fact_bundle=_empty_fact_bundle(build_id="b-1", entity_id="e_b"),
     )
     details = {"e_a": detail_a, "e_b": detail_b}
     ranked = rerank(hits, {}, details, {"e_a": 1.0, "e_b": 1.0}, None, profile, route)

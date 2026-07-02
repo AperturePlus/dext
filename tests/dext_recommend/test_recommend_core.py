@@ -17,6 +17,17 @@ from dext_recommend.ports._fakes import (
     FakeActiveSnapshotProvider, FakeRankingProfilePort,
 )
 from dext_recommend.models import ConversationContext
+from dext_grounded import FactBundle, FactItem
+from dext_grounded.content import ContentClass
+
+
+def _empty_fact_bundle(*, build_id: str, entity_id: str) -> FactBundle:
+    return FactBundle(
+        build_id=build_id, subject_id=entity_id,
+        facts=(FactItem(field="display_name", value=entity_id,
+                        content_class=ContentClass.UNCERTAIN),),
+        source_refs=(),
+    )
 
 from tests.dext_recommend._recfixtures import (
     coverage_flags_case, fake_llm_for_understanding, professor_details_case,
@@ -291,6 +302,7 @@ def _detail(eid: str, *, topics: tuple[str, ...] = ("topic_cv",)) -> ProfessorDe
         selected_publication_mentions=("paper A",), bio_snippets=(),
         source_urls=("http://example/p",), provenance_refs=(),
         quality_findings=(), risk_flags=(),
+        fact_bundle=_empty_fact_bundle(build_id="b-1", entity_id=eid),
     )
 
 
@@ -565,6 +577,7 @@ async def test_recommend_larger_step_is_authoritative():
             selected_publication_mentions=("paper A",), bio_snippets=(),
             source_urls=("http://example/p",), provenance_refs=(),
             quality_findings=(), risk_flags=(),
+            fact_bundle=_empty_fact_bundle(build_id="b-1", entity_id=eid),
         )
 
     snap = snapshot()
@@ -658,6 +671,7 @@ async def test_recommend_empty_new_ids_skips_hydrate():
             selected_publication_mentions=("paper A",), bio_snippets=(),
             source_urls=("http://example/p",), provenance_refs=(),
             quality_findings=(), risk_flags=(),
+            fact_bundle=_empty_fact_bundle(build_id="b-1", entity_id=eid),
         )
 
     snap = snapshot()

@@ -224,3 +224,53 @@ def test_query_diagnostics_steps_used_set():
     d = QueryDiagnostics(query_length=5, language_summary="en",
                         filter_summary="none", steps_used=2)
     assert d.steps_used == 2
+
+
+# Task 10: ProfessorFactNotFound + ProfessorDetail.fact_bundle required field
+def test_professor_fact_not_found_is_lookup_error():
+    from dext_recommend.ports.professor_facts import ProfessorFactNotFound
+    assert issubclass(ProfessorFactNotFound, LookupError)
+
+
+def test_professor_detail_requires_fact_bundle():
+    from dext_grounded import FactBundle, FactItem
+    from dext_grounded.content import ContentClass
+    from dext_recommend.ports.professor_facts import ProfessorDetail
+
+    bundle = FactBundle(
+        build_id="b1", subject_id="e1",
+        facts=(FactItem(field="display_name", value="A",
+                        content_class=ContentClass.UNCERTAIN),),
+        source_refs=(),
+    )
+    d = ProfessorDetail(
+        build_id="b1", profile_hash=None, entity_id="e1", display_name="A",
+        university="U", org_units=(), title="Prof.", title_family="professor",
+        master_eligibility="confirmed", phd_eligibility="unknown",
+        role_status="included", profile_url=None,
+        research_statements=(), approved_topics=(),
+        selected_publication_mentions=(), bio_snippets=(),
+        source_urls=(), provenance_refs=(),
+        quality_findings=(), risk_flags=(),
+        fact_bundle=bundle,
+    )
+    assert d.fact_bundle is bundle
+    assert d.fact_bundle.build_id == "b1"
+    assert d.fact_bundle.subject_id == "e1"
+
+
+def test_professor_detail_fact_bundle_is_required():
+    from dext_recommend.ports.professor_facts import ProfessorDetail
+    import pytest
+    with pytest.raises(TypeError):
+        ProfessorDetail(
+            build_id="b1", profile_hash=None, entity_id="e1", display_name="A",
+            university="U", org_units=(), title="Prof.", title_family="professor",
+            master_eligibility="confirmed", phd_eligibility="unknown",
+            role_status="included", profile_url=None,
+            research_statements=(), approved_topics=(),
+            selected_publication_mentions=(), bio_snippets=(),
+            source_urls=(), provenance_refs=(),
+            quality_findings=(), risk_flags=(),
+            # fact_bundle omitted
+        )

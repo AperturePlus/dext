@@ -8,6 +8,17 @@ from dext_recommend import (
     FakeProfessorFactPort, FakeQueryEmbeddingPort, FakeVectorSearchPort,
     ProfessorDetail, ProfessorFactPort, QueryEmbeddingPort, VectorSearchPort,
 )
+from dext_grounded import FactBundle, FactItem
+from dext_grounded.content import ContentClass
+
+
+def _empty_fact_bundle(*, build_id: str, entity_id: str) -> FactBundle:
+    return FactBundle(
+        build_id=build_id, subject_id=entity_id,
+        facts=(FactItem(field="display_name", value=entity_id,
+                        content_class=ContentClass.UNCERTAIN),),
+        source_refs=(),
+    )
 
 
 def _snap():
@@ -75,6 +86,7 @@ async def test_fake_professor_fact_port_returns_preset_detail():
         role_status="included", profile_url=None, research_statements=[],
         approved_topics=[], selected_publication_mentions=[], bio_snippets=[],
         source_urls=[], provenance_refs=[], quality_findings=[], risk_flags=[],
+        fact_bundle=_empty_fact_bundle(build_id="b-1", entity_id="e1"),
     )
     port = FakeProfessorFactPort(details={"e1": detail})
     assert isinstance(port, ProfessorFactPort)

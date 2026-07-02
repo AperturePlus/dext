@@ -9,10 +9,21 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from dext_grounded import FactBundle, FakeLLMGenerationPort, GenerationResult, SourceRef
+from dext_grounded.content import ContentClass
+from dext_grounded.fact_bundle import FactItem
 
 from dext_recommend import (
     ActiveBuildSnapshot, ProfessorDetail, ProfessorFact, VectorHit,
 )
+
+
+def _empty_fact_bundle(*, build_id: str, entity_id: str) -> FactBundle:
+    return FactBundle(
+        build_id=build_id, subject_id=entity_id,
+        facts=(FactItem(field="display_name", value=entity_id,
+                        content_class=ContentClass.UNCERTAIN),),
+        source_refs=(),
+    )
 
 
 def snapshot(build_id: str = "b-1", fingerprint: str = "fp-x",
@@ -174,6 +185,7 @@ def professor_details_case(name: str) -> dict[str, ProfessorDetail]:
             selected_publication_mentions=pubs, bio_snippets=(),
             source_urls=source_urls, provenance_refs=(), quality_findings=(),
             risk_flags=risk,
+            fact_bundle=_empty_fact_bundle(build_id="b-1", entity_id=eid),
         )
     if name == "happy":
         return {"e_cv_strong": _detail("e_cv_strong")}

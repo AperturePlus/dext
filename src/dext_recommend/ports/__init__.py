@@ -6,6 +6,7 @@ from dext_recommend.ports.generation import FakeLLMGenerationPort, LLMGeneration
 from dext_recommend.ports.professor_facts import (
     ProfessorDetail,
     ProfessorFact,
+    ProfessorFactNotFound,
     ProfessorFactPort,
     ViewerPermissions,
 )
@@ -54,6 +55,7 @@ __all__ = [
     "PayloadCoverageObservation",
     "ProfessorDetail",
     "ProfessorFact",
+    "ProfessorFactNotFound",
     "ProfessorFactPort",
     "ProfessorReleaseSample",
     "QueryEmbeddingPort",

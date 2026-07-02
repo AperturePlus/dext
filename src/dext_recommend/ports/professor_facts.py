@@ -1,4 +1,4 @@
-"""ProfessorFactPort — assemble ProfessorDetail / hydrate facts (R4 fills)."""
+"""ProfessorFactPort — assemble ProfessorDetail / hydrate facts (R4)."""
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -6,9 +6,19 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 from dext_grounded import SourceRef
+from dext_grounded.content import ContentClass
+from dext_grounded.fact_bundle import FactBundle, FactItem
 
 from dext_recommend._immutable import freeze_mapping
 from dext_recommend.readiness import ActiveBuildSnapshot
+
+
+class ProfessorFactNotFound(LookupError):
+    """Raised by get_detail when the entity is missing/inactive/excluded."""
+    def __init__(self, entity_id: str, build_id: str) -> None:
+        self.entity_id = entity_id
+        self.build_id = build_id
+        super().__init__(f"professor fact not found: entity={entity_id} build={build_id}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +76,7 @@ class ProfessorDetail:
     provenance_refs: tuple[SourceRef, ...]
     quality_findings: tuple[str, ...]
     risk_flags: tuple[str, ...]
+    fact_bundle: FactBundle                          # R6 sole fact input, required
     contacts: Mapping[str, str] = field(default_factory=dict)   # gated by viewer perms
 
     def __post_init__(self) -> None:
@@ -101,4 +112,8 @@ class ProfessorFactPort(Protocol):
     ) -> dict[str, ProfessorFact]: ...
 
 
-__all__ = ["ProfessorDetail", "ProfessorFact", "ProfessorFactPort", "ViewerPermissions"]
+__all__ = [
+    "ContentClass", "FactBundle", "FactItem", "ProfessorDetail",
+    "ProfessorFact", "ProfessorFactNotFound", "ProfessorFactPort",
+    "ViewerPermissions",
+]
