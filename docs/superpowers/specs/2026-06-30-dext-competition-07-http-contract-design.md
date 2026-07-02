@@ -14,7 +14,7 @@
 
 本阶段不得偏离 `docs/appside/openapi.yaml` 自行定义字段。若内部模型字段多于 OpenAPI（例如 `internal_source_refs`、ranking diagnostics），adapter 必须默认隐藏这些内部字段，只在 diagnostics/debug/admin 模式且契约允许时返回。
 
-- HTTP 框架骨架（FastAPI 或 aiohttp，框架不进入 `core`）。
+- HTTP 复用仓库统一的 `aiohttp` application/runtime；竞赛模块只注册 routes，框架不进入 `core`，不得再建立第二个 FastAPI app。
 - adapter ↔ 内部模型的字段映射。
 - PostgreSQL application state DB 接线点；本地开发默认使用 `docker/compose.yaml` 的 `postgres:16-alpine`，服务通过 `DEXT_APP_DATABASE_URL` 连接。
 - 端到端契约测试。
@@ -34,7 +34,7 @@
 | 备赛模板 `GET /preparation-templates` | plan template reader（阶段 5） |
 | 水平诊断 `POST /preparation-plans/diagnose` | `diagnose_preparation_level`（阶段 5） |
 | AI 助手 `POST /preparation-plans/{plan_id}/assistant` | `suggest_plan_changes`（阶段 6） |
-| 远端资料 `/account/remote-data` | App/API 应用层 + PostgreSQL 用户数据清理 |
+| 远端资料 `/account/remote-data` | 共享 App/API 层拥有 handler/事务协调；competition 只注册 plan/assistant-history cleanup participant |
 
 规则问答与竞赛对比当前保留为进程内能力；公开 HTTP 端点需等待 OpenAPI 增补后再暴露，不能在 adapter 中私自新增 `/competitions/qa` 或 `/competitions/compare`。
 
@@ -53,7 +53,7 @@ adapter 只做四件事：
 
 ## 5. 应用层职责
 
-profile、备赛计划列表、计划快照、助手历史、收藏与历史由应用层管理并持久化到 PostgreSQL，竞赛核心不写用户数据。助手历史按 `owner_id + plan_id` 独立持久化（每计划最近若干轮）；用户请求清理远端资料时，应用层删除 anonymous identity、profile、计划、助手历史、收藏、历史等 PostgreSQL 行，竞赛知识库不受影响。
+profile、收藏、通用历史、identity 与 `/account/remote-data` 协调器由共享 App/API 层拥有；competition C7 只拥有备赛计划列表、计划快照、助手历史和改动卡审批状态的 schema/repository/routes。竞赛核心不写用户数据。助手历史按 `owner_id + plan_id` 独立持久化（每计划最近若干轮）；用户请求清理远端资料时，共享协调器在同一事务中调用 competition cleanup participant，竞赛知识库不受影响。
 
 PostgreSQL 不保存竞赛知识库正文、Markdown source refs、导师 catalog、Neo4j 或 Qdrant 事实；备赛计划只保存用户拥有的计划快照、修订号、AI 助手轮次和改动卡状态。`docs/appside/openapi.yaml` 的 `x-dext-user-data-store` 是本阶段持久化边界的准绳。
 
@@ -74,7 +74,7 @@ PostgreSQL 不保存竞赛知识库正文、Markdown source refs、导师 catalo
 - adapter 字段映射与 `docs/appside/openapi.yaml` 一致。
 - HTTP handler 只有 adapter 与权限逻辑；推荐/规则问答/计划/改动卡校验全部在 core。
 - `/api/v1` 竞赛与备赛相关端点契约测试通过；AI 助手状态映射边界测试覆盖。
-- 应用层负责 PostgreSQL 中的 profile/计划列表/助手历史/收藏/历史/远端资料删除；竞赛核心不写用户数据。
+- 共享应用层负责 identity/profile/收藏/历史/远端资料删除协调；competition C7 负责计划列表/助手历史/改动卡状态 repository 与 cleanup participant；竞赛核心不写用户数据。
 - 竞赛核心测试可绕过 HTTP 直接调用，不依赖真实外部服务。
 - 日志符合 §6 隐私边界；AI trace 仅显式开关下采样。
 - 竞赛模块不依赖导师 ACTIVE build、教师 Qdrant collection 或导师事实图，不 import `dext_recommend`、`dext_graph` 或爬虫内部 API。

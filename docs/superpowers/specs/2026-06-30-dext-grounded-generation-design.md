@@ -92,7 +92,7 @@ FactItem
 - LLM 生成只能消费传入 `FactBundle` 的 `facts`，不得从训练记忆补充教师事实或赛事规则。
 - `FactItem` 缺少 `source_refs` 时必须标记 `uncertain`，并计入 groundedness 评测。
 
-## 4. LLM 生成端口
+## 4. raw LLM 端口与受约束生成管线
 
 ```text
 LLMGenerationPort
@@ -112,7 +112,21 @@ GenerationResult
   warnings: list[GenerationWarning]
 ```
 
-`generate` 是外部 LLM I/O 边界，调用方必须 `await`；fake 也保持 async 签名。`CitationValidator`、`SafetyGuard` 与事实裁剪是纯计算，保持同步。
+`LLMGenerationPort.generate` 是 raw 外部 LLM I/O 边界，调用方必须 `await`；fake 也保持 async 签名。它返回已包装为 `GenerationResult`、但尚未经过 citation/safety 的 provider 结果。业务模块不得直接把该结果返回用户。
+
+共享 `ConstrainedGenerationPipeline.generate(...)` 是唯一 caller-facing 入口，固定顺序为：
+
+```text
+trim FactBundle
+  -> await LLMGenerationPort.generate
+  -> JSON/schema parse
+  -> optional operation-specific support validator
+  -> CitationValidator.validate
+  -> SafetyGuard.inspect
+  -> validated GenerationResult
+```
+
+`CitationValidator`、`SafetyGuard`、事实裁剪与 support validator 保持纯同步。业务模块不得在 pipeline 外重复执行 citation/safety；fake port 只替代 raw provider，不绕过 pipeline contract tests。
 
 ### 4.1 Claim（逐条分类）
 
@@ -153,7 +167,7 @@ UserContextRef
 
 - LLM client 独立超时、独立重试、独立连接池；不与 embedding client、推荐核心、HTTP adapter 共享配置。
 - API key 只从环境读取，不进入 prompt、日志、exception repr 或 generation profile。
-- `generate` 必须在 LLM 返回后立即进入引用校验，不得把未校验输出直接返回调用方。
+- raw `generate` 返回后必须在同一 `ConstrainedGenerationPipeline.generate` 调用内立即进入 support/citation/safety 校验，不得把未校验输出越过 pipeline 返回业务调用方。
 
 ## 5. 引用校验与事实裁剪
 

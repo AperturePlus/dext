@@ -8,7 +8,7 @@
 
 ## 1. 目标
 
-实现 session/turn/fork 上下文校验、implicit intent 分类与 `ConversationContext` 组装。推荐核心保持无状态、
+实现 session/turn/fork 上下文校验、implicit intent 分类、`ConversationContext` 组装与统一 conversation dispatch。推荐核心保持无状态、
 可独立调用；R3 继续拥有五种 intent 的推荐执行语义，R5 不复制排序、过滤、same-field 或 oversample 逻辑。
 本阶段不实现 PostgreSQL 持久化，也不实现匹配/套磁/对比生成。
 
@@ -53,6 +53,8 @@ intent 来源必须显式区分（overview §10）：
 - `explicit`：来自 App 按钮、菜单或枚举动作。后端只做枚举校验、状态转移校验和上下文完整性校验；校验通过后按枚举执行，不让 LLM 重新解释。
 - `implicit`：来自自由文本追问。后端用轻量约束分类器或 LLM JSON 输出 `{intent, confidence, rationale}`，只接受白名单枚举；无法解析、枚举非法、缺少必要上下文或置信度低于版本化阈值时返回 `needs_clarification`，不直接触发宽召回。
 
+implicit context 使用两阶段校验：输入阶段允许 `intent_source=implicit` 且 intent/confidence 均为空；分类完成后才要求 intent 在白名单且 confidence 位于 `[0,1]`。调用方不得预填 implicit 分类结果；`intent` 非空时必须同时声明可信 `intent_source`。
+
 状态转移校验：例如 `detail_followup` 必须有 `anchor_entity_id`；`more_mentors` 必须有 `prior_result_entity_ids`；缺失时返回结构化错误而非猜测 intent。
 
 ## 5. fork 式追问
@@ -74,11 +76,16 @@ R5 只定义 store-neutral repository port 与 fake；真实 PostgreSQL schema/r
 query-understanding/implicit intent 的 production LLM adapter 在 R5 落地；R6 generation 必须使用独立配置、
 timeout、连接池与 generation profile，不能复用请求级 mutable client state。
 
+conversation 请求统一进入 dispatcher，由后端完成 classify → route → recommend/detail dispatch。HTTP adapter 不得在 implicit 分类前预选 `recommend` 或 `detail_followup` 入口。单次 dispatch 只 pin 一次 ACTIVE snapshot 与 generation profile。
+
+R5/R6 共用 `ConstrainedGenerationPipeline`：raw `LLMGenerationPort` 之后固定执行 schema/support validation、`CitationValidator`、`SafetyGuard`。业务层不得重复执行 citation validation；prompt、schema、阈值和 token budget 统一进入版本化 generation profile。
+
 ## 7. 验收标准
 
 - `ConversationContext` 字段与 overview §8 一致；推荐核心无状态，可被多次独立调用。
 - 五种 intent 各自按路由语义表执行；`explicit` intent 不触发 LLM 重新解释，只做枚举与状态转移校验。
 - `implicit` intent 解析失败、枚举非法、缺上下文、低置信时返回 `needs_clarification`，不触发宽召回。
+- implicit 分类为 `detail_followup` 时由统一 dispatcher 直接进入 detail 分支，不要求 HTTP 层提前知道分类结果。
 - fork 会话不污染主会话结果集；`anchor_entity_id` 不在 ACTIVE build 时返回结构化错误。
 - `implicit conversation routing accuracy` 与 `explicit route contract pass rate` 指标可评测，评测样本按 overview §16 拆分。
 - 单测可用 fake ports 覆盖 intent 路由逻辑，不依赖真实外部服务。

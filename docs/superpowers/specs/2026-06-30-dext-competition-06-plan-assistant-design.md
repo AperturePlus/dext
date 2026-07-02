@@ -63,12 +63,12 @@ PlanChangeCard
 
 ## 5. 受约束生成
 
-`suggest_plan_changes` 是 async 入口，通过 `await LLMGenerationPort.generate(...)` 走共享端口：
+`suggest_plan_changes` 是 async 入口，通过 `await ConstrainedGenerationPipeline.generate(...)` 走共享管线；业务层不直接消费 raw `LLMGenerationPort` 结果：
 
 - 输入：当前 plan（阶段 5 `PreparationPlanDraft`）+ 备赛流程/方法片段（映射为共享 `FactBundle`）+ 用户消息。
 - 输出：纯 JSON 的 `PreparationAssistantResult`，其中 `PlanChangeCard.type` 只允许五种 OpenAPI 枚举。
-- `CitationValidator` 校验 `rationale` 的内部 `SourceRef` 可回溯。
-- `SafetyGuard` 拦截违规建议（代做/挂名/伪造数据/泄题/绕查重/规避 AI 披露）。
+- operation-specific change-card validator 先校验 type/字段/base revision/计划不变量，`CitationValidator` 再校验 `rationale` 的内部 `SourceRef` 可回溯。
+- `SafetyGuard` 最后拦截违规建议（代做/挂名/伪造数据/泄题/绕查重/规避 AI 披露）。
 
 超 schema 输出（未知 action、非法字段）被剔除，不交付半结构化结果。
 

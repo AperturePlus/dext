@@ -298,7 +298,7 @@ SourceRef
 
 ## 9. 落地步骤与子 spec 拆分
 
-竞赛模块按依赖序拆为 7 个子 spec，每个子 spec 自带 spec → plan → TDD 执行周期。阶段编号表示实施依赖。HTTP 契约（阶段 7）是最后实现的一步，字段与路径以 `docs/appside/openapi.yaml` 为准。竞赛模块不依赖上游 ACTIVE build，知识库已就绪，可端到端推进。
+竞赛模块按依赖序拆为 7 个子 spec，每个子 spec 自带 spec → plan → TDD 执行周期。阶段编号表示实施依赖。HTTP 契约（阶段 7）是最后实现的一步，字段与路径以 `docs/appside/openapi.yaml` 为准。竞赛模块不依赖上游 ACTIVE build，知识库已就绪，可端到端推进。具体并行 wave、目录所有权、分支和合并门禁见 [competition 并行实施方案](2026-07-02-dext-competition-parallel-implementation-plan.md)。
 
 | 阶段 | 子 spec | 入口条件 | 退出门禁 |
 |---:|---|---|---|

@@ -40,7 +40,7 @@ CompetitionRecommendResponse
   warnings: list[CompetitionWarning]
 ```
 
-`StudentContext` 从共享契约 import，不重复定义。
+`StudentContext` 从共享契约 import，不重复定义。响应同时携带 `competition_ranking_profile_version` 与 `generation_profile_version`；前者只描述排序，后者描述 query-understanding prompt/schema/阈值，禁止互相借用。
 
 ## 3. 需求理解
 
@@ -59,7 +59,7 @@ CompetitionQueryUnderstanding
   needs_clarification
 ```
 
-需求理解通过 `await LLMGenerationPort.generate(...)` 调用共享 async 端口（轻量），输出映射回结构化字段；无法解析时返回 `needs_clarification=true`，不直接触发推荐。
+需求理解通过 `await ConstrainedGenerationPipeline.generate(...)` 调用共享 async 管线的 `competition_query_understanding` operation，输出映射回结构化字段；无法解析时返回 `needs_clarification=true`，不直接触发推荐。业务 core 不直接消费 raw `LLMGenerationPort` 结果。
 
 ## 4. 候选召回与过滤
 

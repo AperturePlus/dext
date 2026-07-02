@@ -100,7 +100,7 @@ LevelDiagnosis
 
 ## 8. 与共享契约对齐
 
-AI 个性化通过 `await LLMGenerationPort.generate(...)` 走共享 async 端口，再同步执行 `CitationValidator`：LLM 输出只能是已知 phaseKey 下的可选任务调整，纯 JSON，客户端解析校验。超 schema 输出由 `CitationValidator`/校验器剔除。
+AI 个性化通过 `await ConstrainedGenerationPipeline.generate(...)` 走共享 async 管线：LLM 输出只能是已知 phaseKey 下的可选任务调整，纯 JSON；operation-specific schema/plan validator 先剔除超 schema 或破坏必做任务/时间模型的输出，再由共享 citation/safety 阶段处理。业务层不得直接调用 raw `LLMGenerationPort` 或重复执行 `CitationValidator`。
 
 ## 9. 验收标准
 

@@ -20,7 +20,7 @@ answer_competition_question(question, competition_id?, context?) -> GroundedAnsw
 compare_competitions(competition_ids[2..4], student_context?) -> CompetitionComparison
 ```
 
-三个接口都通过 `await LLMGenerationPort.generate(...)` 走共享 async 端口，传入阶段 2 的 `CompetitionCard`（映射为共享 `FactBundle`）作为 `fact_bundle`。
+`get_competition_detail` 是 catalog 的确定性只读映射，不调用 LLM。`answer_competition_question` 与 `compare_competitions` 通过 `await ConstrainedGenerationPipeline.generate(...)` 走共享 async 管线，传入阶段 2 的 `CompetitionCard`/阶段 1 chunks（映射为共享 `FactBundle`）。业务服务不直接消费 raw `LLMGenerationPort` 结果。
 
 ## 3. CompetitionDetail
 
@@ -51,9 +51,9 @@ CompetitionDetail
 
 1. 从 query 与 `competition_id`（可选）检索阶段 1 索引的相关 chunk。
 2. 把 chunk 映射为共享 `FactBundle`。
-3. `await` 共享 `LLMGenerationPort` 生成回答。
-4. `CitationValidator` 逐 `Claim` 校验：`fact` 类断言映射回 `SourceRef`，`advice` 引用用户背景时映射回 `UserContextRef`，无法回溯的断言降级 `uncertain` 或剔除。
-5. `SafetyGuard` 拦截概率承诺、违规建议、把往届信息当当届事实等。
+3. `await` 共享 `ConstrainedGenerationPipeline`；管线内固定执行 schema/support-map、`CitationValidator`、`SafetyGuard`。
+4. `fact` claim 必须绑定命中的 FactItem/chunk 与对应 `SourceRef`；无法回溯的断言降级 `uncertain` 或剔除。
+5. pipeline 拦截概率承诺、违规建议、把往届信息当当届事实等；业务层不得再次执行 validation 造成重复 warning。
 
 规则问答覆盖范围（overview §8 评测）：资格、组队、AI 使用、时间、提交物、校内认定和常见混淆，共 20 条样本。
 
