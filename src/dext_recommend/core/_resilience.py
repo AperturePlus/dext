@@ -31,6 +31,7 @@ class RecommendExecutionContext:
     profile: RankingProfile | None = None
     embedding_fingerprint: str | None = None
     phase_diagnostics: list[PhaseDiagnostic] = field(default_factory=list)
+    warnings: list = field(default_factory=list)
 
     def record(self, phase: str, elapsed_ms: float, error_code: str | None,
                attempt: int | None = None) -> None:
@@ -40,6 +41,10 @@ class RecommendExecutionContext:
 
     def snapshot_phase_diagnostics(self) -> tuple[PhaseDiagnostic, ...]:
         return tuple(self.phase_diagnostics)
+
+    def snapshot_warnings(self) -> tuple:
+        """Return accumulated warnings as a stable tuple (insertion order)."""
+        return tuple(self.warnings)
 
 
 async def _guarded_async(
@@ -65,7 +70,8 @@ async def _guarded_async(
 
 
 def _guarded_sync(
-    ctx: RecommendExecutionContext, phase: str, fn: Callable[[], Any],
+    ctx: RecommendExecutionContext, phase: str, code: str,
+    fn: Callable[[], Any],
 ) -> Any:
     start = time.perf_counter()
     try:
@@ -76,8 +82,8 @@ def _guarded_sync(
         raise
     except Exception as exc:
         elapsed = (time.perf_counter() - start) * 1000
-        ctx.record(phase, elapsed, None)
-        raise
+        ctx.record(phase, elapsed, code)
+        raise ClassifiedRecommendError(code, phase, exc) from exc
     elapsed = (time.perf_counter() - start) * 1000
     ctx.record(phase, elapsed, None)
     return result

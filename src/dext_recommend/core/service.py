@@ -56,7 +56,8 @@ def _warn(code: RecommendationErrorCode, message: str, *, severity: str = "warni
 
 def _error_response(*, snapshot: ActiveBuildSnapshot | None, profile: RankingProfile | None,
                     embedding_fingerprint: str | None, warning: RecommendationWarning,
-                    phase_diagnostics: tuple = ()) -> RecommendResponse:
+                    phase_diagnostics: tuple = (),
+                    prior_warnings: tuple[RecommendationWarning, ...] = ()) -> RecommendResponse:
     return make_error_response(
         build_id=snapshot.build_id if snapshot else "unavailable",
         ranking_profile_version=profile.version if profile else (
@@ -68,37 +69,56 @@ def _error_response(*, snapshot: ActiveBuildSnapshot | None, profile: RankingPro
         taxonomy_version=snapshot.taxonomy_version if snapshot else None,
         warning=warning,
         phase_diagnostics=phase_diagnostics,
+        prior_warnings=prior_warnings,
     )
 
 
 def validate_request(request: RecommendRequest, settings: RecommendSettings) -> str | None:
-    """Return an error message string if invalid, else None."""
+    """Return an error message string if invalid, else None.
+
+    This is the admission boundary for RecommendRequest; it must reject
+    malformed input (wrong types included) with a clear message rather than
+    letting downstream comparisons crash with TypeError/AttributeError.
+    """
     if not isinstance(request.query_text, str) or not request.query_text.strip():
         return "query_text must be a non-empty string"
+    if not isinstance(request.limit, int) or isinstance(request.limit, bool):
+        return "limit must be an int"
+    if not isinstance(request.oversample, int) or isinstance(request.oversample, bool):
+        return "oversample must be an int"
     if len(request.query_text) > settings.query_max_chars:
         return f"query_text exceeds {settings.query_max_chars} chars"
     if not (1 <= request.limit <= settings.limit_max):
         return f"limit must be in [1, {settings.limit_max}]"
     if not (1 <= request.oversample <= settings.oversample_max):
         return f"oversample must be in [1, {settings.oversample_max}]"
+    if not isinstance(request.ranking_mode, str):
+        return "ranking_mode must be a string"
     if request.ranking_mode != "explainable_precision":
         return f"ranking_mode {request.ranking_mode!r} not supported"
+    if not isinstance(request.review_policy, str):
+        return "review_policy must be a string"
     if request.review_policy not in ("exclude", "include_downranked"):
         return f"invalid review_policy: {request.review_policy!r}"
+    if not isinstance(request.diagnostics_level, str):
+        return "diagnostics_level must be a string"
     if request.diagnostics_level not in ("none", "summary", "debug"):
         return f"invalid diagnostics_level: {request.diagnostics_level!r}"
-    if request.filters.master_eligibility not in ("any", "confirmed"):
+    filters = request.filters
+    if filters is None or not isinstance(filters, RecommendationFilters):
+        return "filters must be a RecommendationFilters instance"
+    if filters.master_eligibility not in ("any", "confirmed"):
         return "invalid master_eligibility"
-    if request.filters.phd_eligibility not in ("any", "confirmed"):
+    if filters.phd_eligibility not in ("any", "confirmed"):
         return "invalid phd_eligibility"
-    if request.filters.topic_filter_mode not in ("soft", "hard"):
+    if filters.topic_filter_mode not in ("soft", "hard"):
         return "invalid topic_filter_mode"
     # spec §2.2: topic_filter_mode="hard" with empty topic_ids is not a valid
     # request — R3 defaults to NOT allowing topic hard-filter degraded.
-    if request.filters.topic_filter_mode == "hard" and not request.filters.topic_ids:
+    if filters.topic_filter_mode == "hard" and not filters.topic_ids:
         return "topic_filter_mode=hard requires non-empty topic_ids"
     for fld in ("university_ids", "city_names", "org_unit_ids", "title_families", "topic_ids"):
-        for v in getattr(request.filters, fld):
+        for v in getattr(filters, fld):
             if not isinstance(v, str) or not v:
                 return f"filters.{fld} contains empty/non-string value"
     return None
@@ -123,26 +143,32 @@ class RecommendationCore:
 
         err = validate_request(request, self._settings)
         if err is not None:
-            return _error_response(
+            resp = _error_response(
                 snapshot=None, profile=None, embedding_fingerprint=None,
                 warning=_warn(RecommendationErrorCode.INVALID_REQUEST, err, severity="error"),
                 phase_diagnostics=(),
             )
+            validate(resp)
+            return resp
 
         if request.include_contacts and not vp.include_contacts:
-            return _error_response(
+            resp = _error_response(
                 snapshot=None, profile=None, embedding_fingerprint=None,
                 warning=_warn(RecommendationErrorCode.UNAUTHORIZED_CONTACT,
                               "include_contacts requested without permission", severity="error"),
                 phase_diagnostics=(),
             )
+            validate(resp)
+            return resp
         if request.review_policy == "include_downranked" and not vp.can_view_review:
-            return _error_response(
+            resp = _error_response(
                 snapshot=None, profile=None, embedding_fingerprint=None,
                 warning=_warn(RecommendationErrorCode.UNAUTHORIZED_REVIEW,
                               "include_downranked requested without permission", severity="error"),
                 phase_diagnostics=(),
             )
+            validate(resp)
+            return resp
 
         ctx = RecommendExecutionContext()
         try:
@@ -158,6 +184,7 @@ class RecommendationCore:
                               f"recommend exceeded {self._settings.total_timeout}s",
                               severity="error"),
                 phase_diagnostics=ctx.snapshot_phase_diagnostics(),
+                prior_warnings=ctx.snapshot_warnings(),
             )
         except ClassifiedRecommendError as exc:
             return _error_response(
@@ -166,6 +193,7 @@ class RecommendationCore:
                 warning=_warn(RecommendationErrorCode(exc.code),
                               f"{exc.phase} failed", severity="error"),
                 phase_diagnostics=ctx.snapshot_phase_diagnostics(),
+                prior_warnings=ctx.snapshot_warnings(),
             )
 
     async def _recommend_inner(
@@ -176,7 +204,11 @@ class RecommendationCore:
     ) -> RecommendResponse:
         effective_include_contacts = request.include_contacts and vp.include_contacts
 
-        snapshot = _guarded_sync(ctx, "snapshot", lambda: self._deps.snapshot_port.get_snapshot())
+        snapshot = _guarded_sync(
+            ctx, "snapshot",
+            RecommendationErrorCode.ACTIVE_BUILD_UNAVAILABLE.value,
+            lambda: self._deps.snapshot_port.get_snapshot(),
+        )
         if snapshot is None:
             return _error_response(
                 snapshot=None, profile=None, embedding_fingerprint=None,
@@ -187,7 +219,11 @@ class RecommendationCore:
         ctx.snapshot = snapshot
 
         route = resolve_recommend_route(request)
-        route_warnings = list(route.warnings)
+        # ctx.warnings is the request-local warning accumulator (spec 3d §2.3);
+        # route_warnings aliases it so every emission is visible to the
+        # timeout/classified terminal branches that read ctx.snapshot_warnings().
+        route_warnings = ctx.warnings
+        route_warnings.extend(route.warnings)
 
         if route.unsupported:
             warning = _warn(RecommendationErrorCode.UNSUPPORTED_FOR_RECOMMEND_CORE,
@@ -235,6 +271,7 @@ class RecommendationCore:
                 embedding_fingerprint=snapshot.embedding_fingerprint,
                 warning=warning,
                 phase_diagnostics=ctx.snapshot_phase_diagnostics(),
+                prior_warnings=tuple(route_warnings),
             )
             validate(resp)
             return resp
@@ -290,6 +327,7 @@ class RecommendationCore:
                 warning=_warn(RecommendationErrorCode.EMBEDDING_FINGERPRINT_MISMATCH,
                               "embedding fingerprint != snapshot", severity="error"),
                 phase_diagnostics=ctx.snapshot_phase_diagnostics(),
+                prior_warnings=tuple(route_warnings),
             )
 
         coverage_flags = self._deps.coverage_flags_by_build_id.get(snapshot.build_id, {})
@@ -317,6 +355,7 @@ class RecommendationCore:
                 warning=_warn(RecommendationErrorCode.NO_CANDIDATES_AFTER_FILTERS,
                               "no candidates after filters", severity="warning"),
                 phase_diagnostics=ctx.snapshot_phase_diagnostics(),
+                prior_warnings=tuple(route_warnings),
             )
             # attach diagnostics
             diag = QueryDiagnostics(
@@ -337,10 +376,7 @@ class RecommendationCore:
         detail_map, failed = await fetch_details(
             snapshot, self._deps.facts_port, rerank_window_ids,
             include_contacts=effective_include_contacts,
-            viewer_permissions=ViewerPermissions(
-                include_contacts=effective_include_contacts,
-                diagnostics=request.diagnostics_level == "debug",
-            ),
+            viewer_permissions=vp,
             concurrency=profile.detail_fetch_concurrency,
             ctx=ctx,
         )

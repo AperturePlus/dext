@@ -1276,3 +1276,295 @@ async def test_recommend_early_returns_preserve_accumulated_warnings():
     assert resp3.results == ()
     assert len(resp3.phase_diagnostics) >= 1
 
+
+# ---- R3c leftover bug regression tests (P1/P2) ----
+
+
+async def test_recommend_passes_trusted_viewer_permissions_to_detail_port():
+    """P1-A: service.py must pass the trusted `vp` through to fetch_details,
+    not rebuild a ViewerPermissions from request flags. Rebuilding drops
+    can_view_review (defaults False) and lets request.diagnostics_level='debug'
+    elevate diagnostics=True even when the viewer lacks diagnostics permission
+    — both violate the W7 permission boundary."""
+    core = _core()
+    vp = ViewerPermissions(
+        include_contacts=True, can_view_review=True, diagnostics=False,
+    )
+    resp = await core.recommend(
+        RecommendRequest(query_text="NLP 导师", diagnostics_level="debug"),
+        viewer_permissions=vp,
+    )
+    assert resp.results, "expected a non-empty result set"
+    calls = core._deps.facts_port.get_detail_calls
+    assert calls, "detail port was never called"
+    received = calls[0]["viewer_permissions"]
+    # the trusted object must be passed verbatim (same identity)
+    assert received is vp, "detail port received a rebuilt ViewerPermissions, not the trusted vp"
+    assert received.can_view_review is True
+    assert received.diagnostics is False  # NOT elevated by diagnostics_level='debug'
+
+
+async def test_recommend_snapshot_port_exception_returns_active_build_unavailable():
+    """P1-B: get_snapshot() raising a non-Classified exception (e.g. OSError)
+    must surface as active_build_unavailable, never leak as a 500/raw exception.
+    _guarded_sync must classify like _guarded_async."""
+    from dext_recommend.ports._fakes import FakeActiveSnapshotProvider  # noqa: F401
+
+    class _RaisingSnapshotPort:
+        def get_snapshot(self):
+            raise OSError("disk unreadable")
+
+    core = RecommendationCore(
+        RecommendDeps(
+            snapshot_port=_RaisingSnapshotPort(),
+            embedding_port=FakeQueryEmbeddingPort([0.1, 0.2], "fp-x"),
+            vector_port=FakeVectorSearchPort(hits=list(vector_hits_case("happy"))),
+            facts_port=FakeProfessorFactPort(
+                facts=professor_facts_case("happy"),
+                details=professor_details_case("happy"),
+            ),
+            llm_port=fake_llm_for_understanding(_output()),
+            ranking_port=FakeRankingProfilePort(
+                profile=RankingProfile.from_dict(ranking_profile_dict()),
+            ),
+            coverage_flags_by_build_id=coverage_flags_case("b-1"),
+        ),
+        RecommendSettings(),
+    )
+    resp = await core.recommend(RecommendRequest(query_text="NLP"))
+    codes = [w.code for w in resp.warnings]
+    assert "active_build_unavailable" in codes
+    assert resp.results == ()
+    # the snapshot phase diagnostic recorded a failure code (not None)
+    snap_phases = [pd for pd in resp.phase_diagnostics if pd.phase == "snapshot"]
+    assert snap_phases and any(pd.error_code for pd in snap_phases)
+
+
+async def test_recommend_no_candidates_preserves_prior_missing_anchor_warning():
+    """P1-C: when an early return fires (no_candidates after filters), any
+    warning accumulated earlier in the pipeline (e.g. missing_anchor from a
+    same_field fallback) MUST be preserved alongside the triggering warning.
+    The previous code built _error_response with only the triggering warning,
+    silently dropping accumulated route_warnings."""
+    from dext_recommend import VectorHit
+    # same_field intent whose anchor is missing from the facts map -> emits
+    # missing_anchor and falls back to new_search; then a hard university filter
+    # matching nothing -> no_candidates_after_filters. Both warnings must appear.
+    hits = [
+        VectorHit("e_nlp_a", 0.90, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_nlp"],
+        }),
+    ]
+    # anchor fact deliberately absent -> missing_anchor; the single survivor's
+    # university is u_demo so a u_nonexistent filter yields no_candidates.
+    facts = {"e_nlp_a": _fact("e_nlp_a", topic_ids=("topic_nlp",))}
+    details = {"e_nlp_a": _detail("e_nlp_a", topics=("topic_nlp",))}
+    core = _core(hits=hits, facts=facts, details=details)
+    resp = await core.recommend(RecommendRequest(
+        query_text="NLP",
+        filters=RecommendationFilters(university_ids=("u_nonexistent",)),
+        conversation_context=ConversationContext(
+            intent="same_field", anchor_entity_id="e_nlp_anchor",
+        ),
+    ))
+    codes = [w.code for w in resp.warnings]
+    assert "missing_anchor" in codes, "prior accumulated warning was dropped"
+    assert "no_candidates_after_filters" in codes
+
+
+async def test_recommend_validate_request_rejects_string_limit_as_invalid_request():
+    """P2-A: limit='10' (str instead of int) must return invalid_request,
+    NOT raise TypeError out of recommend(). validate_request is the admission
+    boundary; it must not crash on wrong-typed scalars."""
+    core = _core()
+    resp = await core.recommend(RecommendRequest(query_text="NLP", limit="10"))  # type: ignore[arg-type]
+    codes = [w.code for w in resp.warnings]
+    assert "invalid_request" in codes
+    assert resp.results == ()
+    assert core._deps.vector_port.hybrid_recall_calls == []
+
+
+async def test_recommend_validate_request_rejects_none_filters_as_invalid_request():
+    """P2-A: filters=None must return invalid_request, NOT raise AttributeError
+    out of recommend()."""
+    core = _core()
+    req = RecommendRequest(query_text="NLP")  # type: ignore[call-arg]
+    object.__setattr__(req, "filters", None)  # simulate a deserialization gap
+    resp = await core.recommend(req)
+    codes = [w.code for w in resp.warnings]
+    assert "invalid_request" in codes
+    assert resp.results == ()
+    assert core._deps.vector_port.hybrid_recall_calls == []
+
+
+# ---- R3d closure §2.3: prior warnings survive terminal failure ----
+
+
+async def test_recommend_missing_anchor_then_vector_failure_preserves_both_warnings():
+    """spec 3d §2.3: missing_anchor -> vector failure must carry BOTH the
+    missing_anchor warning AND the terminating vector_unavailable code. The
+    ClassifiedRecommendError branch must not drop route_warnings accumulated
+    before the failure."""
+    from dext_recommend import VectorHit
+    from dext_recommend.ports._fakes import (
+        FakeActiveSnapshotProvider, FakeQueryEmbeddingPort, FakeRankingProfilePort,
+        FakeProfessorFactPort,
+    )
+    from tests.dext_recommend._recfixtures import (
+        coverage_flags_case, professor_details_case, professor_facts_case,
+        ranking_profile_dict, snapshot as snap_fn,
+    )
+
+    class _VectorFailureAfterRecall:
+        # hybrid_recall raises on every call -> vector_unavailable classified
+        def __init__(self):
+            self.hybrid_recall_calls: list[dict] = []
+        async def hybrid_recall(self, snapshot, qv, filters, oversample,
+                                profile_version, *, rrf_k, sparse_vector=None):
+            self.hybrid_recall_calls.append({"oversample": oversample})
+            raise RuntimeError("vector svc down")
+
+    snap = snap_fn()
+    hits = [
+        VectorHit("e_nlp_a", 0.90, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_nlp"],
+        }),
+    ]
+    # anchor fact deliberately absent -> missing_anchor emitted + fallback
+    facts = {"e_nlp_a": _fact("e_nlp_a", topic_ids=("topic_nlp",))}
+    details = {"e_nlp_a": _detail("e_nlp_a", topics=("topic_nlp",))}
+    prof = RankingProfile.from_dict(ranking_profile_dict())
+    core = RecommendationCore(
+        RecommendDeps(
+            snapshot_port=FakeActiveSnapshotProvider(snap),
+            embedding_port=FakeQueryEmbeddingPort([0.1, 0.2], "fp-x"),
+            vector_port=_VectorFailureAfterRecall(),
+            facts_port=FakeProfessorFactPort(facts=facts, details=details),
+            llm_port=fake_llm_for_understanding(_output()),
+            ranking_port=FakeRankingProfilePort(profile=prof),
+            coverage_flags_by_build_id=coverage_flags_case(snap.build_id),
+        ),
+        RecommendSettings(),
+    )
+    resp = await core.recommend(RecommendRequest(
+        query_text="NLP",
+        conversation_context=ConversationContext(
+            intent="same_field", anchor_entity_id="e_nlp_anchor",
+        ),
+    ))
+    codes = [w.code for w in resp.warnings]
+    assert "missing_anchor" in codes, "prior missing_anchor dropped on classified error"
+    assert "vector_unavailable" in codes, "terminating error code missing"
+    assert resp.results == ()
+
+
+async def test_recommend_missing_anchor_then_timeout_preserves_both_warnings():
+    """spec 3d §2.3: missing_anchor -> request timeout must carry BOTH the
+    missing_anchor warning AND the terminating request_timeout code. The
+    asyncio.TimeoutError branch must not drop route_warnings."""
+    from dext_recommend import VectorHit
+    from dext_recommend.config import RecommendSettings
+    from dext_recommend.ports._fakes import (
+        FakeActiveSnapshotProvider, FakeQueryEmbeddingPort, FakeRankingProfilePort,
+        FakeProfessorFactPort,
+    )
+    from tests.dext_recommend._recfixtures import (
+        coverage_flags_case, ranking_profile_dict, snapshot as snap_fn,
+    )
+
+    class _SlowVectorPort:
+        def __init__(self):
+            self.hybrid_recall_calls: list[dict] = []
+        async def hybrid_recall(self, snapshot, qv, filters, oversample,
+                                profile_version, *, rrf_k, sparse_vector=None):
+            self.hybrid_recall_calls.append({"oversample": oversample})
+            import asyncio as _a
+            await _a.sleep(5.0)
+            return []
+
+    snap = snap_fn()
+    hits = [
+        VectorHit("e_nlp_a", 0.90, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_nlp"],
+        }),
+    ]
+    facts = {"e_nlp_a": _fact("e_nlp_a", topic_ids=("topic_nlp",))}
+    details = {"e_nlp_a": _detail("e_nlp_a", topics=("topic_nlp",))}
+    prof = RankingProfile.from_dict(ranking_profile_dict())
+    settings = RecommendSettings(total_timeout=0.2)
+    core = RecommendationCore(
+        RecommendDeps(
+            snapshot_port=FakeActiveSnapshotProvider(snap),
+            embedding_port=FakeQueryEmbeddingPort([0.1, 0.2], "fp-x"),
+            vector_port=_SlowVectorPort(),
+            facts_port=FakeProfessorFactPort(facts=facts, details=details),
+            llm_port=fake_llm_for_understanding(_output()),
+            ranking_port=FakeRankingProfilePort(profile=prof),
+            coverage_flags_by_build_id=coverage_flags_case(snap.build_id),
+        ),
+        settings,
+    )
+    resp = await core.recommend(RecommendRequest(
+        query_text="NLP",
+        conversation_context=ConversationContext(
+            intent="same_field", anchor_entity_id="e_nlp_anchor",
+        ),
+    ))
+    codes = [w.code for w in resp.warnings]
+    assert "missing_anchor" in codes, "prior missing_anchor dropped on timeout"
+    assert "request_timeout" in codes, "terminating timeout code missing"
+    assert resp.results == ()
+
+
+async def test_recommend_invalid_request_response_is_validated():
+    """spec 3d §2.3: 'returned before unconditional validate(response)'. The
+    INVALID_REQUEST admission early-return must produce a response that passes
+    validate() — i.e. be a well-formed error response (results==(), an error
+    warning present, non-tuple fields rejected). We assert shape invariants
+    validate itself checks; this also guards against a future builder change
+    that forgets validate on the admission path."""
+    from dext_recommend.core.validation import validate
+    core = _core()
+    resp = await core.recommend(RecommendRequest(query_text="", limit=5))
+    codes = [w.code for w in resp.warnings]
+    assert "invalid_request" in codes
+    # validate() must not raise on the admission early-return response
+    validate(resp)
+    assert resp.results == ()
+
+
+async def test_recommend_unauthorized_contact_response_is_validated():
+    """spec 3d §2.3: the UNAUTHORIZED_CONTACT admission early-return must also
+    pass validate()."""
+    from dext_recommend.core.validation import validate
+    core = _core()
+    resp = await core.recommend(RecommendRequest(
+        query_text="NLP", include_contacts=True,
+    ))
+    codes = [w.code for w in resp.warnings]
+    assert "unauthorized_contact" in codes
+    validate(resp)  # must not raise
+    assert resp.results == ()
+
+
+async def test_recommend_unauthorized_review_response_is_validated():
+    """spec 3d §2.3: the UNAUTHORIZED_REVIEW admission early-return must also
+    pass validate()."""
+    from dext_recommend.core.validation import validate
+    core = _core()
+    resp = await core.recommend(RecommendRequest(
+        query_text="NLP", review_policy="include_downranked",
+    ))
+    codes = [w.code for w in resp.warnings]
+    assert "unauthorized_review" in codes
+    validate(resp)  # must not raise
+    assert resp.results == ()

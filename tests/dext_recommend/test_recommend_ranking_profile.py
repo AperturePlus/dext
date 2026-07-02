@@ -107,3 +107,75 @@ def test_ranking_profile_validates_same_field_boost_fields():
         assert False, "max > 1 should raise"
     except ValueError:
         pass
+
+
+# ---- R3c leftover: numeric validation gaps (P2-B) ----
+
+
+def _base_profile_dict(**over):
+    base = dict(
+        version="r1", weights={"semantic_score": 0.50, "topic_statement_score": 0.18,
+            "student_fit_score": 0.12, "eligibility_score": 0.08,
+            "provenance_score": 0.08, "completeness_score": 0.04},
+        rrf_k=60, oversample_steps=(200, 400), detail_rerank_window=50,
+        detail_fetch_concurrency=8, detail_rerank_window_max=100,
+        match_level_thresholds={"excellent": 0.75, "strong": 0.55, "possible": 0.35},
+        tie_break=("score", "semantic_score", "evidence_count", "entity_id"),
+        same_field_boost_per_topic=0.05, same_field_boost_max=0.15,
+    )
+    base.update(over)
+    return base
+
+
+def test_ranking_profile_rejects_negative_weight():
+    """A negative weight still sums to ~1.0 but is invalid; must be rejected."""
+    import math
+    bad = _base_profile_dict()
+    bad["weights"] = {
+        "semantic_score": 0.70, "topic_statement_score": 0.18,
+        "student_fit_score": 0.12, "eligibility_score": 0.08,
+        "provenance_score": 0.08, "completeness_score": -0.16,  # sums to 1.0
+    }
+    assert math.isclose(sum(bad["weights"].values()), 1.0, abs_tol=0.01)
+    with pytest.raises(ValueError):
+        RankingProfile.from_dict(bad)
+
+
+def test_ranking_profile_rejects_nan_weight():
+    """NaN weight poisons comparisons and must be rejected even though sum()
+    returns NaN (which fails the != 1.0 check, but for the wrong reason)."""
+    bad = _base_profile_dict()
+    bad["weights"] = {
+        "semantic_score": float("nan"), "topic_statement_score": 0.18,
+        "student_fit_score": 0.12, "eligibility_score": 0.08,
+        "provenance_score": 0.08, "completeness_score": 0.04,
+    }
+    with pytest.raises(ValueError):
+        RankingProfile.from_dict(bad)
+
+
+def test_ranking_profile_rejects_infinity_weight():
+    """Infinity weight must be rejected explicitly."""
+    bad = _base_profile_dict()
+    bad["weights"] = {
+        "semantic_score": float("inf"), "topic_statement_score": 0.18,
+        "student_fit_score": 0.12, "eligibility_score": 0.08,
+        "provenance_score": 0.08, "completeness_score": 0.04,
+    }
+    with pytest.raises(ValueError):
+        RankingProfile.from_dict(bad)
+
+
+def test_ranking_profile_rejects_non_positive_oversample_step():
+    """oversample_steps must be strictly increasing AND all positive. A step of
+    0 (or negative) is invalid even if the sequence is strictly increasing."""
+    bad = _base_profile_dict(oversample_steps=(0, 200, 400))
+    # strictly increasing holds, but 0 is not a valid oversample
+    with pytest.raises(ValueError):
+        RankingProfile.from_dict(bad)
+
+
+def test_ranking_profile_rejects_negative_oversample_step():
+    bad = _base_profile_dict(oversample_steps=(-100, 200, 400))
+    with pytest.raises(ValueError):
+        RankingProfile.from_dict(bad)
