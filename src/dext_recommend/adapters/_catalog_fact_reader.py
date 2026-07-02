@@ -40,6 +40,9 @@ class CatalogProfessorFactReader(Protocol):
     async def read_fact_rows(
         self, build_id: str, entity_ids: list[str],
     ) -> tuple[Mapping[str, Any], ...]: ...
+    async def read_detail_rows(
+        self, build_id: str, entity_id: str,
+    ) -> "CatalogProfessorDetailRows | None": ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,7 +112,7 @@ ORDER BY l.statement_id, l.topic_id
 """
 
 _FINDINGS_SQL = """
-SELECT id, severity, code, details_json, resolved
+SELECT id, severity, code, observation_id, details_json, resolved
 FROM quality_findings
 WHERE build_id=? AND entity_id=? AND resolved=0
 ORDER BY id
@@ -120,7 +123,8 @@ SELECT university_name FROM build_source_tasks WHERE build_id=? AND university_i
 """
 
 _SOURCE_URLS_SQL = """
-SELECT DISTINCT po.source_url, po.source_document_id, sd.fetched_at
+SELECT DISTINCT po.id AS observation_id, po.source_url,
+       po.source_document_id, sd.fetched_at
 FROM professor_observations po
 JOIN entity_observations eo
   ON eo.observation_id=po.id AND eo.build_id=?
@@ -131,7 +135,7 @@ ORDER BY po.source_url
 
 
 _FACT_ROWS_SQL = """
-SELECT cp.entity_id, cp.name AS display_name, cp.title_family,
+SELECT cp.entity_id, cp.name AS display_name, cp.title_raw, cp.title_family,
        cp.role_status, cp.master_eligibility, cp.phd_eligibility,
        cp.profile_url, cp.profile_url AS external_url,
        pp.profile_hash, pp.payload_json AS profile_payload_json,
@@ -145,20 +149,69 @@ ORDER BY cp.entity_id
 """
 
 
-def _safe_json(payload: str | None, *, entity_id: str) -> dict[str, Any]:
+_FACT_UNIVERSITIES_SQL = """
+SELECT university_id, university_name
+FROM build_source_tasks
+WHERE build_id=? AND university_id IN (%s)
+"""
+
+
+_FACT_OBSERVATIONS_SQL = """
+SELECT eo.entity_id, po.id AS observation_id,
+       po.payload_json AS observation_payload_json
+FROM entity_observations eo
+JOIN professor_observations po ON po.id=eo.observation_id
+WHERE eo.build_id=? AND eo.entity_id IN (%s) AND po.active=1
+ORDER BY eo.entity_id, po.id
+"""
+
+
+def _safe_json(
+    payload: str | None, *, entity_id: str, field: str = "profile payload_json",
+) -> dict[str, Any]:
     if payload is None:
         return {}
     try:
         value = json.loads(payload)
     except (TypeError, ValueError) as exc:
         raise ReadinessSourceError(
-            "catalog", f"invalid profile payload_json for entity {entity_id}",
+            "catalog", f"invalid {field} for entity {entity_id}",
         ) from exc
     if not isinstance(value, dict):
         raise ReadinessSourceError(
-            "catalog", f"profile payload_json not an object for entity {entity_id}",
+            "catalog", f"{field} not an object for entity {entity_id}",
         )
     return value
+
+
+def _safe_str_list_json(
+    payload: str | None, *, entity_id: str, field: str,
+) -> tuple[str, ...]:
+    if payload is None or payload == "":
+        return ()
+    try:
+        value = json.loads(payload)
+    except (TypeError, ValueError) as exc:
+        raise ReadinessSourceError(
+            "catalog", f"invalid {field} for entity {entity_id}",
+        ) from exc
+    if not isinstance(value, list):
+        raise ReadinessSourceError(
+            "catalog", f"{field} not an array for entity {entity_id}",
+        )
+    return tuple(dict.fromkeys(str(item) for item in value if item is not None))
+
+
+def _org_unit_names_from_payload(payload: Mapping[str, Any]) -> tuple[str, ...]:
+    names: list[str] = []
+    affiliations = payload.get("affiliations")
+    if isinstance(affiliations, list):
+        for item in affiliations:
+            if isinstance(item, Mapping) and item.get("org_unit_name"):
+                names.append(str(item["org_unit_name"]))
+    elif payload.get("org_unit_name"):
+        names.append(str(payload["org_unit_name"]))
+    return tuple(dict.fromkeys(names))
 
 
 async def _guarded_read(coro, timeout: float):
@@ -254,25 +307,67 @@ class CatalogSqliteFactReader:
             try:
                 with closing(self._connect_ro()) as conn:
                     rows = conn.execute(sql, (build_id, *chunk)).fetchall()
+                    out: list[dict[str, Any]] = []
+                    university_ids: list[str] = []
+                    for raw in rows:
+                        d = dict(raw)
+                        payload = _safe_json(
+                            d.pop("profile_payload_json", None),
+                            entity_id=d["entity_id"],
+                        )
+                        university_id = payload.get("university_id")
+                        d["university_id"] = (
+                            None if university_id is None else str(university_id)
+                        )
+                        if d["university_id"] is not None:
+                            university_ids.append(d["university_id"])
+                        d["org_unit_ids"] = _coerce_str_tuple(payload.get("org_unit_ids"))
+                        d["city_name"] = payload.get("city")
+                        d["topic_ids"] = _coerce_str_tuple(payload.get("topic_ids"))
+                        if not d.get("profile_hash"):
+                            d["profile_hash"] = None
+                        out.append(d)
+
+                    university_names: dict[str, str] = {}
+                    unique_university_ids = tuple(dict.fromkeys(university_ids))
+                    if unique_university_ids:
+                        university_placeholders = ",".join(
+                            "?" for _ in unique_university_ids
+                        )
+                        university_sql = _FACT_UNIVERSITIES_SQL % university_placeholders
+                        university_names = {
+                            str(row["university_id"]): str(row["university_name"])
+                            for row in conn.execute(
+                                university_sql,
+                                (build_id, *unique_university_ids),
+                            )
+                        }
+
+                    org_names_by_entity: dict[str, list[str]] = {}
+                    observation_sql = _FACT_OBSERVATIONS_SQL % placeholders
+                    for observation in conn.execute(
+                        observation_sql, (build_id, *chunk),
+                    ):
+                        entity_id = str(observation["entity_id"])
+                        payload = _safe_json(
+                            observation["observation_payload_json"],
+                            entity_id=entity_id,
+                            field="observation payload_json",
+                        )
+                        org_names_by_entity.setdefault(entity_id, []).extend(
+                            _org_unit_names_from_payload(payload)
+                        )
             except sqlite3.Error as exc:
                 raise ReadinessSourceError(
                     "catalog",
                     f"sqlite read failed: {exc.__class__.__name__}",
                 ) from exc
-            out: list[Mapping[str, Any]] = []
-            for raw in rows:
-                d = dict(raw)
-                payload = _safe_json(
-                    d.pop("profile_payload_json", None),
-                    entity_id=d["entity_id"],
-                )
-                d["university_id"] = payload.get("university_id")
-                d["org_unit_ids"] = _coerce_str_tuple(payload.get("org_unit_ids"))
-                d["city_name"] = payload.get("city")
-                d["topic_ids"] = _coerce_str_tuple(payload.get("topic_ids"))
-                if not d.get("profile_hash"):
-                    d["profile_hash"] = None
-                out.append(d)
+            for d in out:
+                university_id = d["university_id"]
+                d["university_name"] = university_names.get(university_id, university_id)
+                d["org_unit_names"] = tuple(dict.fromkeys(
+                    org_names_by_entity.get(str(d["entity_id"]), ())
+                ))
             return tuple(out)
 
         async def _read_all() -> tuple[Mapping[str, Any], ...]:
@@ -297,6 +392,11 @@ class CatalogSqliteFactReader:
                     if canon is None:
                         return None
                     canon = dict(canon)
+                    canon["role_reason_codes"] = _safe_str_list_json(
+                        canon.get("role_reason_codes"),
+                        entity_id=entity_id,
+                        field="role_reason_codes",
+                    )
                     profile_row = conn.execute(
                         _PROFILE_SQL, (build_id, entity_id),
                     ).fetchone()
@@ -315,11 +415,18 @@ class CatalogSqliteFactReader:
                         ).fetchone()
                         if u is not None:
                             university_name = u["university_name"]
-                    observations = tuple(
-                        dict(r) for r in conn.execute(
-                            _OBSERVATIONS_SQL, (build_id, entity_id),
+                    observations_list: list[Mapping[str, Any]] = []
+                    for raw_observation in conn.execute(
+                        _OBSERVATIONS_SQL, (build_id, entity_id),
+                    ):
+                        observation = dict(raw_observation)
+                        observation["observation_payload"] = _safe_json(
+                            observation.get("observation_payload_json"),
+                            entity_id=entity_id,
+                            field="observation payload_json",
                         )
-                    )
+                        observations_list.append(observation)
+                    observations = tuple(observations_list)
                     statements = tuple(
                         dict(r) for r in conn.execute(_STATEMENTS_SQL, (build_id, entity_id))
                     )
