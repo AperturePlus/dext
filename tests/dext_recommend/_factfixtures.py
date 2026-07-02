@@ -170,9 +170,9 @@ _INSERTS = {
     ),
     "professor_observations": (
         "INSERT INTO professor_observations(id,university_id,source_snapshot_id,"
-        "source_url,source_page_kind,name_raw,name_key,payload_json,row_hash,"
+        "source_url,source_page_kind,source_document_id,name_raw,name_key,payload_json,row_hash,"
         "provenance_grade,first_seen_build,last_seen_build,active) "
-        "VALUES (?,?,?,?,?,'fixture-name','fixture-key',?,?,?,?,?,?)"
+        "VALUES (?,?,?,?,?,?,'fixture-name','fixture-key',?,?,?,?,?,?)"
     ),
     "quality_findings": (
         "INSERT INTO quality_findings(id,build_id,severity,code,entity_id,"

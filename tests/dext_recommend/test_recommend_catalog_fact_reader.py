@@ -177,6 +177,39 @@ def test_read_fact_rows_parses_payload_authority_fields(tmp_path):
     assert r["role_status"] == "included"
 
 
+def test_read_fact_rows_resolves_display_fields_from_published_sources(tmp_path):
+    profs = [
+        ("e1", "b1", "A", "Professor", "professor", "included", "[]",
+         "confirmed", "unknown", "NLP and systems", None, None, None,
+         "https://x/e1", None, 1, 0.9),
+    ]
+    profiles = [
+        ("b1", "e1", "h1", "tv", "ti", "np", 10,
+         _profile_payload("e1", university_id="u1", org_unit_ids=("ou_cs",)),
+         "2026-01-01T00:00:00+00:00"),
+    ]
+    observations = [
+        ("obs1", "u1", "snap1", "https://x/e1", "single_profile", None,
+         dumps({"affiliations": [{"org_unit_name": "Computer Science"}]}),
+         "rh1", "direct", "b1", "b1", 1),
+    ]
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=[_active_build()],
+        canonical_professors=profs, professor_profiles=profiles,
+        professor_observations=observations,
+        entity_observations=[("e1", "obs1", "strong", "b1")],
+        build_source_tasks=[
+            ("b1", "u1", "Tsinghua", "tsinghua", "/src", 0,
+             "COMPLETED", "2026-01-01T00:00:00+00:00"),
+        ],
+    )
+    rows = asyncio.run(CatalogSqliteFactReader(path).read_fact_rows("b1", ["e1"]))
+    assert rows[0]["university_name"] == "Tsinghua"
+    assert rows[0]["org_unit_names"] == ("Computer Science",)
+    assert rows[0]["title_raw"] == "Professor"
+    assert rows[0]["research_areas_text"] == "NLP and systems"
+
+
 def test_read_fact_rows_profile_hash_column_is_sole_authority(tmp_path):
     # column is empty string, payload carries a hash -> result must be None (column is authority per R4b §2)
     profs = [
@@ -262,6 +295,7 @@ def test_read_detail_rows_returns_full_evidence(tmp_path):
     ]
     observations = [
         ("obs1", "u1", "snap1", "https://x/p", "single_profile",
+         "doc1",
          dumps({"affiliations": [{"org_unit_name": "Dept CS"}]}),
          "rh1", "direct", "b1", "b1", 1),
     ]
@@ -346,6 +380,49 @@ def test_read_detail_rows_review_entity_returned_for_gating(tmp_path):
     rows = asyncio.run(reader.read_detail_rows("b1", "e1"))
     assert rows is not None
     assert rows.canonical["role_status"] == "review"
+
+
+def test_read_detail_rows_invalid_observation_payload_raises_safe_error(tmp_path):
+    profs = [
+        ("e1", "b1", "A", "Prof.", "professor", "included", "[]",
+         "confirmed", "unknown", None, None, None, None, None, None, 1, 0.5),
+    ]
+    observations = [
+        ("obs1", "u1", "snap1", "https://x/e1", "single_profile", None,
+         "not-json{", "rh1", "direct", "b1", "b1", 1),
+    ]
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=[_active_build()],
+        canonical_professors=profs, professor_observations=observations,
+        entity_observations=[("e1", "obs1", "strong", "b1")],
+    )
+    with pytest.raises(ReadinessSourceError) as exc:
+        asyncio.run(CatalogSqliteFactReader(path).read_detail_rows("b1", "e1"))
+    assert exc.value.source == "catalog"
+    assert "not-json{" not in exc.value.reason
+    assert "observation payload_json" in exc.value.reason
+
+
+def test_read_detail_rows_invalid_role_reason_codes_raises_safe_error(tmp_path):
+    profs = [
+        ("e1", "b1", "A", "Prof.", "professor", "included", "private{raw",
+         "confirmed", "unknown", None, None, None, None, None, None, 1, 0.5),
+    ]
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=[_active_build()],
+        canonical_professors=profs,
+    )
+    with pytest.raises(ReadinessSourceError) as exc:
+        asyncio.run(CatalogSqliteFactReader(path).read_detail_rows("b1", "e1"))
+    assert exc.value.source == "catalog"
+    assert "private{raw" not in exc.value.reason
+    assert "role_reason_codes" in exc.value.reason
+
+
+def test_catalog_professor_fact_reader_protocol_declares_detail_read():
+    from dext_recommend.adapters._catalog_fact_reader import CatalogProfessorFactReader
+
+    assert callable(getattr(CatalogProfessorFactReader, "read_detail_rows", None))
 
 
 # --- Task 6: read-only / thread-offload / timeout invariants ---

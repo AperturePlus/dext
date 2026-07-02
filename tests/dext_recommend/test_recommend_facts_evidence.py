@@ -34,8 +34,8 @@ from dext_grounded import FactItem, SourceRef
 from dext_grounded.content import ContentClass
 
 from dext_recommend.facts.evidence import (
-    WEAK_EXPLANATION_TEXT, build_fact_items, select_publication_snippets,
-    select_statement_snippets,
+    WEAK_EXPLANATION_TEXT, build_fact_items, select_publication_rows,
+    select_publication_snippets, select_statement_rows, select_statement_snippets,
 )
 
 
@@ -65,6 +65,18 @@ def test_select_publication_snippets_excludes_needs_review():
     ]
     out = select_publication_snippets(mentions)
     assert out == ("ok",)
+    selected = select_publication_rows(mentions)
+    assert tuple(row["id"] for row in selected) == ("m1",)
+
+
+def test_statement_row_selection_matches_snippet_budget():
+    statements = [
+        {"id": "s1", "normalized_text": "selected"},
+        {"id": "s2", "normalized_text": "x" * 100},
+    ]
+    selected = select_statement_rows(statements, max_chars=20)
+    assert tuple(row["id"] for row in selected) == ("s1",)
+    assert select_statement_snippets(statements, max_chars=20) == ("selected",)
 
 
 def test_build_fact_items_fact_with_source_ref():

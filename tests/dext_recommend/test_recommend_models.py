@@ -274,3 +274,63 @@ def test_professor_detail_fact_bundle_is_required():
             quality_findings=(), risk_flags=(),
             # fact_bundle omitted
         )
+
+
+def _detail_for_bundle_invariant(bundle, *, provenance_refs=()):
+    from dext_recommend.ports.professor_facts import ProfessorDetail
+
+    return ProfessorDetail(
+        build_id="b1", profile_hash=None, entity_id="e1", display_name="A",
+        university="U", org_units=(), title="Prof.", title_family="professor",
+        master_eligibility="confirmed", phd_eligibility="unknown",
+        role_status="included", profile_url=None,
+        research_statements=(), approved_topics=(),
+        selected_publication_mentions=(), bio_snippets=(), source_urls=(),
+        provenance_refs=provenance_refs, quality_findings=(), risk_flags=(),
+        fact_bundle=bundle,
+    )
+
+
+def test_professor_detail_rejects_mismatched_bundle_identity():
+    import pytest
+    from dext_grounded import FactBundle
+
+    with pytest.raises(ValueError, match="build_id"):
+        _detail_for_bundle_invariant(FactBundle(
+            build_id="other", subject_id="e1", facts=(), source_refs=(),
+        ))
+    with pytest.raises(ValueError, match="subject_id"):
+        _detail_for_bundle_invariant(FactBundle(
+            build_id="b1", subject_id="other", facts=(), source_refs=(),
+        ))
+
+
+def test_professor_detail_rejects_mismatched_provenance_projection():
+    import pytest
+    from dext_grounded import FactBundle, SourceRef
+
+    ref = SourceRef(
+        doc_path="catalog", heading_path="entity", chunk_hash="h",
+        quote_or_summary="A",
+    )
+    with pytest.raises(ValueError, match="provenance_refs"):
+        _detail_for_bundle_invariant(FactBundle(
+            build_id="b1", subject_id="e1", facts=(), source_refs=(ref,),
+        ))
+
+
+def test_professor_detail_rejects_contacts_in_fact_bundle():
+    import pytest
+    from dext_grounded import FactBundle, FactItem
+    from dext_grounded.content import ContentClass
+
+    bundle = FactBundle(
+        build_id="b1", subject_id="e1",
+        facts=(FactItem(
+            field="email", value="private@example.test",
+            content_class=ContentClass.UNCERTAIN,
+        ),),
+        source_refs=(),
+    )
+    with pytest.raises(ValueError, match="contacts"):
+        _detail_for_bundle_invariant(bundle)

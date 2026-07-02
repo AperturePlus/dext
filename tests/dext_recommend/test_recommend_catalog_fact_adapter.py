@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 
 from dext_recommend.adapters._catalog_fact_reader import CatalogSqliteFactReader
 from dext_recommend.adapters.catalog_professor_facts import CatalogProfessorFactAdapter
@@ -60,6 +61,41 @@ def test_hydrate_returns_facts_with_authority_fields(tmp_path):
     assert f.master_eligibility == "confirmed"
     assert f.role_status == "included"
     assert f.profile_hash == "h1"
+
+
+def test_hydrate_display_fields_flow_to_recommendation_card(tmp_path):
+    path = _full_entity_db(tmp_path)
+    adapter = CatalogProfessorFactAdapter(
+        CatalogSqliteFactReader(path), settings=RecommendSettings(),
+    )
+    fact = asyncio.run(adapter.hydrate(_snapshot(), ["e1"]))["e1"]
+
+    from dext_recommend.core.cards import assemble_card
+    from dext_recommend.core.explanation import build_explanation
+    from dext_recommend.core.rerank import RerankEntry
+    from dext_recommend.models import QueryUnderstanding
+
+    entry = RerankEntry(
+        entity_id="e1", score=0.8,
+        score_components={"semantic_score": 0.8},
+        match_level="strong", evidence_count=0,
+    )
+    explanation = build_explanation(entry, fact, None, query_terms=())
+    query = QueryUnderstanding(
+        research_interests=(), preferred_universities=(), preferred_cities=(),
+        preferred_org_units=(), degree_goal=None,
+        mentor_eligibility_requirement=None, missing_information=(),
+        needs_clarification=False, confidence=1.0,
+    )
+    card = assemble_card(
+        entry, fact, None, explanation, query, include_contacts=False,
+    )
+    assert card.university == "Tsinghua"
+    assert card.org_units == ("Dept CS",)
+    assert card.title == "Prof."
+    assert card.research_summary == "areas"
+    assert fact.university_id == "u1"
+    assert fact.org_unit_ids == ("ou_cs",)
 
 
 def test_hydrate_silently_drops_excluded_and_inactive(tmp_path):
@@ -150,9 +186,10 @@ from tests.dext_recommend._factfixtures import dumps
 
 
 def _full_entity_db(tmp_path, *, role_status="included", profile_hash="h1",
-                    email="e@x", phone="123"):
+                    email="e@x", phone="123", role_reason_codes=()):
     profs = [
-        ("e1", "b1", "A", "Prof.", "professor", role_status, "[]",
+        ("e1", "b1", "A", "Prof.", "professor", role_status,
+         dumps(list(role_reason_codes)),
          "confirmed", "unknown", "areas", "bio1", email, phone,
          "https://x/p", "https://x/e", 1, 0.9),
     ]
@@ -167,6 +204,7 @@ def _full_entity_db(tmp_path, *, role_status="included", profile_hash="h1",
     ]
     observations = [
         ("obs1", "u1", "snap1", "https://x/p?utm_source=foo", "single_profile",
+         "doc1",
          dumps({"affiliations": [{"org_unit_name": "Dept CS"}]}),
          "rh1", "direct", "b1", "b1", 1),
     ]
@@ -248,6 +286,94 @@ def test_get_detail_fact_bundle_invariants(tmp_path):
     for item in detail.fact_bundle.facts:
         if not item.source_refs:
             assert item.content_class is ContentClass.UNCERTAIN
+
+
+def test_get_detail_fact_bundle_covers_all_r4_fact_blocks(tmp_path):
+    path = _full_entity_db(tmp_path, role_reason_codes=("eligibility_conflict",))
+    adapter = CatalogProfessorFactAdapter(
+        CatalogSqliteFactReader(path), settings=RecommendSettings(),
+    )
+    detail = asyncio.run(adapter.get_detail(
+        _snapshot(), "e1", include_contacts=False,
+        viewer_permissions=ViewerPermissions(),
+    ))
+    by_field = {item.field: item for item in detail.fact_bundle.facts}
+    assert {
+        "display_name", "university", "org_units", "title", "title_family",
+        "master_eligibility", "phd_eligibility", "role_status", "profile_url",
+        "research_statement", "approved_topics", "publications", "bio",
+        "data_sources", "quality_findings", "risk_flags",
+    } <= set(by_field)
+    assert by_field["university"].value == "Tsinghua"
+    assert by_field["org_units"].value == "Dept CS"
+    assert by_field["risk_flags"].value == "eligibility_conflict"
+    union = tuple(dict.fromkeys(
+        ref for item in detail.fact_bundle.facts for ref in item.source_refs
+    ))
+    assert detail.fact_bundle.source_refs == union
+    assert detail.provenance_refs == union
+
+
+def test_get_detail_refs_match_only_selected_approved_rows(tmp_path):
+    path = _full_entity_db(tmp_path)
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO research_statements(id,build_id,entity_id,observation_id,"
+            "raw_text,normalized_text,language,statement_hash) VALUES(?,?,?,?,?,?,?,?)",
+            ("s2", "b1", "e1", "obs1", "raw", "x" * 700, "en", "sh2"),
+        )
+        conn.execute(
+            "INSERT INTO publication_mentions(id,build_id,entity_id,observation_id,"
+            "raw_text,normalized_text,year,confidence,needs_review) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            ("m_review", "b1", "e1", "obs1", "raw", "Private draft", 2025, 0.9, 1),
+        )
+        conn.commit()
+    adapter = CatalogProfessorFactAdapter(
+        CatalogSqliteFactReader(path), settings=RecommendSettings(),
+    )
+    detail = asyncio.run(adapter.get_detail(
+        _snapshot(), "e1", include_contacts=False,
+        viewer_permissions=ViewerPermissions(),
+    ))
+    by_field = {item.field: item for item in detail.fact_bundle.facts}
+    statement_paths = tuple(ref.heading_path for ref in by_field["research_statement"].source_refs)
+    publication_paths = tuple(ref.heading_path for ref in by_field["publications"].source_refs)
+    topic_paths = tuple(ref.heading_path for ref in by_field["approved_topics"].source_refs)
+    assert statement_paths == ("catalog:research-statement:b1:s1",)
+    assert publication_paths == ("catalog:publication-mention:b1:m1",)
+    assert topic_paths == ("catalog:topic-link:b1:s1:t1",)
+    all_paths = tuple(ref.heading_path for ref in detail.fact_bundle.source_refs)
+    assert not any("s2" in path for path in all_paths)
+    assert not any("m_review" in path for path in all_paths)
+
+
+def test_get_detail_source_refs_keep_canonical_url_and_verification_time(tmp_path):
+    path = _full_entity_db(tmp_path)
+    detail = asyncio.run(CatalogProfessorFactAdapter(
+        CatalogSqliteFactReader(path), settings=RecommendSettings(),
+    ).get_detail(
+        _snapshot(), "e1", include_contacts=False,
+        viewer_permissions=ViewerPermissions(),
+    ))
+    sourced = [ref for ref in detail.fact_bundle.source_refs if ref.official_url]
+    assert sourced
+    assert {ref.official_url for ref in sourced} == {"https://x/p"}
+    assert any(ref.last_verified == "2026-01-01T00:00:00+00:00" for ref in sourced)
+
+
+def test_get_detail_role_reason_codes_become_stable_risk_flags(tmp_path):
+    path = _full_entity_db(
+        tmp_path,
+        role_reason_codes=("eligibility_conflict", "title_conflict", "eligibility_conflict"),
+    )
+    detail = asyncio.run(CatalogProfessorFactAdapter(
+        CatalogSqliteFactReader(path), settings=RecommendSettings(),
+    ).get_detail(
+        _snapshot(), "e1", include_contacts=False,
+        viewer_permissions=ViewerPermissions(),
+    ))
+    assert detail.risk_flags == ("eligibility_conflict", "title_conflict")
 
 
 def test_get_detail_contacts_double_gated(tmp_path):
