@@ -13,6 +13,7 @@ from dext_recommend.adapters.catalog_release import CatalogReleaseAdapter
 from dext_recommend.adapters.graph_release import GraphReleaseAdapter
 from dext_recommend.adapters.ranking_profile import RankingProfileAdapter
 from dext_recommend.adapters.vector_release import VectorReleaseAdapter
+from dext_recommend.adapters.llm_generation import OpenAICompatibleLLMGenerationAdapter
 
 __all__ = [
     "CatalogProfessorDetailRows",
@@ -21,6 +22,7 @@ __all__ = [
     "CatalogReleaseAdapter",
     "CatalogSqliteFactReader",
     "GraphReleaseAdapter",
+    "OpenAICompatibleLLMGenerationAdapter",
     "RankingProfileAdapter",
     "VectorReleaseAdapter",
 ]

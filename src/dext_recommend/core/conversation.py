@@ -10,12 +10,16 @@ import asyncio
 from dataclasses import replace
 from typing import Literal
 
-from dext_grounded import ConstrainedGenerationPipeline, FactBundle, GenerationResult
+from dext_grounded import (
+    ConstrainedGenerationPipeline, ContentClass, FactBundle, GenerationResult,
+    GenerationWarning,
+)
+from dext_grounded._output import empty_output, remove_output_fragments
 from dext_recommend.config import RecommendSettings
 from dext_recommend.errors import RecommendationErrorCode
 from dext_recommend.models import (
-    ConversationContext, ConversationDispatchResult, RecommendRequest,
-    RecommendationWarning,
+    ConversationContext, ConversationDispatchResult, DetailFollowupResponse,
+    RecommendRequest, RecommendationWarning,
 )
 from dext_recommend.core.intent import resolve_recommend_route
 
@@ -116,8 +120,82 @@ def _assemble_context(
     return _validate_context(ctx, phase="input")
 
 
+def _merge_stored_context(current: ConversationContext,
+                          stored: ConversationContext | None) -> ConversationContext:
+    if stored is None:
+        return current
+    return replace(
+        current,
+        anchor_entity_id=current.anchor_entity_id or stored.anchor_entity_id,
+        main_session_id=current.main_session_id or stored.main_session_id,
+        source_turn_id=current.source_turn_id or stored.source_turn_id,
+        prior_result_entity_ids=_dedup_preserve_order(
+            tuple(current.prior_result_entity_ids) + tuple(stored.prior_result_entity_ids)
+        ),
+    )
+
+
 def _warn(code: RecommendationErrorCode, message: str, *, severity: str = "warning") -> RecommendationWarning:
     return RecommendationWarning(code=code.value, message=message, severity=severity)
+
+
+def _ref_key(ref) -> tuple[str, str, str]:
+    return (ref.doc_path, ref.heading_path, ref.chunk_hash)
+
+
+def _detail_support_validator(result: GenerationResult, bundle: FactBundle) -> GenerationResult:
+    """Enforce fact-index-to-reference ownership before citation validation."""
+    from dataclasses import replace as dc_replace
+    output_claims = result.output.get("claims", ()) if isinstance(result.output, dict) else ()
+    kept = []
+    dropped: list[str] = []
+    warnings = list(result.warnings)
+    for index, claim in enumerate(result.claims):
+        raw = output_claims[index] if index < len(output_claims) and isinstance(output_claims[index], dict) else {}
+        if claim.content_class == ContentClass.FACT:
+            indices = raw.get("fact_indices")
+            valid_indices = (
+                isinstance(indices, list) and bool(indices)
+                and all(isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(bundle.facts)
+                        for i in indices)
+            )
+            allowed = set()
+            if valid_indices:
+                for fact_index in indices:
+                    allowed.update(_ref_key(ref) for ref in bundle.facts[fact_index].source_refs)
+            refs_valid = bool(claim.fact_refs) and all(_ref_key(ref) in allowed for ref in claim.fact_refs)
+            if not valid_indices or not refs_valid:
+                dropped.append(claim.text)
+                warnings.append(GenerationWarning(
+                    code="insufficient_facts", message="fact claim failed support-map validation",
+                    claim_text=claim.text,
+                ))
+                continue
+        elif claim.content_class == ContentClass.UNCERTAIN and claim.fact_refs:
+            claim = dc_replace(claim, fact_refs=())
+        kept.append(claim)
+    output = remove_output_fragments(result.output, tuple(dropped))
+    if result.claims and not kept:
+        warnings.append(GenerationWarning(
+            code="no_grounded_output", message="all generated claims failed grounding",
+        ))
+        output = empty_output(result.output)
+    return dc_replace(result, claims=tuple(kept), output=output, warnings=warnings)
+
+
+def _map_generation_warnings(warnings) -> tuple[RecommendationWarning, ...]:
+    mapped = []
+    for warning in warnings:
+        code = warning.code
+        severity = "warning"
+        if code in {"generation_parse_error", "json_parse_failed", "schema_validation_failed"}:
+            code, severity = RecommendationErrorCode.GENERATION_PARSE_ERROR.value, "error"
+        elif code == "generation_unavailable":
+            code, severity = RecommendationErrorCode.FOLLOWUP_GENERATION_UNAVAILABLE.value, "error"
+        elif code == "no_grounded_output":
+            severity = "error"
+        mapped.append(RecommendationWarning(code=code, message=warning.message, severity=severity))
+    return tuple(mapped)
 
 
 class ConversationDispatcher:
@@ -156,15 +234,28 @@ class ConversationDispatcher:
     ) -> ConversationDispatchResult:
         from dext_recommend.ports import ViewerPermissions
         vp = viewer_permissions or ViewerPermissions()
-        ctx = request.conversation_context
+        ctx = request.conversation_context or ConversationContext()
         try:
-            ctx = _validate_context(ctx or ConversationContext(), phase="input") if ctx else None
+            ctx = _validate_context(ctx, phase="input")
         except ConversationValidationError as e:
+            code = RecommendationErrorCode(e.code)
             return ConversationDispatchResult(
                 kind="error", context=None, recommendation=None, detail_followup=None,
-                issues=(_warn(RecommendationErrorCode.INVALID_CONVERSATION_STATE,
-                             e.safe_message, severity="error"),),
+                issues=(_warn(code, e.safe_message, severity="error"),),
             )
+
+        store = self._core.deps.conversation_store
+        if store is not None:
+            stored = None
+            if ctx.main_session_id and ctx.source_turn_id:
+                stored = await store.resolve_fork(ctx.main_session_id, ctx.source_turn_id)
+            elif ctx.session_id:
+                stored = await store.load_context(ctx.session_id, ctx.turn_id)
+            ctx = _merge_stored_context(ctx, stored)
+            if conversation_summary is None and ctx.session_id:
+                conversation_summary = await store.load_summary(
+                    ctx.session_id, ctx.source_turn_id or ctx.turn_id,
+                )
 
         # pin snapshot + generation profile once
         snapshot = self._core.deps.snapshot_port.get_snapshot()
@@ -175,13 +266,14 @@ class ConversationDispatcher:
                               "no ACTIVE build", severity="error"),),
             )
         gp_port = self._core.deps.generation_profile_port
-        if gp_port is None:
+        try:
+            gen_profile = await gp_port.read_profile(self._settings.generation_profile_path)
+        except Exception:
             return ConversationDispatchResult(
                 kind="error", context=ctx, recommendation=None, detail_followup=None,
-                issues=(_warn(RecommendationErrorCode.INVALID_CONVERSATION_STATE,
-                              "generation_profile_port not configured", severity="error"),),
+                issues=(_warn(RecommendationErrorCode.GENERATION_UNAVAILABLE,
+                              "generation profile unavailable", severity="error"),),
             )
-        gen_profile = await gp_port.read_profile(self._settings.generation_profile_path)
 
         needs_classify = ctx is not None and ctx.intent_source == "implicit" and ctx.intent is None
         if needs_classify:
@@ -198,7 +290,16 @@ class ConversationDispatcher:
                     kind="error", context=ctx, recommendation=None, detail_followup=None,
                     issues=(classify_issue,), generation_profile_version=gen_profile.version,
                 )
-            ctx = _validate_context(ctx, phase="resolved")
+            try:
+                ctx = _validate_context(ctx, phase="resolved")
+            except ConversationValidationError as e:
+                return ConversationDispatchResult(
+                    kind="error", context=ctx, recommendation=None,
+                    detail_followup=None,
+                    issues=(_warn(RecommendationErrorCode(e.code), e.safe_message,
+                                  severity="error"),),
+                    generation_profile_version=gen_profile.version,
+                )
 
         # route
         routed_req = replace(request, conversation_context=ctx)
@@ -211,20 +312,27 @@ class ConversationDispatcher:
             )
 
         if route.detail_followup:
-            det = await self._resolve_detail_followup_pinned(
+            outcome = await self._resolve_detail_followup_pinned(
                 ctx, snapshot, gen_profile, request, vp)
+            if isinstance(outcome, ConversationDispatchResult):
+                return outcome
             return ConversationDispatchResult(
                 kind="detail_followup", context=ctx, recommendation=None,
-                detail_followup=det, issues=(),
+                detail_followup=outcome, issues=(),
                 generation_profile_version=gen_profile.version,
             )
 
         # recommend path
         from dext_recommend.core._resilience import RecommendExecutionContext
         exec_ctx = RecommendExecutionContext()
+        exec_ctx.snapshot = snapshot
+        exec_ctx.generation_profile_version = gen_profile.version
         try:
             resp = await asyncio.wait_for(
-                self._core._recommend_pinned(routed_req, vp, exec_ctx),
+                self._core._recommend_pinned(
+                    routed_req, vp, exec_ctx, snapshot=snapshot,
+                    generation_profile=gen_profile,
+                ),
                 timeout=self._settings.total_timeout,
             )
         except asyncio.TimeoutError:
@@ -232,6 +340,7 @@ class ConversationDispatcher:
                 snapshot=snapshot, exec_ctx=exec_ctx,
                 code=RecommendationErrorCode.REQUEST_TIMEOUT,
                 message=f"recommend exceeded {self._settings.total_timeout}s",
+                generation_profile_version=gen_profile.version,
             )
         resp = replace(resp, generation_profile_version=gen_profile.version)
         return ConversationDispatchResult(
@@ -248,7 +357,7 @@ class ConversationDispatcher:
         )
         summary_text = conversation_summary.text if conversation_summary is not None else ""
         try:
-            result = await self._pipeline.generate(
+            result = await asyncio.wait_for(self._pipeline.generate(
                 system_prompt_id=op.system_prompt_id,
                 user_inputs={
                     "query_text": request.query_text[: op.query_max_chars],
@@ -261,7 +370,7 @@ class ConversationDispatcher:
                 generation_profile_version=gen_profile.version,
                 safety_domain="recommend", include_contacts=False,
                 operation_id="implicit_intent",
-            )
+            ), timeout=op.timeout)
         except Exception:
             return ctx, _warn(RecommendationErrorCode.INTENT_CLASSIFICATION_UNAVAILABLE,
                               "implicit intent classification failed", severity="error")
@@ -271,8 +380,13 @@ class ConversationDispatcher:
                               "implicit output not a dict")
         intent = output.get("intent")
         confidence = output.get("confidence")
+        blocking = {"generation_unavailable", "generation_parse_error",
+                    "json_parse_failed", "schema_validation_failed", "unsafe_advice"}
+        if any(w.code in blocking for w in result.warnings):
+            return ctx, _warn(RecommendationErrorCode.NEEDS_CLARIFICATION,
+                              "implicit intent output was not usable")
         if intent not in _VALID_INTENTS or not isinstance(confidence, (int, float)) \
-                or isinstance(confidence, bool):
+                or isinstance(confidence, bool) or not (0.0 <= confidence <= 1.0):
             return ctx, _warn(RecommendationErrorCode.NEEDS_CLARIFICATION,
                               "implicit intent illegal/missing")
         if confidence < op.confidence_threshold:
@@ -282,11 +396,82 @@ class ConversationDispatcher:
         return ctx, None
 
     async def _resolve_detail_followup_pinned(self, ctx, snapshot, gen_profile, request, vp):
-        # Task 7 fills this in.
-        raise NotImplementedError
+        try:
+            detail = await self._core.deps.facts_port.get_detail(
+                snapshot, ctx.anchor_entity_id, include_contacts=False,
+                viewer_permissions=vp,
+            )
+        except (KeyError, LookupError):
+            return ConversationDispatchResult(
+                kind="error", context=ctx, recommendation=None, detail_followup=None,
+                issues=(_warn(RecommendationErrorCode.ANCHOR_NOT_IN_ACTIVE_BUILD,
+                              "anchor is not available in the ACTIVE build", severity="error"),),
+                generation_profile_version=gen_profile.version,
+            )
+        if detail.role_status in {"excluded", "review"} and not (
+            detail.role_status == "review" and vp.can_view_review
+        ):
+            return ConversationDispatchResult(
+                kind="error", context=ctx, recommendation=None, detail_followup=None,
+                issues=(_warn(RecommendationErrorCode.ANCHOR_NOT_IN_ACTIVE_BUILD,
+                              "anchor is not available in the ACTIVE build", severity="error"),),
+                generation_profile_version=gen_profile.version,
+            )
+        op = gen_profile.operations["detail_followup"]
+        try:
+            result = await asyncio.wait_for(self._pipeline.generate(
+                system_prompt_id=op.system_prompt_id,
+                user_inputs={"question": request.query_text,
+                             "display_name": detail.display_name},
+                fact_bundle=detail.fact_bundle,
+                student_context=request.student_context,
+                json_schema=dict(op.json_schema),
+                generation_profile_version=gen_profile.version,
+                safety_domain="recommend", include_contacts=False,
+                operation_id="detail_followup",
+                support_validator=_detail_support_validator,
+            ), timeout=op.timeout)
+        except Exception:
+            return ConversationDispatchResult(
+                kind="error", context=ctx, recommendation=None, detail_followup=None,
+                issues=(_warn(RecommendationErrorCode.FOLLOWUP_GENERATION_UNAVAILABLE,
+                              "detail follow-up generation failed", severity="error"),),
+                generation_profile_version=gen_profile.version,
+            )
+        mapped = _map_generation_warnings(result.warnings)
+        if any(w.severity == "error" for w in mapped):
+            return ConversationDispatchResult(
+                kind="error", context=ctx, recommendation=None, detail_followup=None,
+                issues=mapped, generation_profile_version=gen_profile.version,
+            )
+        output = result.output
+        answer = output.get("answer") if isinstance(output, dict) else None
+        grounded = any(c.content_class == ContentClass.FACT and c.fact_refs for c in result.claims)
+        if not isinstance(answer, str) or not answer.strip() or not grounded:
+            code = (RecommendationErrorCode.GENERATION_PARSE_ERROR
+                    if not isinstance(answer, str) else RecommendationErrorCode.NO_GROUNDED_OUTPUT)
+            return ConversationDispatchResult(
+                kind="error", context=ctx, recommendation=None, detail_followup=None,
+                issues=(_warn(code, "detail output is not grounded", severity="error"),),
+                generation_profile_version=gen_profile.version,
+            )
+        return DetailFollowupResponse(
+            build_id=snapshot.build_id,
+            ranking_profile_version=snapshot.ranking_profile_version,
+            generation_profile_version=gen_profile.version,
+            grounded_rules_manifest_hash=gen_profile.grounded_rules_manifest_hash,
+            embedding_fingerprint=snapshot.embedding_fingerprint,
+            taxonomy_version=snapshot.taxonomy_version,
+            anchor_entity_id=ctx.anchor_entity_id,
+            anchor_display_name=detail.display_name,
+            answer=answer,
+            claims=tuple(result.claims), cited_refs=tuple(result.cited_refs),
+            warnings=tuple(w for w in mapped if w.severity != "error"),
+        )
 
 
 __all__ = [
     "ConversationDispatcher", "ConversationValidationError",
-    "_validate_context", "_assemble_context",
+    "_validate_context", "_assemble_context", "_detail_support_validator",
+    "_merge_stored_context",
 ]

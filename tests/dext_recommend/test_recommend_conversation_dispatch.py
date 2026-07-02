@@ -33,33 +33,42 @@ def _profile():
     return RecommendGenerationProfile.from_dict({
         "version": "generation-v1", "grounded_rules_manifest_hash": "grh",
         "operations": {
+            "query_understanding": {
+                "system_prompt_id": "dext_recommend.query_understanding.v1",
+                "system_prompt": "query prompt", "json_schema": {"type": "object"},
+                "timeout": 8.0, "token_budget": 1024,
+            },
             "implicit_intent": {
                 "system_prompt_id": "dext_recommend.implicit_intent.v1",
+                "system_prompt": "intent prompt",
                 "json_schema": {"type": "object"}, "timeout": 8.0, "token_budget": 1024,
                 "confidence_threshold": 0.6, "query_max_chars": 4096, "summary_max_chars": 500,
             },
             "detail_followup": {
                 "system_prompt_id": "dext_recommend.detail_followup.v1",
+                "system_prompt": "detail prompt",
                 "json_schema": {"type": "object"}, "timeout": 15.0, "token_budget": 2048,
             },
         },
     })
 
 
-def _dispatcher(llm: FakeLLMGenerationPort, *, facts=None):
+def _dispatcher(llm: FakeLLMGenerationPort, *, facts=None, details=None,
+                snapshot_port=None, profile_port=None, conversation_store=None):
     from dext_recommend.core.service import RecommendDeps, RecommendationCore
     from dext_recommend.config import RecommendSettings
     snap = _snapshot()
     deps = RecommendDeps(
-        snapshot_port=FakeActiveSnapshotProvider(snap),
+        snapshot_port=snapshot_port or FakeActiveSnapshotProvider(snap),
         embedding_port=FakeQueryEmbeddingPort([0.1], "ef"),
         vector_port=FakeVectorSearchPort(hits=[]),
-        facts_port=FakeProfessorFactPort(facts=facts or {}),
+        facts_port=FakeProfessorFactPort(facts=facts or {}, details=details or {}),
         llm_port=llm,
         ranking_port=FakeRankingProfilePort(
             profile=RankingProfile.from_dict(ranking_profile_dict()),
         ),
-        generation_profile_port=FakeRecommendGenerationProfilePort(_profile()),
+        generation_profile_port=profile_port or FakeRecommendGenerationProfilePort(_profile()),
+        conversation_store=conversation_store,
     )
     core = RecommendationCore(deps, RecommendSettings())
     pipe = ConstrainedGenerationPipeline(llm_port=llm)
@@ -145,6 +154,36 @@ async def test_dispatch_pins_snapshot_once():
             session_id="s1", turn_id="t1", intent_source="implicit"),
     )
     await d.dispatch(req)
-    # FakeActiveSnapshotProvider just returns the stored snapshot; assert it
-    # was the same object the core received by checking it's not None and stable.
-    assert snap_port.get_snapshot() is not None
+    assert snap_port.get_snapshot_calls == 1
+    assert len(d.core.deps.generation_profile_port.read_profile_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_loads_store_summary_and_request_context_wins():
+    from dext_recommend import ConversationSummary, FakeConversationStorePort
+    stored = ConversationContext(
+        session_id="s1", turn_id="t1", anchor_entity_id="stored-anchor",
+        intent_source="explicit", intent="new_search",
+        prior_result_entity_ids=("stored-result",),
+    )
+    summary = ConversationSummary(
+        session_id="s1", through_turn_id="t1", text="stored summary",
+        created_at="2026-07-02T00:00:00Z",
+    )
+    store = FakeConversationStorePort(
+        initial={("s1", "t1"): stored}, summaries={("s1", "t1"): summary},
+    )
+    llm = FakeLLMGenerationPort(preset=GenerationResult(
+        output={"intent": "more_mentors", "confidence": 0.9, "rationale": "r"},
+        claims=(), cited_refs=(), warnings=[]))
+    dispatcher = _dispatcher(llm, conversation_store=store)
+    result = await dispatcher.dispatch(RecommendRequest(
+        query_text="more",
+        conversation_context=ConversationContext(
+            session_id="s1", turn_id="t1", intent_source="implicit",
+            anchor_entity_id="request-anchor",
+        ),
+    ))
+    assert result.context.anchor_entity_id == "request-anchor"
+    assert result.context.prior_result_entity_ids == ("stored-result",)
+    assert llm.calls[0]["user_inputs"]["conversation_summary"] == "stored summary"

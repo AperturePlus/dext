@@ -95,7 +95,10 @@ def test_all_four_fakes_satisfy_protocols():
 def test_core_wired_with_fakes_does_not_touch_real_services():
     snap = _snap()
     from dext_grounded import FakeLLMGenerationPort, GenerationResult
-    from dext_recommend import FakeRankingProfilePort, RecommendSettings
+    from dext_recommend import (
+        FakeRankingProfilePort, FakeRecommendGenerationProfilePort, RecommendSettings,
+    )
+    from tests.dext_recommend._recfixtures import generation_profile
     from dext_recommend.core.ranking_profile import RankingProfile
     prof = RankingProfile.from_dict({
         "version": "r1",
@@ -119,6 +122,7 @@ def test_core_wired_with_fakes_does_not_touch_real_services():
         facts_port=FakeProfessorFactPort(),
         llm_port=FakeLLMGenerationPort(preset=GenerationResult(output={})),
         ranking_port=FakeRankingProfilePort(profile=prof),
+        generation_profile_port=FakeRecommendGenerationProfilePort(generation_profile()),
         coverage_flags_by_build_id={snap.build_id: {"org_unit_ids": True}},
     )
     core = RecommendationCore(deps, RecommendSettings())

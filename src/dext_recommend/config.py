@@ -41,9 +41,13 @@ class RecommendSettings(BaseSettings):
     embedding_api_key: SecretStr = Field(default_factory=SecretStr)
 
     # LLM (constrained generation)
-    llm_api_key: SecretStr = Field(default_factory=SecretStr)
+    llm_api_key: SecretStr = Field(
+        default_factory=SecretStr,
+        validation_alias=AliasChoices("DEXT_RECOMMEND_LLM_API_KEY", "DEEPSEEK_API_KEY"),
+    )
     llm_base_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-v4-flash"
+    llm_max_retries: int = Field(default=1, ge=0, le=5)
 
     # Profile paths
     ranking_profile_path: Path = Path("data/recommend/ranking-profile.json")

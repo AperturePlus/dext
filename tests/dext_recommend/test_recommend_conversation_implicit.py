@@ -18,8 +18,14 @@ def _profile_payload():
         "version": "generation-v1",
         "grounded_rules_manifest_hash": "grh",
         "operations": {
+            "query_understanding": {
+                "system_prompt_id": "dext_recommend.query_understanding.v1",
+                "system_prompt": "query prompt", "json_schema": {"type": "object"},
+                "timeout": 8.0, "token_budget": 1024,
+            },
             "implicit_intent": {
                 "system_prompt_id": "dext_recommend.implicit_intent.v1",
+                "system_prompt": "intent prompt",
                 "json_schema": {"type": "object"},
                 "timeout": 8.0, "token_budget": 1024,
                 "confidence_threshold": 0.6, "query_max_chars": 4096,
@@ -27,6 +33,7 @@ def _profile_payload():
             },
             "detail_followup": {
                 "system_prompt_id": "dext_recommend.detail_followup.v1",
+                "system_prompt": "detail prompt",
                 "json_schema": {"type": "object"}, "timeout": 15.0, "token_budget": 2048,
             },
         },
@@ -85,3 +92,13 @@ async def test_implicit_classifier_low_confidence_yields_clarification():
     assert result.kind == "clarification"
     assert any(w.code == "needs_clarification" for w in result.issues)
     assert result.generation_profile_version == "generation-v1"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_without_context_is_treated_as_unresolved_implicit():
+    from tests.dext_recommend.test_recommend_conversation_dispatch import _dispatcher
+    dispatcher = _dispatcher(_llm_classifying("new_search", 0.9))
+    result = await dispatcher.dispatch(RecommendRequest(query_text="find NLP mentors"))
+    assert result.context is not None
+    assert result.context.intent_source == "implicit"
+    assert result.context.intent == "new_search"

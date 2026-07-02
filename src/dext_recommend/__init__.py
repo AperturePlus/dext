@@ -13,7 +13,7 @@ import dext_grounded  # noqa: F401 — shared contract; asserted by import-bound
 from dext_grounded import SourceRef, StudentContext
 
 from dext_recommend.config import RecommendSettings
-from dext_recommend.core import RecommendDeps, RecommendationCore
+from dext_recommend.core import ConversationDispatcher, RecommendDeps, RecommendationCore
 from dext_recommend.errors import (
     ErrorSeverity, RecommendationError, RecommendationErrorCode,
 )
@@ -26,14 +26,15 @@ from dext_recommend.models import (
 from dext_recommend.ports import (
     ActiveSnapshotProvider, AliasReadback, CatalogReleaseObservation,
     CatalogReleasePort, EmbeddingResult, FakeActiveSnapshotProvider,
-    FakeCatalogReleasePort, FakeGraphReleasePort, FakeLLMGenerationPort,
+    ConversationStorePort, FakeCatalogReleasePort, FakeConversationStorePort,
+    FakeGraphReleasePort, FakeLLMGenerationPort,
     FakeProfessorFactPort, FakeQueryEmbeddingPort, FakeRankingProfilePort,
     FakeRecommendGenerationProfilePort, FakeVectorReleasePort, FakeVectorSearchPort,
     GraphReleaseObservation, GraphReleasePort, LLMGenerationPort, OperationConfig,
     PayloadCoverageObservation, ProfessorDetail, ProfessorFact, ProfessorFactNotFound,
     ProfessorFactPort, ProfessorReleaseSample, QueryEmbeddingPort, RankingProfile,
     RankingProfilePort, ReadinessSourceError, RecommendGenerationProfile,
-    RecommendGenerationProfilePort, VectorHit, VectorReleaseObservation,
+    RecommendGenerationProfilePort, TurnSnapshot, VectorHit, VectorReleaseObservation,
     VectorReleasePort, VectorSearchPort, ViewerPermissions,
 )
 from dext_recommend.readiness import (
@@ -41,7 +42,7 @@ from dext_recommend.readiness import (
 )
 from dext_recommend.adapters import (
     CatalogProfessorFactAdapter, CatalogProfessorFactReader,
-    CatalogSqliteFactReader,
+    CatalogSqliteFactReader, OpenAICompatibleLLMGenerationAdapter,
 )
 
 __version__ = "0.1.0"
@@ -56,14 +57,17 @@ __all__: list[str] = [
     "CatalogReleasePort",
     "CatalogSqliteFactReader",
     "ConversationContext",
+    "ConversationDispatcher",
     "ConversationDispatchResult",
     "ConversationSummary",
+    "ConversationStorePort",
     "CoverageStat",
     "DetailFollowupResponse",
     "EmbeddingResult",
     "ErrorSeverity",
     "FakeActiveSnapshotProvider",
     "FakeCatalogReleasePort",
+    "FakeConversationStorePort",
     "FakeGraphReleasePort",
     "FakeLLMGenerationPort",
     "FakeProfessorFactPort",
@@ -76,6 +80,7 @@ __all__: list[str] = [
     "GraphReleasePort",
     "LLMGenerationPort",
     "OperationConfig",
+    "OpenAICompatibleLLMGenerationAdapter",
     "PayloadCoverageObservation",
     "ProfessorDetail",
     "ProfessorFact",
@@ -104,6 +109,7 @@ __all__: list[str] = [
     "RecommendedProfessor",
     "SourceRef",
     "StudentContext",
+    "TurnSnapshot",
     "VectorHit",
     "VectorReleaseObservation",
     "VectorReleasePort",

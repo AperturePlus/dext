@@ -7,6 +7,7 @@ No pytest fixtures (no conftest sharing) — call these directly in tests.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from dext_grounded import FactBundle, FakeLLMGenerationPort, GenerationResult, SourceRef
 from dext_grounded.content import ContentClass
@@ -15,6 +16,13 @@ from dext_grounded.fact_bundle import FactItem
 from dext_recommend import (
     ActiveBuildSnapshot, ProfessorDetail, ProfessorFact, VectorHit,
 )
+from dext_recommend.core.generation_profile import RecommendGenerationProfile
+
+
+def generation_profile() -> RecommendGenerationProfile:
+    return RecommendGenerationProfile.from_file(
+        Path("data/recommend/generation-profile.json")
+    )
 
 
 def _empty_fact_bundle(*, build_id: str, entity_id: str) -> FactBundle:

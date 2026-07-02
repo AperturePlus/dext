@@ -13,9 +13,8 @@ from dext_grounded import FactBundle, LLMGenerationPort
 from dext_recommend.models import QueryUnderstanding, RecommendRequest
 from dext_recommend.readiness import ActiveBuildSnapshot
 
+from dext_recommend.core.generation_profile import OperationConfig
 from dext_recommend.core._schemas import QUERY_UNDERSTANDING_SCHEMA
-
-_SYSTEM_PROMPT_ID = "query_understanding_v1"
 _BLOCKING_WARNING_CODES = {"generation_unavailable", "schema_validation_failed", "json_parse_failed"}
 
 
@@ -75,6 +74,7 @@ async def understand_query(
     snapshot: ActiveBuildSnapshot,
     *,
     profile_version: str,
+    operation: OperationConfig | None = None,
 ) -> QueryUnderstanding:
     fact_bundle = FactBundle(
         build_id=snapshot.build_id,
@@ -92,11 +92,11 @@ async def understand_query(
         ),
     }
     result = await llm_port.generate(
-        system_prompt_id=_SYSTEM_PROMPT_ID,
+        system_prompt_id=(operation.system_prompt_id if operation else "query_understanding_v1"),
         user_inputs=user_inputs,
         fact_bundle=fact_bundle,
         student_context=request.student_context,
-        json_schema=QUERY_UNDERSTANDING_SCHEMA,
+        json_schema=(dict(operation.json_schema) if operation else QUERY_UNDERSTANDING_SCHEMA),
         generation_profile_version=profile_version,
     )
     blocking = any(w.code in _BLOCKING_WARNING_CODES for w in result.warnings)

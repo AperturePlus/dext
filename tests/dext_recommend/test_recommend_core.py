@@ -12,9 +12,10 @@ from dext_recommend import (
 )
 from dext_recommend.config import RecommendSettings
 from dext_recommend.core.ranking_profile import RankingProfile
-from dext_recommend.core.service import RecommendDeps, RecommendationCore
+from dext_recommend.core.service import RecommendDeps as _RecommendDeps, RecommendationCore
 from dext_recommend.ports._fakes import (
     FakeActiveSnapshotProvider, FakeRankingProfilePort,
+    FakeRecommendGenerationProfilePort,
 )
 from dext_recommend.models import ConversationContext
 from dext_grounded import FactBundle, FactItem
@@ -30,9 +31,18 @@ def _empty_fact_bundle(*, build_id: str, entity_id: str) -> FactBundle:
     )
 
 from tests.dext_recommend._recfixtures import (
-    coverage_flags_case, fake_llm_for_understanding, professor_details_case,
+    coverage_flags_case, fake_llm_for_understanding, generation_profile,
+    professor_details_case,
     professor_facts_case, ranking_profile_dict, snapshot, vector_hits_case,
 )
+
+
+def RecommendDeps(**kwargs):
+    kwargs.setdefault(
+        "generation_profile_port",
+        FakeRecommendGenerationProfilePort(generation_profile()),
+    )
+    return _RecommendDeps(**kwargs)
 
 
 def _output(**over):
@@ -87,6 +97,7 @@ async def test_new_search_happy_path():
     assert isinstance(resp, RecommendResponse)
     assert resp.build_id == "b-1"
     assert resp.ranking_profile_version == "r1"
+    assert resp.generation_profile_version == "generation-v1"
     assert resp.embedding_fingerprint == "fp-x"
     assert len(resp.results) >= 1
     ids = [r.entity_id for r in resp.results]
@@ -186,6 +197,8 @@ async def test_ranking_profile_unavailable_error():
 async def test_snapshot_pinned_throughout():
     core = _core()
     await core.recommend(RecommendRequest(query_text="NLP"))
+    assert core.deps.snapshot_port.get_snapshot_calls == 1
+    assert len(core.deps.generation_profile_port.read_profile_calls) == 1
     # every port call used the same build_id
     for c in core._deps.vector_port.hybrid_recall_calls:
         assert c["snapshot_build_id"] == "b-1"
@@ -374,8 +387,8 @@ async def test_recommend_same_field_anchor_excluded_and_topic_overlap_ranked():
     assert pos_b < pos_cv
 
 
-async def test_recommend_same_field_anchor_missing_falls_back():
-    """Anchor not in ACTIVE build (fact None) -> missing_anchor warning + new_search."""
+async def test_recommend_same_field_anchor_missing_is_terminal():
+    """An anchor absent from ACTIVE build terminates before recall."""
     from dext_recommend import VectorHit
     hits = [
         VectorHit("e_nlp_a", 0.90, {
@@ -396,14 +409,13 @@ async def test_recommend_same_field_anchor_missing_falls_back():
         ),
     ))
     codes = [w.code for w in resp.warnings]
-    assert "missing_anchor" in codes
-    # fell back to new_search: anchor NOT excluded, e_nlp_a returned
-    ids = [r.entity_id for r in resp.results]
-    assert "e_nlp_a" in ids
+    assert "anchor_not_in_active_build" in codes
+    assert resp.results == ()
+    assert core.deps.vector_port.hybrid_recall_calls == []
 
 
-async def test_recommend_same_field_anchor_excluded_falls_back():
-    """Anchor role_status=excluded -> missing_anchor warning + new_search."""
+async def test_recommend_same_field_anchor_excluded_is_terminal():
+    """An excluded anchor terminates before recall."""
     from dext_recommend import VectorHit
     hits = [
         VectorHit("e_nlp_a", 0.90, {
@@ -427,11 +439,12 @@ async def test_recommend_same_field_anchor_excluded_falls_back():
         ),
     ))
     codes = [w.code for w in resp.warnings]
-    assert "missing_anchor" in codes
+    assert "anchor_not_in_active_build" in codes
+    assert resp.results == ()
 
 
-async def test_recommend_same_field_anchor_without_topics_falls_back():
-    """Anchor exists but topic_ids=() -> missing_anchor warning + new_search."""
+async def test_recommend_same_field_anchor_without_topics_is_terminal():
+    """An anchor without approved topics terminates before recall."""
     from dext_recommend import VectorHit
     hits = [
         VectorHit("e_nlp_a", 0.90, {
@@ -454,7 +467,8 @@ async def test_recommend_same_field_anchor_without_topics_falls_back():
         ),
     ))
     codes = [w.code for w in resp.warnings]
-    assert "missing_anchor" in codes
+    assert "anchor_not_in_active_build" in codes
+    assert resp.results == ()
 
 
 async def test_recommend_same_field_boost_from_profile():
@@ -509,7 +523,7 @@ async def test_recommend_larger_step_is_authoritative():
     disappeared at step 400 must NOT persist in results. Step 400 is authoritative."""
     from dext_recommend import ProfessorFact, VectorHit
     from dext_recommend.config import RecommendSettings
-    from dext_recommend.core.service import RecommendDeps, RecommendationCore
+    from dext_recommend.core.service import RecommendationCore
     from dext_recommend.ports._fakes import (
         FakeActiveSnapshotProvider, FakeProfessorFactPort, FakeQueryEmbeddingPort,
         FakeRankingProfilePort, FakeVectorSearchPort,
@@ -612,7 +626,7 @@ async def test_recommend_empty_new_ids_skips_hydrate():
     """When all pref hits are already hydrated, hydrate is not called again."""
     from dext_recommend import ProfessorFact, VectorHit
     from dext_recommend.config import RecommendSettings
-    from dext_recommend.core.service import RecommendDeps, RecommendationCore
+    from dext_recommend.core.service import RecommendationCore
     from dext_recommend.ports._fakes import (
         FakeActiveSnapshotProvider, FakeProfessorFactPort, FakeQueryEmbeddingPort,
         FakeRankingProfilePort, FakeVectorSearchPort,
@@ -808,7 +822,6 @@ def test_composition_seam_injects_deps_verbatim():
     from dext_recommend.composition import assemble_core, build_test_core
     from dext_recommend.config import RecommendSettings
     from dext_recommend.core.ranking_profile import RankingProfile
-    from dext_recommend.core.service import RecommendDeps
     from dext_recommend.ports._fakes import (
         FakeActiveSnapshotProvider, FakeProfessorFactPort, FakeQueryEmbeddingPort,
         FakeRankingProfilePort, FakeVectorSearchPort,
@@ -1357,7 +1370,7 @@ async def test_recommend_snapshot_port_exception_returns_active_build_unavailabl
     assert snap_phases and any(pd.error_code for pd in snap_phases)
 
 
-async def test_recommend_no_candidates_preserves_prior_missing_anchor_warning():
+async def test_recommend_anchor_failure_prevents_filter_pipeline():
     """P1-C: when an early return fires (no_candidates after filters), any
     warning accumulated earlier in the pipeline (e.g. missing_anchor from a
     same_field fallback) MUST be preserved alongside the triggering warning.
@@ -1388,8 +1401,8 @@ async def test_recommend_no_candidates_preserves_prior_missing_anchor_warning():
         ),
     ))
     codes = [w.code for w in resp.warnings]
-    assert "missing_anchor" in codes, "prior accumulated warning was dropped"
-    assert "no_candidates_after_filters" in codes
+    assert "anchor_not_in_active_build" in codes
+    assert "no_candidates_after_filters" not in codes
 
 
 async def test_recommend_validate_request_rejects_string_limit_as_invalid_request():
@@ -1420,7 +1433,7 @@ async def test_recommend_validate_request_rejects_none_filters_as_invalid_reques
 # ---- R3d closure §2.3: prior warnings survive terminal failure ----
 
 
-async def test_recommend_missing_anchor_then_vector_failure_preserves_both_warnings():
+async def test_recommend_anchor_failure_prevents_vector_failure():
     """spec 3d §2.3: missing_anchor -> vector failure must carry BOTH the
     missing_anchor warning AND the terminating vector_unavailable code. The
     ClassifiedRecommendError branch must not drop route_warnings accumulated
@@ -1476,12 +1489,12 @@ async def test_recommend_missing_anchor_then_vector_failure_preserves_both_warni
         ),
     ))
     codes = [w.code for w in resp.warnings]
-    assert "missing_anchor" in codes, "prior missing_anchor dropped on classified error"
-    assert "vector_unavailable" in codes, "terminating error code missing"
+    assert "anchor_not_in_active_build" in codes
+    assert "vector_unavailable" not in codes
     assert resp.results == ()
 
 
-async def test_recommend_missing_anchor_then_timeout_preserves_both_warnings():
+async def test_recommend_anchor_failure_prevents_downstream_timeout():
     """spec 3d §2.3: missing_anchor -> request timeout must carry BOTH the
     missing_anchor warning AND the terminating request_timeout code. The
     asyncio.TimeoutError branch must not drop route_warnings."""
@@ -1537,8 +1550,8 @@ async def test_recommend_missing_anchor_then_timeout_preserves_both_warnings():
         ),
     ))
     codes = [w.code for w in resp.warnings]
-    assert "missing_anchor" in codes, "prior missing_anchor dropped on timeout"
-    assert "request_timeout" in codes, "terminating timeout code missing"
+    assert "anchor_not_in_active_build" in codes
+    assert "request_timeout" not in codes
     assert resp.results == ()
 
 
@@ -1597,7 +1610,7 @@ async def test_recommend_rejects_unresolved_implicit_context():
         conversation_context=ConversationContext(intent_source="implicit"),
     )
     resp = await core.recommend(req)
-    assert any(w.code == "invalid_conversation_state" and w.severity == "error"
+    assert any(w.code == "invalid_intent" and w.severity == "error"
                for w in resp.warnings)
 
 

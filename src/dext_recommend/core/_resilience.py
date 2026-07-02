@@ -30,6 +30,7 @@ class RecommendExecutionContext:
     snapshot: ActiveBuildSnapshot | None = None
     profile: RankingProfile | None = None
     embedding_fingerprint: str | None = None
+    generation_profile_version: str | None = None
     phase_diagnostics: list[PhaseDiagnostic] = field(default_factory=list)
     warnings: list = field(default_factory=list)
 

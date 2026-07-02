@@ -10,10 +10,25 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from dext_grounded import load_grounded_rules
+from dext_recommend._immutable import freeze_mapping
+
+_REQUIRED_OPERATIONS = frozenset({"query_understanding", "implicit_intent", "detail_followup"})
+_REQUIRED_SCHEMA_FIELDS = {
+    "query_understanding": frozenset({
+        "research_interests", "preferred_universities", "preferred_cities",
+        "preferred_org_units", "degree_goal", "mentor_eligibility_requirement",
+        "missing_information", "needs_clarification", "confidence",
+    }),
+    "implicit_intent": frozenset({"intent", "confidence", "rationale"}),
+    "detail_followup": frozenset({"answer", "claims"}),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class OperationConfig:
     system_prompt_id: str
+    system_prompt: str
     json_schema: Mapping[str, Any]
     timeout: float
     token_budget: int
@@ -25,13 +40,15 @@ class OperationConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.system_prompt_id, str) or not self.system_prompt_id:
             raise ValueError("operation.system_prompt_id must be non-empty str")
+        if not isinstance(self.system_prompt, str) or not self.system_prompt.strip():
+            raise ValueError("operation.system_prompt must be non-empty str")
         if not isinstance(self.timeout, (int, float)) or isinstance(self.timeout, bool) or self.timeout <= 0:
             raise ValueError("operation.timeout must be positive number")
         if not isinstance(self.token_budget, int) or isinstance(self.token_budget, bool) or self.token_budget <= 0:
             raise ValueError("operation.token_budget must be positive int")
-        if not isinstance(self.json_schema, Mapping):
+        if not isinstance(self.json_schema, Mapping) or self.json_schema.get("type") != "object":
             raise ValueError("operation.json_schema must be a mapping")
-        object.__setattr__(self, "json_schema", dict(self.json_schema))
+        object.__setattr__(self, "json_schema", freeze_mapping(self.json_schema))
         if self.confidence_threshold is not None:
             if not (0.0 <= float(self.confidence_threshold) <= 1.0):
                 raise ValueError("confidence_threshold must be in [0,1]")
@@ -54,7 +71,10 @@ class RecommendGenerationProfile:
             raise ValueError("grounded_rules_manifest_hash must be non-empty str")
         if not isinstance(self.operations, Mapping) or not self.operations:
             raise ValueError("operations must be a non-empty mapping")
-        object.__setattr__(self, "operations", dict(self.operations))
+        missing = sorted(_REQUIRED_OPERATIONS - set(self.operations))
+        if missing:
+            raise ValueError("missing required operations: " + ", ".join(missing))
+        object.__setattr__(self, "operations", freeze_mapping(self.operations))
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "RecommendGenerationProfile":
@@ -67,11 +87,12 @@ class RecommendGenerationProfile:
         ops_raw = payload["operations"]
         ops: dict[str, OperationConfig] = {}
         for op_id, cfg in ops_raw.items():
-            for key in ("system_prompt_id", "json_schema", "timeout", "token_budget"):
+            for key in ("system_prompt_id", "system_prompt", "json_schema", "timeout", "token_budget"):
                 if key not in cfg:
                     raise ValueError(f"{op_id}.{key} required")
             ops[op_id] = OperationConfig(
                 system_prompt_id=cfg["system_prompt_id"],
+                system_prompt=cfg["system_prompt"],
                 json_schema=cfg["json_schema"],
                 timeout=cfg["timeout"],
                 token_budget=cfg["token_budget"],
@@ -88,7 +109,17 @@ class RecommendGenerationProfile:
     @classmethod
     def from_file(cls, path: Path) -> "RecommendGenerationProfile":
         data = json.loads(path.read_text(encoding="utf-8"))
-        return cls.from_dict(data)
+        profile = cls.from_dict(data)
+        expected = load_grounded_rules().manifest_hash
+        if profile.grounded_rules_manifest_hash != expected:
+            raise ValueError("grounded_rules_manifest_hash does not match loaded grounded rules")
+        for operation_id, required in _REQUIRED_SCHEMA_FIELDS.items():
+            schema = profile.operations[operation_id].json_schema
+            if schema.get("additionalProperties") is not False:
+                raise ValueError(f"{operation_id}.json_schema must forbid additional properties")
+            if frozenset(schema.get("required", ())) != required:
+                raise ValueError(f"{operation_id}.json_schema has invalid required fields")
+        return profile
 
 
 __all__ = ["OperationConfig", "RecommendGenerationProfile"]

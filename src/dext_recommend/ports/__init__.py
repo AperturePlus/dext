@@ -7,6 +7,7 @@ from dext_recommend.ports.active_snapshot import ActiveSnapshotProvider
 from dext_recommend.ports.embedding import EmbeddingResult, QueryEmbeddingPort
 from dext_recommend.ports.generation import FakeLLMGenerationPort, LLMGenerationPort
 from dext_recommend.ports.generation_profile import RecommendGenerationProfilePort
+from dext_recommend.ports.conversation_store import ConversationStorePort, TurnSnapshot
 from dext_recommend.ports.professor_facts import (
     ProfessorDetail,
     ProfessorFact,
@@ -30,6 +31,7 @@ from dext_recommend.ports.vector_search import AliasReadback, VectorHit, VectorS
 from dext_recommend.ports._fakes import (
     FakeActiveSnapshotProvider,
     FakeCatalogReleasePort,
+    FakeConversationStorePort,
     FakeGraphReleasePort,
     FakeProfessorFactPort,
     FakeQueryEmbeddingPort,
@@ -44,9 +46,11 @@ __all__ = [
     "AliasReadback",
     "CatalogReleaseObservation",
     "CatalogReleasePort",
+    "ConversationStorePort",
     "EmbeddingResult",
     "FakeActiveSnapshotProvider",
     "FakeCatalogReleasePort",
+    "FakeConversationStorePort",
     "FakeGraphReleasePort",
     "FakeLLMGenerationPort",
     "FakeProfessorFactPort",
@@ -71,6 +75,7 @@ __all__ = [
     "ReadinessSourceError",
     "RecommendGenerationProfile",
     "RecommendGenerationProfilePort",
+    "TurnSnapshot",
     "VectorHit",
     "VectorReleaseObservation",
     "VectorReleasePort",

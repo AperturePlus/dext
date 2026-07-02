@@ -151,10 +151,12 @@ def test_recommended_professor_minimum():
 from dext_recommend import RecommendationCore, RecommendDeps
 from dext_recommend import (
     FakeActiveSnapshotProvider, FakeLLMGenerationPort, FakeProfessorFactPort,
-    FakeQueryEmbeddingPort, FakeRankingProfilePort, FakeVectorSearchPort,
+    FakeQueryEmbeddingPort, FakeRankingProfilePort,
+    FakeRecommendGenerationProfilePort, FakeVectorSearchPort,
     RecommendSettings,
 )
 from dext_recommend.core.ranking_profile import RankingProfile
+from tests.dext_recommend._recfixtures import generation_profile
 
 
 def _profile():
@@ -185,6 +187,7 @@ def test_recommendation_core_constructs_from_fake_ports():
         facts_port=FakeProfessorFactPort(),
         llm_port=FakeLLMGenerationPort(preset=GenerationResult(output={})),
         ranking_port=FakeRankingProfilePort(profile=_profile()),
+        generation_profile_port=FakeRecommendGenerationProfilePort(generation_profile()),
         coverage_flags_by_build_id={snap.build_id: {"org_unit_ids": True}},
     )
     core = RecommendationCore(deps, RecommendSettings())
@@ -204,6 +207,7 @@ async def test_recommendation_core_recommend_runs_pipeline():
         facts_port=FakeProfessorFactPort(),
         llm_port=FakeLLMGenerationPort(preset=GenerationResult(output={})),
         ranking_port=FakeRankingProfilePort(profile=_profile()),
+        generation_profile_port=FakeRecommendGenerationProfilePort(generation_profile()),
         coverage_flags_by_build_id={snap.build_id: {"org_unit_ids": True}},
     )
     core = RecommendationCore(deps, RecommendSettings())

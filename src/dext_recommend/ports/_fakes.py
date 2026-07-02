@@ -6,11 +6,13 @@ from pathlib import Path
 
 from typing import TYPE_CHECKING
 
-from dext_recommend.models import RecommendationFilters
+from dext_recommend.models import ConversationContext, ConversationSummary, RecommendationFilters
+from dext_recommend.ports.conversation_store import TurnSnapshot
 from dext_recommend.ports.embedding import EmbeddingResult
 from dext_recommend.ports.professor_facts import (
     ProfessorDetail,
     ProfessorFact,
+    ProfessorFactNotFound,
     ViewerPermissions,
 )
 from dext_recommend.ports.release_readback import (
@@ -32,8 +34,10 @@ from dext_recommend.core.generation_profile import RecommendGenerationProfile
 class FakeActiveSnapshotProvider:
     def __init__(self, snapshot: ActiveBuildSnapshot | None) -> None:
         self._snapshot = snapshot
+        self.get_snapshot_calls = 0
 
     def get_snapshot(self) -> ActiveBuildSnapshot | None:
+        self.get_snapshot_calls += 1
         return self._snapshot
 
 
@@ -206,7 +210,10 @@ class FakeProfessorFactPort:
             "snapshot_build_id": snapshot.build_id,
             "viewer_permissions": viewer_permissions,
         })
-        return self._details[entity_id]
+        try:
+            return self._details[entity_id]
+        except KeyError as exc:
+            raise ProfessorFactNotFound(entity_id, snapshot.build_id) from exc
 
     async def hydrate(
         self,
@@ -229,9 +236,45 @@ class FakeRecommendGenerationProfilePort:
         return self._profile
 
 
+class FakeConversationStorePort:
+    def __init__(self, *, initial=None, summaries=None) -> None:
+        self._contexts = dict(initial or {})
+        self._summaries = dict(summaries or {})
+        self.saved_turns: list[tuple[str, str, ConversationContext, TurnSnapshot]] = []
+
+    async def load_context(self, session_id: str, turn_id: str | None):
+        return self._contexts.get((session_id, turn_id))
+
+    async def load_summary(self, session_id: str, through_turn_id: str | None):
+        return self._summaries.get((session_id, through_turn_id))
+
+    async def save_turn(self, session_id: str, turn_id: str,
+                        context: ConversationContext, snapshot: TurnSnapshot) -> None:
+        self._contexts[(session_id, turn_id)] = context
+        self.saved_turns.append((session_id, turn_id, context, snapshot))
+
+    async def list_prior_entity_ids(self, session_id: str, limit: int = 50):
+        result: list[str] = []
+        seen: set[str] = set()
+        for sid, _tid, _ctx, snapshot in self.saved_turns:
+            if sid != session_id:
+                continue
+            for entity_id in snapshot.result_entity_ids:
+                if entity_id not in seen:
+                    seen.add(entity_id)
+                    result.append(entity_id)
+                if len(result) >= limit:
+                    return tuple(result)
+        return tuple(result)
+
+    async def resolve_fork(self, main_session_id: str, source_turn_id: str):
+        return self._contexts.get((main_session_id, source_turn_id))
+
+
 __all__ = [
     "FakeActiveSnapshotProvider",
     "FakeCatalogReleasePort",
+    "FakeConversationStorePort",
     "FakeGraphReleasePort",
     "FakeProfessorFactPort",
     "FakeQueryEmbeddingPort",

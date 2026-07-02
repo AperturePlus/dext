@@ -27,6 +27,7 @@ from dext_recommend.readiness import ActiveBuildSnapshot
 
 if TYPE_CHECKING:
     from dext_recommend.ports.generation_profile import RecommendGenerationProfilePort
+    from dext_recommend.core.generation_profile import RecommendGenerationProfile
 
 from dext_recommend.core._resilience import (
     ClassifiedRecommendError, RecommendExecutionContext,
@@ -51,8 +52,9 @@ class RecommendDeps:
     facts_port: ProfessorFactPort
     llm_port: LLMGenerationPort
     ranking_port: RankingProfilePort
+    generation_profile_port: "RecommendGenerationProfilePort"
     coverage_flags_by_build_id: Mapping[str, Mapping[str, bool]] = field(default_factory=dict)
-    generation_profile_port: "RecommendGenerationProfilePort | None" = None
+    conversation_store: object | None = None
 
 
 def _warn(code: RecommendationErrorCode, message: str, *, severity: str = "warning") -> RecommendationWarning:
@@ -61,6 +63,7 @@ def _warn(code: RecommendationErrorCode, message: str, *, severity: str = "warni
 
 def _error_response(*, snapshot: ActiveBuildSnapshot | None, profile: RankingProfile | None,
                     embedding_fingerprint: str | None, warning: RecommendationWarning,
+                    generation_profile_version: str | None = None,
                     phase_diagnostics: tuple = (),
                     prior_warnings: tuple[RecommendationWarning, ...] = ()) -> RecommendResponse:
     return make_error_response(
@@ -72,6 +75,7 @@ def _error_response(*, snapshot: ActiveBuildSnapshot | None, profile: RankingPro
             snapshot.embedding_fingerprint if snapshot else "unavailable"
         ),
         taxonomy_version=snapshot.taxonomy_version if snapshot else None,
+        generation_profile_version=generation_profile_version,
         warning=warning,
         phase_diagnostics=phase_diagnostics,
         prior_warnings=prior_warnings,
@@ -138,13 +142,15 @@ class RecommendationCore:
     def deps(self) -> RecommendDeps:
         return self._deps
 
-    def _error_response_public(self, *, snapshot, exec_ctx, code, message):
+    def _error_response_public(self, *, snapshot, exec_ctx, code, message,
+                               generation_profile_version=None):
         """Public error-response builder for callers outside the core (e.g.
         ConversationDispatcher) that hold a pinned snapshot + exec_ctx."""
         return _error_response(
             snapshot=snapshot, profile=exec_ctx.profile,
             embedding_fingerprint=exec_ctx.embedding_fingerprint,
             warning=_warn(code, message, severity="error"),
+            generation_profile_version=generation_profile_version,
             phase_diagnostics=exec_ctx.snapshot_phase_diagnostics(),
             prior_warnings=exec_ctx.snapshot_warnings(),
         )
@@ -195,7 +201,7 @@ class RecommendationCore:
             except ConversationValidationError as e:
                 resp = _error_response(
                     snapshot=None, profile=None, embedding_fingerprint=None,
-                    warning=_warn(RecommendationErrorCode.INVALID_CONVERSATION_STATE,
+                    warning=_warn(RecommendationErrorCode(e.code),
                                   e.safe_message, severity="error"),
                     phase_diagnostics=(),
                 )
@@ -216,7 +222,7 @@ class RecommendationCore:
         exec_ctx = RecommendExecutionContext()
         try:
             return await asyncio.wait_for(
-                self._recommend_pinned(request, vp, exec_ctx),
+                self._recommend_with_pins(request, vp, exec_ctx),
                 timeout=self._settings.total_timeout,
             )
         except asyncio.TimeoutError:
@@ -228,6 +234,7 @@ class RecommendationCore:
                               severity="error"),
                 phase_diagnostics=exec_ctx.snapshot_phase_diagnostics(),
                 prior_warnings=exec_ctx.snapshot_warnings(),
+                generation_profile_version=exec_ctx.generation_profile_version,
             )
         except ClassifiedRecommendError as exc:
             return _error_response(
@@ -237,19 +244,15 @@ class RecommendationCore:
                               f"{exc.phase} failed", severity="error"),
                 phase_diagnostics=exec_ctx.snapshot_phase_diagnostics(),
                 prior_warnings=exec_ctx.snapshot_warnings(),
+                generation_profile_version=exec_ctx.generation_profile_version,
             )
 
-    async def _recommend_pinned(
-        self,
-        request: RecommendRequest,
-        vp: ViewerPermissions,
+    async def _recommend_with_pins(
+        self, request: RecommendRequest, vp: ViewerPermissions,
         ctx: RecommendExecutionContext,
     ) -> RecommendResponse:
-        effective_include_contacts = request.include_contacts and vp.include_contacts
-
         snapshot = _guarded_sync(
-            ctx, "snapshot",
-            RecommendationErrorCode.ACTIVE_BUILD_UNAVAILABLE.value,
+            ctx, "snapshot", RecommendationErrorCode.ACTIVE_BUILD_UNAVAILABLE.value,
             lambda: self._deps.snapshot_port.get_snapshot(),
         )
         if snapshot is None:
@@ -259,6 +262,29 @@ class RecommendationCore:
                               "no ACTIVE build", severity="error"),
                 phase_diagnostics=ctx.snapshot_phase_diagnostics(),
             )
+        ctx.snapshot = snapshot
+        generation_profile = await _guarded_async(
+            ctx, "generation_profile", RecommendationErrorCode.GENERATION_UNAVAILABLE.value,
+            lambda: self._deps.generation_profile_port.read_profile(
+                self._settings.generation_profile_path
+            ),
+        )
+        ctx.generation_profile_version = generation_profile.version
+        return await self._recommend_pinned(
+            request, vp, ctx, snapshot=snapshot,
+            generation_profile=generation_profile,
+        )
+
+    async def _recommend_pinned(
+        self,
+        request: RecommendRequest,
+        vp: ViewerPermissions,
+        ctx: RecommendExecutionContext,
+        *,
+        snapshot: ActiveBuildSnapshot,
+        generation_profile: "RecommendGenerationProfile",
+    ) -> RecommendResponse:
+        effective_include_contacts = request.include_contacts and vp.include_contacts
         ctx.snapshot = snapshot
 
         route = resolve_recommend_route(request)
@@ -274,16 +300,17 @@ class RecommendationCore:
             # the direct recommend path (the conversation dispatcher in Task 6
             # owns it); surface it as a terminal error here.
             if route.detail_followup:
-                terminal = [_warn(RecommendationErrorCode.UNSUPPORTED_FOR_RECOMMEND_CORE,
-                                  "detail_followup not supported by recommend core",
+                terminal = [_warn(RecommendationErrorCode.INVALID_CONVERSATION_STATE,
+                                  "detail_followup must go through ConversationDispatcher",
                                   severity="error")]
             else:
                 terminal = list(route.terminal_issues)
             resp = _error_response(
                 snapshot=snapshot, profile=None, embedding_fingerprint=None,
                 warning=terminal[0],
+                generation_profile_version=generation_profile.version,
                 phase_diagnostics=ctx.snapshot_phase_diagnostics(),
-                prior_warnings=tuple(route_warnings) + tuple(terminal),
+                prior_warnings=tuple(route_warnings) + tuple(terminal[1:]),
             )
             validate(resp)
             return resp
@@ -299,7 +326,9 @@ class RecommendationCore:
             ctx, "query_understanding",
             RecommendationErrorCode.LLM_UNAVAILABLE.value,
             lambda: understand_query(
-                request, self._deps.llm_port, snapshot, profile_version=profile.version,
+                request, self._deps.llm_port, snapshot,
+                profile_version=generation_profile.version,
+                operation=generation_profile.operations["query_understanding"],
             ),
         )
         if qu.needs_clarification:
@@ -312,6 +341,7 @@ class RecommendationCore:
                 warning=warning,
                 phase_diagnostics=ctx.snapshot_phase_diagnostics(),
                 prior_warnings=tuple(route_warnings),
+                generation_profile_version=generation_profile.version,
             )
             validate(resp)
             return resp
@@ -338,13 +368,20 @@ class RecommendationCore:
                 or not anchor_fact.topic_ids
             )
             if anchor_unavailable:
-                route_warnings.append(_warn(
-                    RecommendationErrorCode.MISSING_ANCHOR,
-                    "anchor unavailable or lacks approved topics; falling back to new_search",
-                ))
-                route = dataclasses.replace(
-                    route, intent="new_search", anchor_entity_id=None,
+                resp = _error_response(
+                    snapshot=snapshot, profile=profile,
+                    embedding_fingerprint=snapshot.embedding_fingerprint,
+                    warning=_warn(
+                        RecommendationErrorCode.ANCHOR_NOT_IN_ACTIVE_BUILD,
+                        "anchor is not available in the ACTIVE build",
+                        severity="error",
+                    ),
+                    generation_profile_version=generation_profile.version,
+                    phase_diagnostics=ctx.snapshot_phase_diagnostics(),
+                    prior_warnings=tuple(route_warnings),
                 )
+                validate(resp)
+                return resp
             else:
                 anchor_topics = tuple(anchor_fact.topic_ids)
                 route = dataclasses.replace(
@@ -366,6 +403,7 @@ class RecommendationCore:
                 embedding_fingerprint=embedding.embedding_fingerprint,
                 warning=_warn(RecommendationErrorCode.EMBEDDING_FINGERPRINT_MISMATCH,
                               "embedding fingerprint != snapshot", severity="error"),
+                generation_profile_version=generation_profile.version,
                 phase_diagnostics=ctx.snapshot_phase_diagnostics(),
                 prior_warnings=tuple(route_warnings),
             )
@@ -394,6 +432,7 @@ class RecommendationCore:
                 embedding_fingerprint=embedding.embedding_fingerprint,
                 warning=_warn(RecommendationErrorCode.NO_CANDIDATES_AFTER_FILTERS,
                               "no candidates after filters", severity="warning"),
+                generation_profile_version=generation_profile.version,
                 phase_diagnostics=ctx.snapshot_phase_diagnostics(),
                 prior_warnings=tuple(route_warnings),
             )
@@ -465,16 +504,13 @@ class RecommendationCore:
             returned_count=len(results),
             steps_used=steps_used,
         )
-        # TODO(spec §3.5): generation_profile_version should reflect the QU
-        # generation that ran for this request. Left None for direct recommend
-        # in R5 Task 5 — the QU versioning fix is a follow-up tracked in spec
-        # §3.5. The ConversationDispatcher (Task 6) sets it properly.
         resp = RecommendResponse(
             build_id=snapshot.build_id, ranking_profile_version=profile.version,
             embedding_fingerprint=embedding.embedding_fingerprint,
             taxonomy_version=snapshot.taxonomy_version,
             query_understanding=qu, query=diag, results=tuple(results),
             suggested_followups=tuple(suggested_followups), warnings=tuple(warnings),
+            generation_profile_version=generation_profile.version,
             phase_diagnostics=ctx.snapshot_phase_diagnostics(),
         )
         validate(resp)

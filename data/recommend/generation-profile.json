@@ -1,9 +1,32 @@
 {
   "version": "generation-v1",
-  "grounded_rules_manifest_hash": "grules-v1-placeholder",
+  "grounded_rules_manifest_hash": "5ab08fb94dea49a0a50f52da52ca1398bd49c54520932dcfb7acad4839898ac9",
   "operations": {
+    "query_understanding": {
+      "system_prompt_id": "dext_recommend.query_understanding.v1",
+      "system_prompt": "Extract the student's mentor-search constraints. Return only JSON matching the supplied schema. Do not invent professor facts or infer sensitive attributes.",
+      "json_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["research_interests", "preferred_universities", "preferred_cities", "preferred_org_units", "degree_goal", "mentor_eligibility_requirement", "missing_information", "needs_clarification", "confidence"],
+        "properties": {
+          "research_interests": {"type": "array", "items": {"type": "string"}},
+          "preferred_universities": {"type": "array", "items": {"type": "string"}},
+          "preferred_cities": {"type": "array", "items": {"type": "string"}},
+          "preferred_org_units": {"type": "array", "items": {"type": "string"}},
+          "degree_goal": {"type": ["string", "null"]},
+          "mentor_eligibility_requirement": {"type": ["string", "null"]},
+          "missing_information": {"type": "array", "items": {"type": "string"}},
+          "needs_clarification": {"type": "boolean"},
+          "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+        }
+      },
+      "timeout": 8.0,
+      "token_budget": 1024
+    },
     "implicit_intent": {
       "system_prompt_id": "dext_recommend.implicit_intent.v1",
+      "system_prompt": "Classify the follow-up intent using only the supplied context. Return only JSON matching the supplied schema. Never reveal rationale outside the structured field.",
       "json_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -22,6 +45,7 @@
     },
     "detail_followup": {
       "system_prompt_id": "dext_recommend.detail_followup.v1",
+      "system_prompt": "Answer only from the supplied fact bundle. Every factual claim must cite the supporting fact indices and refs. Do not provide contacts or probability claims.",
       "json_schema": {
         "type": "object",
         "additionalProperties": false,
