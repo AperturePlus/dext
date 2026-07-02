@@ -76,3 +76,17 @@ def test_readiness_thresholds_reject_out_of_range():
 def test_readiness_thresholds_accept_upper_bound():
     s = RecommendSettings(coverage_threshold_profile_hash=1.0)
     assert s.coverage_threshold_profile_hash == 1.0
+
+
+def test_config_total_timeout_must_be_positive():
+    from dext_recommend.config import RecommendSettings
+    import pytest
+    with pytest.raises(Exception):
+        RecommendSettings(total_timeout=0.0)
+
+
+def test_config_has_query_max_chars_and_limit_max():
+    from dext_recommend.config import RecommendSettings
+    s = RecommendSettings()
+    assert s.query_max_chars > 0
+    assert s.limit_max > 0

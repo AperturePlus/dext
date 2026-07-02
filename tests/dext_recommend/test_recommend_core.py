@@ -724,3 +724,42 @@ async def test_explanation_every_result_has_reason():
     no_detail_card = next(r for r in resp.results if r.entity_id == "e_no_detail")
     assert len(no_detail_card.short_reasons) >= 1
 
+
+async def test_recommend_invalid_request_calls_no_ports():
+    """Empty query_text -> INVALID_REQUEST warning, no ports called."""
+    core = _core()
+    req = RecommendRequest(query_text="", limit=5)  # empty query_text
+    resp = await core.recommend(req)
+    codes = [w.code for w in resp.warnings]
+    assert "invalid_request" in codes
+    assert resp.results == ()
+    # no port was called
+    assert core._deps.vector_port.hybrid_recall_calls == []
+    assert core._deps.facts_port.hydrate_calls == []
+    assert core._deps.facts_port.get_detail_calls == []
+
+
+async def test_recommend_unauthorized_contacts_calls_no_detail():
+    """include_contacts=True with default ViewerPermissions -> UNAUTHORIZED_CONTACT, no get_detail."""
+    core = _core()
+    resp = await core.recommend(RecommendRequest(
+        query_text="NLP",
+        include_contacts=True,
+    ))
+    codes = [w.code for w in resp.warnings]
+    assert "unauthorized_contact" in codes
+    assert resp.results == ()
+    assert core._deps.facts_port.get_detail_calls == []
+
+
+async def test_recommend_unauthorized_review_policy():
+    """review_policy=include_downranked with default ViewerPermissions -> UNAUTHORIZED_REVIEW."""
+    core = _core()
+    resp = await core.recommend(RecommendRequest(
+        query_text="NLP",
+        review_policy="include_downranked",
+    ))
+    codes = [w.code for w in resp.warnings]
+    assert "unauthorized_review" in codes
+    assert resp.results == ()
+

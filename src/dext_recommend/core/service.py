@@ -64,6 +64,35 @@ def _error_response(*, snapshot: ActiveBuildSnapshot | None, profile: RankingPro
     )
 
 
+def validate_request(request: RecommendRequest, settings: RecommendSettings) -> str | None:
+    """Return an error message string if invalid, else None."""
+    if not isinstance(request.query_text, str) or not request.query_text.strip():
+        return "query_text must be a non-empty string"
+    if len(request.query_text) > settings.query_max_chars:
+        return f"query_text exceeds {settings.query_max_chars} chars"
+    if not (1 <= request.limit <= settings.limit_max):
+        return f"limit must be in [1, {settings.limit_max}]"
+    if not (1 <= request.oversample <= settings.oversample_max):
+        return f"oversample must be in [1, {settings.oversample_max}]"
+    if request.ranking_mode != "explainable_precision":
+        return f"ranking_mode {request.ranking_mode!r} not supported"
+    if request.review_policy not in ("exclude", "include_downranked"):
+        return f"invalid review_policy: {request.review_policy!r}"
+    if request.diagnostics_level not in ("none", "summary", "debug"):
+        return f"invalid diagnostics_level: {request.diagnostics_level!r}"
+    if request.filters.master_eligibility not in ("any", "confirmed"):
+        return "invalid master_eligibility"
+    if request.filters.phd_eligibility not in ("any", "confirmed"):
+        return "invalid phd_eligibility"
+    if request.filters.topic_filter_mode not in ("soft", "hard"):
+        return "invalid topic_filter_mode"
+    for fld in ("university_ids", "city_names", "org_unit_ids", "title_families", "topic_ids"):
+        for v in getattr(request.filters, fld):
+            if not isinstance(v, str) or not v:
+                return f"filters.{fld} contains empty/non-string value"
+    return None
+
+
 class RecommendationCore:
     def __init__(self, deps: RecommendDeps, settings: RecommendSettings) -> None:
         self._deps = deps
@@ -73,7 +102,36 @@ class RecommendationCore:
     def deps(self) -> RecommendDeps:
         return self._deps
 
-    async def recommend(self, request: RecommendRequest) -> RecommendResponse:
+    async def recommend(
+        self,
+        request: RecommendRequest,
+        *,
+        viewer_permissions: ViewerPermissions | None = None,
+    ) -> RecommendResponse:
+        vp = viewer_permissions or ViewerPermissions()
+
+        err = validate_request(request, self._settings)
+        if err is not None:
+            return _error_response(
+                snapshot=None, profile=None, embedding_fingerprint=None,
+                warning=_warn(RecommendationErrorCode.INVALID_REQUEST, err, severity="error"),
+            )
+
+        if request.include_contacts and not vp.include_contacts:
+            return _error_response(
+                snapshot=None, profile=None, embedding_fingerprint=None,
+                warning=_warn(RecommendationErrorCode.UNAUTHORIZED_CONTACT,
+                              "include_contacts requested without permission", severity="error"),
+            )
+        if request.review_policy == "include_downranked" and not vp.can_view_review:
+            return _error_response(
+                snapshot=None, profile=None, embedding_fingerprint=None,
+                warning=_warn(RecommendationErrorCode.UNAUTHORIZED_REVIEW,
+                              "include_downranked requested without permission", severity="error"),
+            )
+
+        effective_include_contacts = request.include_contacts and vp.include_contacts
+
         snapshot = self._deps.snapshot_port.get_snapshot()
         if snapshot is None:
             return _error_response(
@@ -214,9 +272,9 @@ class RecommendationCore:
         rerank_window = survivors[: profile.detail_rerank_window]
         detail_map = await fetch_details(
             snapshot, self._deps.facts_port, [h.entity_id for h in rerank_window],
-            include_contacts=request.include_contacts,
+            include_contacts=effective_include_contacts,
             viewer_permissions=ViewerPermissions(
-                include_contacts=request.include_contacts,
+                include_contacts=effective_include_contacts,
                 diagnostics=request.diagnostics_level == "debug",
             ),
             concurrency=profile.detail_fetch_concurrency,
@@ -236,7 +294,7 @@ class RecommendationCore:
             if expl.weak_explanation:
                 weak_explanation = True
             card = assemble_card(
-                entry, fact, detail, expl, qu, include_contacts=request.include_contacts,
+                entry, fact, detail, expl, qu, include_contacts=effective_include_contacts,
             )
             results.append(card)
 
