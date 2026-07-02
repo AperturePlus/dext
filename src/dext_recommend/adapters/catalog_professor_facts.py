@@ -7,24 +7,23 @@ double-gated and never enter the FactBundle. No cache (R7 decorator if ever).
 """
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from dext_grounded import SourceRef
-from dext_grounded.fact_bundle import FactBundle, FactItem
-from dext_grounded.content import ContentClass
+from dext_grounded.fact_bundle import FactBundle
 
 from dext_recommend.adapters._catalog_fact_reader import (
-    CatalogProfessorFactReader, CatalogProfessorDetailRows,
+    CatalogProfessorFactReader,
 )
 from dext_recommend.config import RecommendSettings
 from dext_recommend.facts._ids import chunk_entity_ids, dedupe_entity_ids
 from dext_recommend.facts.evidence import (
-    build_fact_items, select_publication_snippets, select_statement_snippets,
+    build_fact_items, select_publication_rows, select_statement_rows,
 )
-from dext_recommend.facts.source_urls import dedupe_source_urls
+from dext_recommend.facts.source_urls import (
+    canonicalize_source_url, dedupe_source_urls,
+)
 from dext_recommend.ports.professor_facts import (
     ProfessorDetail, ProfessorFact, ProfessorFactNotFound, ViewerPermissions,
 )
@@ -37,16 +36,19 @@ def _fact_from_row(row: dict[str, Any]) -> ProfessorFact:
     return ProfessorFact(
         entity_id=str(row["entity_id"]),
         display_name=str(row["display_name"] or ""),
-        university=str(row.get("university_id") or ""),
-        org_units=tuple(row.get("org_unit_ids") or ()),
-        title=str(row.get("title_family") or ""),
+        university=str(row.get("university_name") or row.get("university_id") or ""),
+        org_units=tuple(row.get("org_unit_names") or row.get("org_unit_ids") or ()),
+        title=str(row.get("title_raw") or row.get("title_family") or ""),
         title_family=str(row.get("title_family") or ""),
         master_eligibility=str(row.get("master_eligibility") or "unknown"),
         phd_eligibility=str(row.get("phd_eligibility") or "unknown"),
         role_status=str(row.get("role_status") or "included"),
         profile_url=row.get("profile_url"),
         profile_hash=row.get("profile_hash"),
-        research_summary=None,
+        research_summary=(
+            str(row["research_areas_text"])
+            if row.get("research_areas_text") else None
+        ),
         university_id=row.get("university_id"),
         city_name=row.get("city_name"),
         org_unit_ids=tuple(row.get("org_unit_ids") or ()),
@@ -58,10 +60,7 @@ def _org_unit_names(observations: tuple[Mapping, ...]) -> tuple[str, ...]:
     out: list[str] = []
     seen: set[str] = set()
     for obs in observations:
-        try:
-            payload = json.loads(obs.get("observation_payload_json") or "{}")
-        except (TypeError, ValueError):
-            payload = {}
+        payload = obs.get("observation_payload") or {}
         affiliations = payload.get("affiliations") if isinstance(payload, dict) else None
         if isinstance(affiliations, list):
             for item in affiliations:
@@ -78,8 +77,8 @@ def _org_unit_names(observations: tuple[Mapping, ...]) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _approved_topic_names(topic_links: tuple[Mapping, ...]) -> tuple[str, ...]:
-    out: list[str] = []
+def _approved_topic_rows(topic_links: tuple[Mapping, ...]) -> tuple[Mapping, ...]:
+    out: list[Mapping] = []
     seen: set[str] = set()
     for row in topic_links:
         if str(row.get("review_status")) != "approved":
@@ -88,7 +87,7 @@ def _approved_topic_names(topic_links: tuple[Mapping, ...]) -> tuple[str, ...]:
         if not name or name in seen:
             continue
         seen.add(name)
-        out.append(name)
+        out.append(row)
     return tuple(out)
 
 
@@ -96,13 +95,55 @@ def _finding_codes(findings: tuple[Mapping, ...]) -> tuple[str, ...]:
     return tuple(str(r.get("code")) for r in findings if r.get("code"))
 
 
-def _source_ref(kind: str, build_id: str, key: str, *, summary: str = "") -> SourceRef:
+def _source_ref(
+    kind: str,
+    build_id: str,
+    key: str,
+    *,
+    summary: str = "",
+    official_url: str | None = None,
+    last_verified: str | None = None,
+) -> SourceRef:
+    heading_path = (
+        f"catalog:entity:{key}:build:{build_id}"
+        if kind == "entity"
+        else f"catalog:{kind}:{build_id}:{key}"
+    )
     return SourceRef(
         doc_path="catalog",
-        heading_path=f"catalog:{kind}:{build_id}:{key}",
-        chunk_hash=f"{build_id}:{key}",
-        quote_or_summary=summary or f"catalog:{kind}:{build_id}:{key}",
+        heading_path=heading_path,
+        chunk_hash=f"{kind}:{build_id}:{key}",
+        quote_or_summary=summary or heading_path,
+        official_url=official_url,
+        last_verified=last_verified,
     )
+
+
+def _source_metadata_by_observation(
+    rows: tuple[Mapping, ...],
+) -> dict[str, tuple[str | None, str | None]]:
+    metadata: dict[str, tuple[str | None, str | None]] = {}
+    for row in rows:
+        observation_id = str(row.get("observation_id") or "")
+        if not observation_id or observation_id in metadata:
+            continue
+        metadata[observation_id] = (
+            canonicalize_source_url(row.get("source_url")),
+            str(row["fetched_at"]) if row.get("fetched_at") else None,
+        )
+    return metadata
+
+
+def _dedupe_refs_from_facts(facts) -> tuple[SourceRef, ...]:
+    refs: list[SourceRef] = []
+    seen: set[SourceRef] = set()
+    for fact in facts:
+        for ref in fact.source_refs:
+            if ref in seen:
+                continue
+            seen.add(ref)
+            refs.append(ref)
+    return tuple(refs)
 
 
 class CatalogProfessorFactAdapter:
@@ -144,60 +185,141 @@ class CatalogProfessorFactAdapter:
 
         build_id = snapshot.build_id
         org_units = _org_unit_names(rows.observations)
-        statements = select_statement_snippets(rows.statements)
-        mentions = select_publication_snippets(rows.mentions)
-        topics = _approved_topic_names(rows.topic_links)
+        selected_statement_rows = select_statement_rows(rows.statements)
+        selected_mention_rows = select_publication_rows(rows.mentions)
+        selected_topic_rows = _approved_topic_rows(rows.topic_links)
+        statements = tuple(
+            str(row.get("normalized_text") or "").strip()
+            for row in selected_statement_rows
+        )
+        mentions = tuple(
+            str(row.get("normalized_text") or "").strip()
+            for row in selected_mention_rows
+        )
+        topics = tuple(str(row.get("canonical_name") or "") for row in selected_topic_rows)
         findings = _finding_codes(rows.findings)
         source_urls = dedupe_source_urls(
             str(r.get("source_url")) for r in rows.source_urls
         )
         profile_hash = rows.profile_hash
+        role_reasons = tuple(canon.get("role_reason_codes") or ())
+        risk_flags = list(role_reasons)
+        if profile_hash is None:
+            risk_flags.append("profile_hash_missing")
+        risk_flags = list(dict.fromkeys(risk_flags))
+        bio_snippets = (str(canon.get("bio") or ""),) if canon.get("bio") else ()
+        university = str(
+            rows.university_name or rows.profile_payload.get("university_id") or ""
+        )
+        university_id = str(rows.profile_payload.get("university_id") or "")
+        title = str(canon.get("title_raw") or canon.get("title_family") or "")
 
-        # provenance refs (R3-compatible projection)
-        provenance_refs: list[SourceRef] = [
-            _source_ref("entity", build_id, entity_id,
-                        summary=str(rows.profile_payload.get("provenance_ref") or "")),
-        ]
-        for s in rows.statements:
-            provenance_refs.append(
-                _source_ref("research-statement", build_id, str(s["id"]),
-                            summary=str(s.get("normalized_text") or ""))
+        source_metadata = _source_metadata_by_observation(rows.source_urls)
+        first_source = next(iter(source_metadata.values()), (None, None))
+        entity_ref = _source_ref(
+            "entity", build_id, entity_id,
+            summary=str(canon.get("display_name") or entity_id),
+            official_url=first_source[0], last_verified=first_source[1],
+        )
+        university_ref = _source_ref(
+            "university", build_id, university_id or university,
+            summary=university,
+            official_url=first_source[0], last_verified=first_source[1],
+        )
+        observation_refs: dict[str, SourceRef] = {}
+        for observation in rows.observations:
+            observation_id = str(observation.get("id") or "")
+            if not observation_id:
+                continue
+            official_url, last_verified = source_metadata.get(
+                observation_id,
+                (canonicalize_source_url(observation.get("source_url")), None),
             )
-        for m in rows.mentions:
-            provenance_refs.append(
-                _source_ref("publication-mention", build_id, str(m["id"]),
-                            summary=str(m.get("normalized_text") or ""))
+            observation_refs[observation_id] = _source_ref(
+                "observation", build_id, observation_id,
+                summary="; ".join(_org_unit_names((observation,))) or observation_id,
+                official_url=official_url, last_verified=last_verified,
             )
-        for tl in rows.topic_links:
-            if str(tl.get("review_status")) == "approved":
-                provenance_refs.append(
-                    SourceRef(
-                        doc_path="catalog",
-                        heading_path=str(tl.get("provenance_ref") or ""),
-                        chunk_hash=f"{build_id}:{tl['statement_id']}:{tl['topic_id']}",
-                        quote_or_summary=str(tl.get("evidence_span") or ""),
-                    )
-                )
-        provenance_refs_tuple = tuple(provenance_refs)
 
-        # FactItems: identity/eligibility/statement/topics/publications, each
-        # tied to its SourceRef when one exists, else UNCERTAIN.
+        statement_refs = tuple(
+            _source_ref(
+                "research-statement", build_id, str(row["id"]),
+                summary=str(row.get("normalized_text") or ""),
+                official_url=source_metadata.get(str(row.get("observation_id") or ""), (None, None))[0],
+                last_verified=source_metadata.get(str(row.get("observation_id") or ""), (None, None))[1],
+            )
+            for row in selected_statement_rows
+        )
+        publication_refs = tuple(
+            _source_ref(
+                "publication-mention", build_id, str(row["id"]),
+                summary=str(row.get("normalized_text") or ""),
+                official_url=source_metadata.get(str(row.get("observation_id") or ""), (None, None))[0],
+                last_verified=source_metadata.get(str(row.get("observation_id") or ""), (None, None))[1],
+            )
+            for row in selected_mention_rows
+        )
+        statement_observation_ids = {
+            str(row["id"]): str(row.get("observation_id") or "")
+            for row in rows.statements
+        }
+        topic_refs = tuple(
+            _source_ref(
+                "topic-link", build_id,
+                f"{row['statement_id']}:{row['topic_id']}",
+                summary=str(row.get("evidence_span") or row.get("canonical_name") or ""),
+                official_url=source_metadata.get(
+                    statement_observation_ids.get(str(row["statement_id"]), ""),
+                    (None, None),
+                )[0],
+                last_verified=source_metadata.get(
+                    statement_observation_ids.get(str(row["statement_id"]), ""),
+                    (None, None),
+                )[1],
+            )
+            for row in selected_topic_rows
+        )
+        finding_refs = tuple(
+            _source_ref(
+                "quality-finding", build_id, str(row["id"]),
+                summary=str(row.get("code") or ""),
+                official_url=source_metadata.get(
+                    str(row.get("observation_id") or ""), (None, None),
+                )[0],
+                last_verified=source_metadata.get(
+                    str(row.get("observation_id") or ""), (None, None),
+                )[1],
+            )
+            for row in rows.findings if row.get("code")
+        )
+        affiliation_refs = tuple(
+            observation_refs[str(observation["id"])]
+            for observation in rows.observations
+            if observation.get("id")
+            and _org_unit_names((observation,))
+            and str(observation["id"]) in observation_refs
+        )
+        source_refs = tuple(
+            ref for observation_id, ref in observation_refs.items()
+            if source_metadata.get(observation_id, (None, None))[0]
+        )
         refs_by_field = {
-            "display_name": (provenance_refs_tuple[0],) if provenance_refs_tuple else (),
-            "master_eligibility": (provenance_refs_tuple[0],) if provenance_refs_tuple else (),
-            "phd_eligibility": (provenance_refs_tuple[0],) if provenance_refs_tuple else (),
-            "research_statement": tuple(
-                r for r in provenance_refs_tuple
-                if r.heading_path.startswith("catalog:research-statement:")
-            ),
-            "approved_topics": tuple(
-                r for r in provenance_refs_tuple
-                if "research-statement" in r.heading_path
-            ),
-            "publications": tuple(
-                r for r in provenance_refs_tuple
-                if r.heading_path.startswith("catalog:publication-mention:")
-            ),
+            "display_name": (entity_ref,),
+            "university": (university_ref,),
+            "org_units": affiliation_refs,
+            "title": (entity_ref,),
+            "title_family": (entity_ref,),
+            "master_eligibility": (entity_ref,),
+            "phd_eligibility": (entity_ref,),
+            "role_status": (entity_ref,),
+            "profile_url": (entity_ref,),
+            "research_statement": statement_refs,
+            "approved_topics": topic_refs,
+            "publications": publication_refs,
+            "bio": (entity_ref,),
+            "data_sources": source_refs,
+            "quality_findings": finding_refs,
+            "risk_flags": (entity_ref,),
         }
         fact_items = build_fact_items(
             identity={"display_name": str(canon.get("display_name") or ""),
@@ -208,7 +330,18 @@ class CatalogProfessorFactAdapter:
             approved_topics=topics,
             publications=mentions,
             source_refs_by_field=refs_by_field,
+            university=university,
+            org_units=org_units,
+            title=title,
+            title_family=str(canon.get("title_family") or ""),
+            role_status=role_status,
+            profile_url=canon.get("profile_url"),
+            bio_snippets=bio_snippets,
+            source_urls=source_urls,
+            quality_findings=findings,
+            risk_flags=risk_flags,
         )
+        provenance_refs_tuple = _dedupe_refs_from_facts(fact_items)
         fact_bundle = FactBundle(
             build_id=build_id,
             subject_id=entity_id,
@@ -226,18 +359,14 @@ class CatalogProfessorFactAdapter:
             if phone:
                 contacts["phone"] = str(phone)
 
-        risk_flags: list[str] = []
-        if profile_hash is None:
-            risk_flags.append("profile_hash_missing")
-
         return ProfessorDetail(
             build_id=build_id,
             profile_hash=profile_hash,
             entity_id=entity_id,
             display_name=str(canon.get("display_name") or ""),
-            university=str(rows.university_name or rows.profile_payload.get("university_id") or ""),
+            university=university,
             org_units=org_units,
-            title=str(canon.get("title_raw") or canon.get("title_family") or ""),
+            title=title,
             title_family=str(canon.get("title_family") or ""),
             master_eligibility=str(canon.get("master_eligibility") or "unknown"),
             phd_eligibility=str(canon.get("phd_eligibility") or "unknown"),
@@ -246,7 +375,7 @@ class CatalogProfessorFactAdapter:
             research_statements=statements,
             approved_topics=topics,
             selected_publication_mentions=mentions,
-            bio_snippets=(str(canon.get("bio") or ""),) if canon.get("bio") else (),
+            bio_snippets=bio_snippets,
             source_urls=source_urls,
             provenance_refs=provenance_refs_tuple,
             quality_findings=findings,
