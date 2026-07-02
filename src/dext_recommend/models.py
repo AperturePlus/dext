@@ -99,6 +99,14 @@ class RecommendationWarning:
     severity: str = "warning"
 
 
+@dataclass(frozen=True, slots=True)
+class PhaseDiagnostic:
+    phase: str
+    attempt: int | None
+    elapsed_ms: float
+    error_code: str | None
+
+
 # ---- Result & response (overview §8, §5) ----
 
 @dataclass(frozen=True, slots=True)
@@ -162,10 +170,11 @@ class RecommendResponse:
     results: tuple[RecommendedProfessor, ...]
     suggested_followups: tuple[str, ...]
     warnings: tuple[RecommendationWarning, ...]
+    phase_diagnostics: tuple[PhaseDiagnostic, ...] = ()
 
     def __post_init__(self) -> None:
         # accept list/tuple/generator input; store as tuple (spec §3 deep immutability)
-        for _f in ("results", "suggested_followups", "warnings"):
+        for _f in ("results", "suggested_followups", "warnings", "phase_diagnostics"):
             object.__setattr__(
                 self, _f,
                 tuple(getattr(self, _f)) if getattr(self, _f) is not None else ()
@@ -176,6 +185,7 @@ __all__ = [
     "ConversationContext",
     "QueryDiagnostics",
     "QueryUnderstanding",
+    "PhaseDiagnostic",
     "RecommendRequest",
     "RecommendResponse",
     "RecommendationFilters",

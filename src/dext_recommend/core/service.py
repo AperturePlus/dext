@@ -8,6 +8,7 @@ loop -> filters -> detail fan-out -> rerank -> cards -> validation.
 from __future__ import annotations
 
 import dataclasses
+import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -23,6 +24,10 @@ from dext_recommend.ports import (
 )
 from dext_recommend.readiness import ActiveBuildSnapshot
 
+from dext_recommend.core._resilience import (
+    ClassifiedRecommendError, RecommendExecutionContext,
+    _guarded_async, _guarded_sync,
+)
 from dext_recommend.core.cards import assemble_card
 from dext_recommend.core.detail_fetch import fetch_details
 from dext_recommend.core.explanation import build_explanation
@@ -50,7 +55,8 @@ def _warn(code: RecommendationErrorCode, message: str, *, severity: str = "warni
 
 
 def _error_response(*, snapshot: ActiveBuildSnapshot | None, profile: RankingProfile | None,
-                    embedding_fingerprint: str | None, warning: RecommendationWarning) -> RecommendResponse:
+                    embedding_fingerprint: str | None, warning: RecommendationWarning,
+                    phase_diagnostics: tuple = ()) -> RecommendResponse:
     return make_error_response(
         build_id=snapshot.build_id if snapshot else "unavailable",
         ranking_profile_version=profile.version if profile else (
@@ -61,6 +67,7 @@ def _error_response(*, snapshot: ActiveBuildSnapshot | None, profile: RankingPro
         ),
         taxonomy_version=snapshot.taxonomy_version if snapshot else None,
         warning=warning,
+        phase_diagnostics=phase_diagnostics,
     )
 
 
@@ -115,6 +122,7 @@ class RecommendationCore:
             return _error_response(
                 snapshot=None, profile=None, embedding_fingerprint=None,
                 warning=_warn(RecommendationErrorCode.INVALID_REQUEST, err, severity="error"),
+                phase_diagnostics=(),
             )
 
         if request.include_contacts and not vp.include_contacts:
@@ -122,23 +130,57 @@ class RecommendationCore:
                 snapshot=None, profile=None, embedding_fingerprint=None,
                 warning=_warn(RecommendationErrorCode.UNAUTHORIZED_CONTACT,
                               "include_contacts requested without permission", severity="error"),
+                phase_diagnostics=(),
             )
         if request.review_policy == "include_downranked" and not vp.can_view_review:
             return _error_response(
                 snapshot=None, profile=None, embedding_fingerprint=None,
                 warning=_warn(RecommendationErrorCode.UNAUTHORIZED_REVIEW,
                               "include_downranked requested without permission", severity="error"),
+                phase_diagnostics=(),
             )
 
+        ctx = RecommendExecutionContext()
+        try:
+            return await asyncio.wait_for(
+                self._recommend_inner(request, vp, ctx),
+                timeout=self._settings.total_timeout,
+            )
+        except asyncio.TimeoutError:
+            return _error_response(
+                snapshot=ctx.snapshot, profile=ctx.profile,
+                embedding_fingerprint=ctx.embedding_fingerprint,
+                warning=_warn(RecommendationErrorCode.REQUEST_TIMEOUT,
+                              f"recommend exceeded {self._settings.total_timeout}s",
+                              severity="error"),
+                phase_diagnostics=ctx.snapshot_phase_diagnostics(),
+            )
+        except ClassifiedRecommendError as exc:
+            return _error_response(
+                snapshot=ctx.snapshot, profile=ctx.profile,
+                embedding_fingerprint=ctx.embedding_fingerprint,
+                warning=_warn(RecommendationErrorCode(exc.code),
+                              f"{exc.phase} failed", severity="error"),
+                phase_diagnostics=ctx.snapshot_phase_diagnostics(),
+            )
+
+    async def _recommend_inner(
+        self,
+        request: RecommendRequest,
+        vp: ViewerPermissions,
+        ctx: RecommendExecutionContext,
+    ) -> RecommendResponse:
         effective_include_contacts = request.include_contacts and vp.include_contacts
 
-        snapshot = self._deps.snapshot_port.get_snapshot()
+        snapshot = _guarded_sync(ctx, "snapshot", lambda: self._deps.snapshot_port.get_snapshot())
         if snapshot is None:
             return _error_response(
                 snapshot=None, profile=None, embedding_fingerprint=None,
                 warning=_warn(RecommendationErrorCode.ACTIVE_BUILD_UNAVAILABLE,
                               "no ACTIVE build", severity="error"),
+                phase_diagnostics=ctx.snapshot_phase_diagnostics(),
             )
+        ctx.snapshot = snapshot
 
         route = resolve_recommend_route(request)
         route_warnings = list(route.warnings)
@@ -149,6 +191,7 @@ class RecommendationCore:
             resp = _error_response(
                 snapshot=snapshot, profile=None, embedding_fingerprint=None,
                 warning=warning,
+                phase_diagnostics=ctx.snapshot_phase_diagnostics(),
             )
             # merge route warnings ahead of the unsupported warning, then rebuild
             # the frozen+slots dataclass via object.__setattr__ (avoids fragile
@@ -160,21 +203,24 @@ class RecommendationCore:
                 query_understanding=resp.query_understanding, query=resp.query,
                 results=resp.results, suggested_followups=resp.suggested_followups,
                 warnings=all_warnings,
+                phase_diagnostics=resp.phase_diagnostics,
             )
             validate(resp)
             return resp
 
-        try:
-            profile = await self._deps.ranking_port.read_profile(self._settings.ranking_profile_path)
-        except Exception:
-            return _error_response(
-                snapshot=snapshot, profile=None, embedding_fingerprint=None,
-                warning=_warn(RecommendationErrorCode.RANKING_PROFILE_UNAVAILABLE,
-                              "ranking profile unavailable", severity="error"),
-            )
+        profile = await _guarded_async(
+            ctx, "ranking_profile",
+            RecommendationErrorCode.RANKING_PROFILE_UNAVAILABLE.value,
+            lambda: self._deps.ranking_port.read_profile(self._settings.ranking_profile_path),
+        )
+        ctx.profile = profile
 
-        qu = await understand_query(
-            request, self._deps.llm_port, snapshot, profile_version=profile.version,
+        qu = await _guarded_async(
+            ctx, "query_understanding",
+            RecommendationErrorCode.LLM_UNAVAILABLE.value,
+            lambda: understand_query(
+                request, self._deps.llm_port, snapshot, profile_version=profile.version,
+            ),
         )
         if qu.needs_clarification:
             # build the warning once and reuse it (the brief had a duplicate)
@@ -184,6 +230,7 @@ class RecommendationCore:
                 snapshot=snapshot, profile=profile,
                 embedding_fingerprint=snapshot.embedding_fingerprint,
                 warning=warning,
+                phase_diagnostics=ctx.snapshot_phase_diagnostics(),
             )
             validate(resp)
             return resp
@@ -194,8 +241,12 @@ class RecommendationCore:
 
         anchor_topics: tuple[str, ...] = ()
         if route.intent == "same_field" and route.anchor_entity_id:
-            anchor_map = await self._deps.facts_port.hydrate(
-                snapshot, [route.anchor_entity_id],
+            anchor_map = await _guarded_async(
+                ctx, "anchor_hydrate",
+                RecommendationErrorCode.HYDRATE_UNAVAILABLE.value,
+                lambda: self._deps.facts_port.hydrate(
+                    snapshot, [route.anchor_entity_id],
+                ),
             )
             anchor_fact = anchor_map.get(route.anchor_entity_id)
             anchor_unavailable = (
@@ -222,13 +273,19 @@ class RecommendationCore:
                     )),
                 )
 
-        embedding = await self._deps.embedding_port.embed(snapshot, request.query_text)
+        embedding = await _guarded_async(
+            ctx, "embedding",
+            RecommendationErrorCode.EMBEDDING_UNAVAILABLE.value,
+            lambda: self._deps.embedding_port.embed(snapshot, request.query_text),
+        )
+        ctx.embedding_fingerprint = embedding.embedding_fingerprint
         if embedding.embedding_fingerprint != snapshot.embedding_fingerprint:
             return _error_response(
                 snapshot=snapshot, profile=profile,
                 embedding_fingerprint=embedding.embedding_fingerprint,
                 warning=_warn(RecommendationErrorCode.EMBEDDING_FINGERPRINT_MISMATCH,
                               "embedding fingerprint != snapshot", severity="error"),
+                phase_diagnostics=ctx.snapshot_phase_diagnostics(),
             )
 
         coverage_flags = self._deps.coverage_flags_by_build_id.get(snapshot.build_id, {})
@@ -241,6 +298,7 @@ class RecommendationCore:
             embedding_sparse_vector=embedding.sparse_vector,
             oversample_max=self._settings.oversample_max,
             request_oversample=request.oversample, limit=request.limit,
+            ctx=ctx,
         )
         survivors = list(recall.survivors)
         fact_map = dict(recall.fact_map)
@@ -254,6 +312,7 @@ class RecommendationCore:
                 embedding_fingerprint=embedding.embedding_fingerprint,
                 warning=_warn(RecommendationErrorCode.NO_CANDIDATES_AFTER_FILTERS,
                               "no candidates after filters", severity="warning"),
+                phase_diagnostics=ctx.snapshot_phase_diagnostics(),
             )
             # attach diagnostics
             diag = QueryDiagnostics(
@@ -270,14 +329,16 @@ class RecommendationCore:
         semantic_scores = normalize_rrf(survivors)
         query_terms = tuple(qu.research_interests)
         rerank_window = survivors[: profile.detail_rerank_window]
-        detail_map = await fetch_details(
-            snapshot, self._deps.facts_port, [h.entity_id for h in rerank_window],
+        rerank_window_ids = [h.entity_id for h in rerank_window]
+        detail_map, failed = await fetch_details(
+            snapshot, self._deps.facts_port, rerank_window_ids,
             include_contacts=effective_include_contacts,
             viewer_permissions=ViewerPermissions(
                 include_contacts=effective_include_contacts,
                 diagnostics=request.diagnostics_level == "debug",
             ),
             concurrency=profile.detail_fetch_concurrency,
+            ctx=ctx,
         )
         ranked = rerank(
             rerank_window, fact_map, detail_map, semantic_scores,
@@ -308,6 +369,12 @@ class RecommendationCore:
         if len(results) < request.limit:
             warnings.append(_warn(RecommendationErrorCode.NO_CANDIDATES_AFTER_FILTERS,
                                   f"returned {len(results)} < limit {request.limit}"))
+        # partial detail degradation: a detail in the rerank window failed for
+        # operational reasons (not just missing) -> warn but keep the request.
+        detail_failures = [eid for eid in rerank_window_ids if eid in failed]
+        if detail_failures:
+            warnings.append(_warn(RecommendationErrorCode.DETAILS_UNAVAILABLE,
+                                  f"{len(detail_failures)} detail(s) unavailable; degraded"))
 
         suggested_followups = _suggested_followups(qu, route)
         diag = QueryDiagnostics(
@@ -324,6 +391,7 @@ class RecommendationCore:
             taxonomy_version=snapshot.taxonomy_version,
             query_understanding=qu, query=diag, results=tuple(results),
             suggested_followups=tuple(suggested_followups), warnings=tuple(warnings),
+            phase_diagnostics=ctx.snapshot_phase_diagnostics(),
         )
         validate(resp)
         return resp

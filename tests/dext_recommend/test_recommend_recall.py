@@ -8,6 +8,7 @@ from dext_recommend.core.ranking_profile import RankingProfile
 from dext_recommend.core.recall import (
     RecallResult, compute_oversample_steps, normalize_rrf, recall_loop,
 )
+from dext_recommend.core._resilience import RecommendExecutionContext
 from dext_recommend.ports._fakes import FakeProfessorFactPort
 from dext_recommend.ports.professor_facts import ProfessorFact
 
@@ -95,6 +96,7 @@ async def test_recall_loop_breaks_when_enough_hits():
         facts_port=facts_port, route=_route(), coverage_flags={},
         review_policy="exclude", embedding_sparse_vector=None,
         oversample_max=1000, request_oversample=200, limit=10,
+        ctx=RecommendExecutionContext(),
     )
     assert isinstance(result, RecallResult)
     # 50 post-filter survivors >= 10 -> break immediately
@@ -115,6 +117,7 @@ async def test_recall_loop_progresses_through_steps_when_insufficient():
         _profile(), facts_port=facts_port, route=_route(), coverage_flags={},
         review_policy="exclude", embedding_sparse_vector=None,
         oversample_max=1000, request_oversample=200, limit=10,
+        ctx=RecommendExecutionContext(),
     )
     assert result.steps_used == 4  # all steps exhausted; 3 survivors (< limit)
     assert len(result.survivors) == 3  # current-step authoritative, not cumulative
@@ -171,6 +174,7 @@ async def test_recall_loop_filters_per_step_and_dedups_hydrate():
         review_policy="exclude",
         embedding_sparse_vector=None,
         oversample_max=200, request_oversample=100, limit=5,
+        ctx=RecommendExecutionContext(),
     )
     assert isinstance(result, RecallResult)
     assert result.steps_used == 2  # step 100 had 0 survivors (e1 excluded) -> continued

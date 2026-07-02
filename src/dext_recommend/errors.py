@@ -38,6 +38,12 @@ class RecommendationErrorCode(str, Enum):
     MISSING_PRIOR_RESULTS = "missing_prior_results"
     MISSING_ANCHOR = "missing_anchor"
     WEAK_EXPLANATION = "weak_explanation"
+    REQUEST_TIMEOUT = "request_timeout"
+    LLM_UNAVAILABLE = "llm_unavailable"
+    EMBEDDING_UNAVAILABLE = "embedding_unavailable"
+    VECTOR_UNAVAILABLE = "vector_unavailable"
+    HYDRATE_UNAVAILABLE = "hydrate_unavailable"
+    DETAILS_UNAVAILABLE = "details_unavailable"
 
 
 @dataclass(frozen=True, slots=True)

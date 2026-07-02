@@ -21,6 +21,9 @@ from dext_recommend.ports.vector_search import VectorHit, VectorSearchPort
 from dext_recommend.ports.professor_facts import ProfessorFact, ProfessorFactPort
 from dext_recommend.readiness import ActiveBuildSnapshot
 
+from dext_recommend.core._resilience import (
+    RecommendExecutionContext, _guarded_async,
+)
 from dext_recommend.core.ranking_profile import RankingProfile
 from dext_recommend.core.filters import payload_prefilter, final_filter, FilterDiagnostics
 from dext_recommend.core.intent import RecommendRoute
@@ -81,6 +84,7 @@ async def recall_loop(
     oversample_max: int,
     request_oversample: int,
     limit: int,
+    ctx: RecommendExecutionContext,
 ) -> RecallResult:
     steps = compute_oversample_steps(request_oversample, profile, oversample_max=oversample_max)
     org_unit_degraded = coverage_flags.get("org_unit_ids") is not True
@@ -94,9 +98,14 @@ async def recall_loop(
 
     for step in steps:
         steps_used += 1
-        hits = await vector_port.hybrid_recall(
-            snapshot, query_vector, effective_filters, step, profile.version,
-            rrf_k=profile.rrf_k, sparse_vector=embedding_sparse_vector,
+        hits = await _guarded_async(
+            ctx, "vector_recall",
+            "vector_unavailable",
+            lambda: vector_port.hybrid_recall(
+                snapshot, query_vector, effective_filters, step, profile.version,
+                rrf_k=profile.rrf_k, sparse_vector=embedding_sparse_vector,
+            ),
+            attempt=step,
         )
         # dedup within this step by entity_id, keep first occurrence
         seen_step: set[str] = set()
@@ -110,7 +119,13 @@ async def recall_loop(
         new_ids = [h.entity_id for h in pref if h.entity_id not in hydrated_ids]
         if new_ids:
             hydrated_ids.update(new_ids)
-            fact_cache.update(await facts_port.hydrate(snapshot, new_ids))
+            hydrated = await _guarded_async(
+                ctx, "candidate_hydrate",
+                "hydrate_unavailable",
+                lambda: facts_port.hydrate(snapshot, new_ids),
+                attempt=step,
+            )
+            fact_cache.update(hydrated)
 
         current_survivors, current_filter_diag = final_filter(
             pref, fact_cache, effective_filters, route, coverage_flags,

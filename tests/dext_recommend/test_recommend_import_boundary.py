@@ -122,6 +122,7 @@ def test_dext_recommend_core_submodules_importable_without_dext_family():
             "dext_recommend.core.explanation",
             "dext_recommend.core.cards",
             "dext_recommend.core.validation",
+            "dext_recommend.core._resilience",
             "dext_recommend.core.service",
         ]
         for sub in submodules:

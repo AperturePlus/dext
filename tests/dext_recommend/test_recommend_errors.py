@@ -30,6 +30,12 @@ def test_error_code_enum_has_all_foundations_codes():
         "missing_prior_results",
         "missing_anchor",
         "weak_explanation",
+        "request_timeout",
+        "llm_unavailable",
+        "embedding_unavailable",
+        "vector_unavailable",
+        "hydrate_unavailable",
+        "details_unavailable",
     }
 
 

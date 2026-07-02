@@ -46,6 +46,7 @@ def validate(response: RecommendResponse) -> None:
 def make_error_response(
     *, build_id: str, ranking_profile_version: str, embedding_fingerprint: str,
     taxonomy_version: str | None, warning: RecommendationWarning,
+    phase_diagnostics: tuple = (),
 ) -> RecommendResponse:
     qu = QueryUnderstanding(
         research_interests=(), preferred_universities=(), preferred_cities=(),
@@ -62,6 +63,7 @@ def make_error_response(
         embedding_fingerprint=embedding_fingerprint, taxonomy_version=taxonomy_version,
         query_understanding=qu, query=diag, results=(),
         suggested_followups=(), warnings=(warning,),
+        phase_diagnostics=phase_diagnostics,
     )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -801,4 +802,454 @@ def test_composition_seam_injects_deps_verbatim():
     core = assemble_core(deps, settings)
     assert core.deps is deps
     assert build_test_core(deps, settings).deps is deps
+
+
+async def test_recommend_phase_diagnostics_populated():
+    # happy path: resp.phase_diagnostics has entries for snapshot/ranking/qu/embedding/vector_recall/candidate_hydrate/details
+    # each with elapsed_ms >= 0 and error_code is None
+    core = _core()
+    resp = await core.recommend(RecommendRequest(query_text="NLP 导师"), viewer_permissions=ViewerPermissions())
+    assert len(resp.phase_diagnostics) >= 1
+    for pd in resp.phase_diagnostics:
+        assert pd.elapsed_ms >= 0
+        assert pd.error_code is None
+
+
+# ---- W6-b resilience tests ----
+
+
+class _RaisingLLMPort:
+    """FakeLLMGenerationPort-shaped double whose generate() always raises."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+        self.calls: list[dict] = []
+
+    async def generate(self, system_prompt_id, user_inputs, fact_bundle,
+                       student_context, json_schema, generation_profile_version):
+        self.calls.append({"system_prompt_id": system_prompt_id})
+        raise self._exc
+
+
+class _RaisingEmbeddingPort:
+    def __init__(self, exc: Exception, fingerprint: str = "fp-x") -> None:
+        self._exc = exc
+        self._fingerprint = fingerprint
+
+    async def embed(self, snapshot, query_text):
+        raise self._exc
+
+
+class _RaisingVectorPort:
+    def __init__(self, exc: Exception, hits=None) -> None:
+        self._exc = exc
+        self._hits = hits or []
+        self.hybrid_recall_calls: list[dict] = []
+
+    async def hybrid_recall(self, snapshot, qv, filters, oversample,
+                            profile_version, *, rrf_k, sparse_vector=None):
+        self.hybrid_recall_calls.append({"oversample": oversample})
+        raise self._exc
+
+
+class _RaisingFactsPort:
+    """hydrates raises; get_detail works."""
+
+    def __init__(self, facts=None, details=None, hydrate_exc=None) -> None:
+        from dext_recommend.ports._fakes import FakeProfessorFactPort
+        self._inner = FakeProfessorFactPort(facts=facts or {}, details=details or {})
+        self._hydrate_exc = hydrate_exc
+        self.hydrate_calls = self._inner.hydrate_calls
+        self.get_detail_calls = self._inner.get_detail_calls
+
+    async def hydrate(self, snapshot, entity_ids):
+        if self._hydrate_exc is not None:
+            raise self._hydrate_exc
+        return await self._inner.hydrate(snapshot, entity_ids)
+
+
+class _RaisingGetDetailFactsPort:
+    """hydrate works; one get_detail raises a non-Lookup error."""
+
+    def __init__(self, facts=None, details=None, fail_eid=None, exc=None) -> None:
+        from dext_recommend.ports._fakes import FakeProfessorFactPort
+        self._inner = FakeProfessorFactPort(facts=facts or {}, details=details or {})
+        self._fail_eid = fail_eid
+        self._exc = exc
+        self.hydrate_calls = self._inner.hydrate_calls
+        self.get_detail_calls = self._inner.get_detail_calls
+
+    async def get_detail(self, snapshot, entity_id, include_contacts, viewer_permissions):
+        if entity_id == self._fail_eid:
+            raise self._exc
+        return await self._inner.get_detail(snapshot, entity_id, include_contacts, viewer_permissions)
+
+    async def hydrate(self, snapshot, entity_ids):
+        return await self._inner.hydrate(snapshot, entity_ids)
+
+
+async def test_recommend_llm_failure_classified():
+    """FakeLLMGenerationPort.generate raises -> llm_unavailable, no 500."""
+    from dext_recommend.ports._fakes import (
+        FakeActiveSnapshotProvider, FakeProfessorFactPort, FakeQueryEmbeddingPort,
+        FakeRankingProfilePort, FakeVectorSearchPort,
+    )
+    from tests.dext_recommend._recfixtures import (
+        coverage_flags_case, professor_details_case, professor_facts_case,
+        ranking_profile_dict, snapshot as snap_fn, vector_hits_case,
+    )
+    snap = snap_fn()
+    prof = RankingProfile.from_dict(ranking_profile_dict())
+    core = RecommendationCore(
+        RecommendDeps(
+            snapshot_port=FakeActiveSnapshotProvider(snap),
+            embedding_port=FakeQueryEmbeddingPort([0.1, 0.2], "fp-x"),
+            vector_port=FakeVectorSearchPort(hits=list(vector_hits_case("happy"))),
+            facts_port=FakeProfessorFactPort(
+                facts=professor_facts_case("happy"),
+                details=professor_details_case("happy"),
+            ),
+            llm_port=_RaisingLLMPort(RuntimeError("llm down")),
+            ranking_port=FakeRankingProfilePort(profile=prof),
+            coverage_flags_by_build_id=coverage_flags_case(snap.build_id),
+        ),
+        RecommendSettings(),
+    )
+    resp = await core.recommend(RecommendRequest(query_text="NLP"))
+    codes = [w.code for w in resp.warnings]
+    assert "llm_unavailable" in codes
+    assert resp.results == ()
+    # phase_diagnostics captured the query_understanding failure
+    qu_phases = [pd for pd in resp.phase_diagnostics if pd.phase == "query_understanding"]
+    assert any(pd.error_code == "llm_unavailable" for pd in qu_phases)
+
+
+async def test_recommend_embedding_failure_classified():
+    """embedding_port.embed raises -> embedding_unavailable."""
+    from dext_recommend.ports._fakes import (
+        FakeActiveSnapshotProvider, FakeProfessorFactPort, FakeRankingProfilePort,
+        FakeVectorSearchPort,
+    )
+    from tests.dext_recommend._recfixtures import (
+        coverage_flags_case, professor_details_case, professor_facts_case,
+        ranking_profile_dict, snapshot as snap_fn, vector_hits_case,
+    )
+    snap = snap_fn()
+    prof = RankingProfile.from_dict(ranking_profile_dict())
+    core = RecommendationCore(
+        RecommendDeps(
+            snapshot_port=FakeActiveSnapshotProvider(snap),
+            embedding_port=_RaisingEmbeddingPort(RuntimeError("embed down"), "fp-x"),
+            vector_port=FakeVectorSearchPort(hits=list(vector_hits_case("happy"))),
+            facts_port=FakeProfessorFactPort(
+                facts=professor_facts_case("happy"),
+                details=professor_details_case("happy"),
+            ),
+            llm_port=fake_llm_for_understanding(_output()),
+            ranking_port=FakeRankingProfilePort(profile=prof),
+            coverage_flags_by_build_id=coverage_flags_case(snap.build_id),
+        ),
+        RecommendSettings(),
+    )
+    resp = await core.recommend(RecommendRequest(query_text="NLP"))
+    codes = [w.code for w in resp.warnings]
+    assert "embedding_unavailable" in codes
+    assert resp.results == ()
+    emb_phases = [pd for pd in resp.phase_diagnostics if pd.phase == "embedding"]
+    assert any(pd.error_code == "embedding_unavailable" for pd in emb_phases)
+
+
+async def test_recommend_vector_failure_classified():
+    """vector_port.hybrid_recall raises -> vector_unavailable."""
+    from dext_recommend.ports._fakes import (
+        FakeActiveSnapshotProvider, FakeProfessorFactPort, FakeQueryEmbeddingPort,
+        FakeRankingProfilePort,
+    )
+    from tests.dext_recommend._recfixtures import (
+        coverage_flags_case, professor_details_case, professor_facts_case,
+        ranking_profile_dict, snapshot as snap_fn, vector_hits_case,
+    )
+    snap = snap_fn()
+    prof = RankingProfile.from_dict(ranking_profile_dict())
+    core = RecommendationCore(
+        RecommendDeps(
+            snapshot_port=FakeActiveSnapshotProvider(snap),
+            embedding_port=FakeQueryEmbeddingPort([0.1, 0.2], "fp-x"),
+            vector_port=_RaisingVectorPort(RuntimeError("vector down")),
+            facts_port=FakeProfessorFactPort(
+                facts=professor_facts_case("happy"),
+                details=professor_details_case("happy"),
+            ),
+            llm_port=fake_llm_for_understanding(_output()),
+            ranking_port=FakeRankingProfilePort(profile=prof),
+            coverage_flags_by_build_id=coverage_flags_case(snap.build_id),
+        ),
+        RecommendSettings(),
+    )
+    resp = await core.recommend(RecommendRequest(query_text="NLP"))
+    codes = [w.code for w in resp.warnings]
+    assert "vector_unavailable" in codes
+    assert resp.results == ()
+    vr_phases = [pd for pd in resp.phase_diagnostics if pd.phase == "vector_recall"]
+    assert any(pd.error_code == "vector_unavailable" for pd in vr_phases)
+
+
+async def test_recommend_hydrate_failure_not_classified_as_vector():
+    """facts_port.hydrate raises -> hydrate_unavailable (not vector_unavailable)."""
+    from dext_recommend.ports._fakes import (
+        FakeActiveSnapshotProvider, FakeQueryEmbeddingPort, FakeRankingProfilePort,
+        FakeVectorSearchPort,
+    )
+    from tests.dext_recommend._recfixtures import (
+        coverage_flags_case, professor_details_case, professor_facts_case,
+        ranking_profile_dict, snapshot as snap_fn, vector_hits_case,
+    )
+    snap = snap_fn()
+    prof = RankingProfile.from_dict(ranking_profile_dict())
+    core = RecommendationCore(
+        RecommendDeps(
+            snapshot_port=FakeActiveSnapshotProvider(snap),
+            embedding_port=FakeQueryEmbeddingPort([0.1, 0.2], "fp-x"),
+            vector_port=FakeVectorSearchPort(hits=list(vector_hits_case("happy"))),
+            facts_port=_RaisingFactsPort(
+                facts=professor_facts_case("happy"),
+                details=professor_details_case("happy"),
+                hydrate_exc=RuntimeError("hydrate down"),
+            ),
+            llm_port=fake_llm_for_understanding(_output()),
+            ranking_port=FakeRankingProfilePort(profile=prof),
+            coverage_flags_by_build_id=coverage_flags_case(snap.build_id),
+        ),
+        RecommendSettings(),
+    )
+    resp = await core.recommend(RecommendRequest(query_text="NLP"))
+    codes = [w.code for w in resp.warnings]
+    assert "hydrate_unavailable" in codes
+    assert "vector_unavailable" not in codes
+    assert resp.results == ()
+    hyd_phases = [pd for pd in resp.phase_diagnostics if pd.phase == "candidate_hydrate"]
+    assert any(pd.error_code == "hydrate_unavailable" for pd in hyd_phases)
+
+
+async def test_recommend_single_detail_failure_degrades():
+    """One get_detail raises -> that detail None, others ok, DETAILS_UNAVAILABLE
+    warning, request succeeds (results non-empty)."""
+    from dext_recommend import VectorHit
+    from dext_recommend.ports._fakes import (
+        FakeActiveSnapshotProvider, FakeQueryEmbeddingPort, FakeRankingProfilePort,
+        FakeVectorSearchPort,
+    )
+    from tests.dext_recommend._recfixtures import (
+        coverage_flags_case, ranking_profile_dict, snapshot as snap_fn,
+    )
+    snap = snap_fn()
+    hits = [
+        VectorHit("e_ok", 0.90, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_cv"],
+        }),
+        VectorHit("e_fail", 0.85, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_cv"],
+        }),
+    ]
+    facts = {eid: _fact(eid) for eid in ("e_ok", "e_fail")}
+    details = {"e_ok": _detail("e_ok"), "e_fail": _detail("e_fail")}
+    prof = RankingProfile.from_dict(ranking_profile_dict())
+    core = RecommendationCore(
+        RecommendDeps(
+            snapshot_port=FakeActiveSnapshotProvider(snap),
+            embedding_port=FakeQueryEmbeddingPort([0.1, 0.2], "fp-x"),
+            vector_port=FakeVectorSearchPort(hits=hits),
+            facts_port=_RaisingGetDetailFactsPort(
+                facts=facts, details=details,
+                fail_eid="e_fail", exc=RuntimeError("detail svc down"),
+            ),
+            llm_port=fake_llm_for_understanding(_output()),
+            ranking_port=FakeRankingProfilePort(profile=prof),
+            coverage_flags_by_build_id=coverage_flags_case(snap.build_id),
+        ),
+        RecommendSettings(),
+    )
+    resp = await core.recommend(RecommendRequest(query_text="NLP", limit=5))
+    # request still succeeds (no error severity)
+    assert all(w.severity != "error" for w in resp.warnings)
+    codes = [w.code for w in resp.warnings]
+    assert "details_unavailable" in codes
+    # e_fail detail came back None due to operational failure
+    assert resp.results  # non-empty
+    # phase_diagnostics recorded a details failure
+    det_phases = [pd for pd in resp.phase_diagnostics if pd.phase == "details"]
+    assert any(pd.error_code == "details_unavailable" for pd in det_phases)
+
+
+async def test_recommend_total_timeout():
+    """A fake vector port sleeps past total_timeout -> request_timeout response,
+    phase_diagnostics shows the in-flight phase."""
+    from dext_recommend.config import RecommendSettings
+    from dext_recommend.ports._fakes import (
+        FakeActiveSnapshotProvider, FakeProfessorFactPort, FakeQueryEmbeddingPort,
+        FakeRankingProfilePort,
+    )
+    from tests.dext_recommend._recfixtures import (
+        coverage_flags_case, professor_details_case, professor_facts_case,
+        ranking_profile_dict, snapshot as snap_fn, vector_hits_case,
+    )
+
+    class _SlowVectorPort:
+        def __init__(self):
+            self.hybrid_recall_calls: list[dict] = []
+
+        async def hybrid_recall(self, snapshot, qv, filters, oversample,
+                                profile_version, *, rrf_k, sparse_vector=None):
+            self.hybrid_recall_calls.append({"oversample": oversample})
+            import asyncio as _a
+            await _a.sleep(5.0)
+            return []
+
+    snap = snap_fn()
+    prof = RankingProfile.from_dict(ranking_profile_dict())
+    settings = RecommendSettings(total_timeout=0.2)
+    core = RecommendationCore(
+        RecommendDeps(
+            snapshot_port=FakeActiveSnapshotProvider(snap),
+            embedding_port=FakeQueryEmbeddingPort([0.1, 0.2], "fp-x"),
+            vector_port=_SlowVectorPort(),
+            facts_port=FakeProfessorFactPort(
+                facts=professor_facts_case("happy"),
+                details=professor_details_case("happy"),
+            ),
+            llm_port=fake_llm_for_understanding(_output()),
+            ranking_port=FakeRankingProfilePort(profile=prof),
+            coverage_flags_by_build_id=coverage_flags_case(snap.build_id),
+        ),
+        settings,
+    )
+    resp = await core.recommend(RecommendRequest(query_text="NLP"))
+    codes = [w.code for w in resp.warnings]
+    assert "request_timeout" in codes
+    assert resp.results == ()
+    # phase_diagnostics should at least have snapshot/ranking/qu/embedding recorded
+    phases = {pd.phase for pd in resp.phase_diagnostics}
+    assert "snapshot" in phases
+    assert "ranking_profile" in phases
+
+
+async def test_recommend_concurrent_diagnostics_isolated():
+    """Two concurrent recommend() calls on the SAME Core: their phase_diagnostics
+    do not interleave. One triggers a vector failure (vector_unavailable), the
+    other triggers an embedding failure (embedding_unavailable); each response
+    only has its own error codes."""
+    from dext_recommend.ports._fakes import (
+        FakeActiveSnapshotProvider, FakeProfessorFactPort, FakeQueryEmbeddingPort,
+        FakeRankingProfilePort, FakeVectorSearchPort,
+    )
+    from tests.dext_recommend._recfixtures import (
+        coverage_flags_case, professor_details_case, professor_facts_case,
+        ranking_profile_dict, snapshot as snap_fn, vector_hits_case,
+    )
+
+    class _DualPort:
+        """Vector port that fails on the first call and succeeds after; used to
+        drive one request into vector_unavailable. Embedding port that fails
+        on the first embed call and succeeds after."""
+        def __init__(self):
+            self.vector_calls = 0
+            self.embed_calls = 0
+            self.hybrid_recall_calls: list[dict] = []
+
+        async def embed(self, snapshot, query_text):
+            self.embed_calls += 1
+            if self.embed_calls == 1:
+                raise RuntimeError("embed down on first")
+            return type("E", (), {"vector": [0.1, 0.2],
+                                  "embedding_fingerprint": snapshot.embedding_fingerprint,
+                                  "sparse_vector": None})()
+
+        async def hybrid_recall(self, snapshot, qv, filters, oversample,
+                                profile_version, *, rrf_k, sparse_vector=None):
+            self.hybrid_recall_calls.append({"oversample": oversample})
+            self.vector_calls += 1
+            if self.vector_calls == 1:
+                raise RuntimeError("vector down on first")
+            return list(vector_hits_case("happy"))
+
+    snap = snap_fn()
+    prof = RankingProfile.from_dict(ranking_profile_dict())
+    dual = _DualPort()
+    core = RecommendationCore(
+        RecommendDeps(
+            snapshot_port=FakeActiveSnapshotProvider(snap),
+            embedding_port=dual,
+            vector_port=dual,
+            facts_port=FakeProfessorFactPort(
+                facts=professor_facts_case("happy"),
+                details=professor_details_case("happy"),
+            ),
+            llm_port=fake_llm_for_understanding(_output()),
+            ranking_port=FakeRankingProfilePort(profile=prof),
+            coverage_flags_by_build_id=coverage_flags_case(snap.build_id),
+        ),
+        RecommendSettings(),
+    )
+    r1, r2 = await asyncio.gather(
+        core.recommend(RecommendRequest(query_text="NLP")),
+        core.recommend(RecommendRequest(query_text="机器学习")),
+    )
+    codes1 = {w.code for w in r1.warnings}
+    codes2 = {w.code for w in r2.warnings}
+    # one response got embedding_unavailable, the other vector_unavailable
+    all_codes = codes1 | codes2
+    assert "embedding_unavailable" in all_codes
+    assert "vector_unavailable" in all_codes
+    # the two responses' error codes are disjoint (no cross-contamination)
+    err1 = {c for c in codes1 if c in ("embedding_unavailable", "vector_unavailable")}
+    err2 = {c for c in codes2 if c in ("embedding_unavailable", "vector_unavailable")}
+    assert err1 and err2
+    assert err1.isdisjoint(err2)
+    # phase_diagnostics: each response only carries its own error code
+    pd_codes1 = {pd.error_code for pd in r1.phase_diagnostics if pd.error_code}
+    pd_codes2 = {pd.error_code for pd in r2.phase_diagnostics if pd.error_code}
+    assert "embedding_unavailable" not in pd_codes2 or "vector_unavailable" not in pd_codes2
+    assert pd_codes1.isdisjoint(pd_codes2)
+
+
+async def test_recommend_early_returns_preserve_accumulated_warnings():
+    """needs_clarification / unsupported / no_candidates early returns still
+    carry route warnings + the triggering warning, and phase_diagnostics."""
+    # needs_clarification: route warnings + needs_clarification warning + diag
+    core = _core(llm_output=_output(needs_clarification=True, confidence=0.2))
+    resp = await core.recommend(RecommendRequest(query_text="随便"))
+    codes = [w.code for w in resp.warnings]
+    assert "needs_clarification" in codes
+    assert resp.results == ()
+    assert len(resp.phase_diagnostics) >= 1  # snapshot/ranking/qu recorded
+
+    # unsupported (detail_followup): route unsupported warning + diag
+    core2 = _core()
+    resp2 = await core2.recommend(RecommendRequest(
+        query_text="NLP",
+        conversation_context=ConversationContext(intent="detail_followup"),
+    ))
+    codes2 = [w.code for w in resp2.warnings]
+    assert "unsupported_for_recommend_core" in codes2
+    assert resp2.results == ()
+    assert len(resp2.phase_diagnostics) >= 1  # snapshot recorded
+
+    # no_candidates after filters: warning + diag (snapshot/ranking/qu/embedding/vector_recall/...)
+    core3 = _core(hits=list(vector_hits_case("happy")),
+                  facts=professor_facts_case("happy"),
+                  details=professor_details_case("happy"))
+    resp3 = await core3.recommend(RecommendRequest(
+        query_text="NLP",
+        filters=RecommendationFilters(university_ids=("u_nonexistent",)),
+    ))
+    codes3 = [w.code for w in resp3.warnings]
+    assert "no_candidates_after_filters" in codes3
+    assert resp3.results == ()
+    assert len(resp3.phase_diagnostics) >= 1
 
