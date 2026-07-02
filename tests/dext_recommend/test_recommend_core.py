@@ -480,3 +480,202 @@ async def test_recommend_same_field_boost_from_profile():
     # tie-break: entity_id asc -> e_cv_strong before e_nlp_a
     assert ids.index("e_cv_strong") < ids.index("e_nlp_a")
 
+
+async def test_recommend_larger_step_is_authoritative():
+    """A candidate that appeared at step 200 with a different score and then
+    disappeared at step 400 must NOT persist in results. Step 400 is authoritative."""
+    from dext_recommend import ProfessorFact, VectorHit
+    from dext_recommend.config import RecommendSettings
+    from dext_recommend.core.service import RecommendDeps, RecommendationCore
+    from dext_recommend.ports._fakes import (
+        FakeActiveSnapshotProvider, FakeProfessorFactPort, FakeQueryEmbeddingPort,
+        FakeRankingProfilePort, FakeVectorSearchPort,
+    )
+    from tests.dext_recommend._recfixtures import (
+        coverage_flags_case, fake_llm_for_understanding, professor_details_case,
+        ranking_profile_dict, snapshot, vector_hits_case,
+    )
+
+    # step 200 returns [e1, e2]; step 400 returns [e3] only.
+    hits_200 = [
+        VectorHit("e1", 0.9, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_cv"],
+        }),
+        VectorHit("e2", 0.85, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_cv"],
+        }),
+    ]
+    hits_400 = [
+        VectorHit("e3", 0.80, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_cv"],
+        }),
+    ]
+
+    class SteppedVectorPort(FakeVectorSearchPort):
+        def __init__(self):
+            super().__init__(hits=hits_200)
+            self._step = 0
+        async def hybrid_recall(self, snapshot, qv, filters, oversample,
+                                profile_version, *, rrf_k, sparse_vector=None):
+            self.hybrid_recall_calls.append({
+                "oversample": oversample, "filters": filters,
+                "profile_version": profile_version,
+                "snapshot_build_id": snapshot.build_id, "rrf_k": rrf_k,
+                "sparse_vector": dict(sparse_vector) if sparse_vector else None,
+            })
+            return list(hits_200) if oversample == 200 else list(hits_400)
+
+    def _fact(eid, topics=("topic_cv",)):
+        return ProfessorFact(
+            entity_id=eid, display_name=eid.replace("_", " ").title(),
+            university="示例大学", org_units=("计算机学院",), title="Prof",
+            title_family="professor", master_eligibility="confirmed",
+            phd_eligibility="confirmed", role_status="included", profile_url=None,
+            profile_hash=None, research_summary="summary",
+            university_id="u_demo", city_name="北京", org_unit_ids=("ou_cs",),
+            topic_ids=topics,
+        )
+
+    def _detail(eid, topics=("topic_cv",)):
+        return ProfessorDetail(
+            build_id="b-1", profile_hash=None, entity_id=eid,
+            display_name=eid.replace("_", " ").title(), university="示例大学",
+            org_units=("计算机学院",), title="Prof", title_family="professor",
+            master_eligibility="confirmed", phd_eligibility="confirmed",
+            role_status="included", profile_url=None,
+            research_statements=("NLP research",), approved_topics=topics,
+            selected_publication_mentions=("paper A",), bio_snippets=(),
+            source_urls=("http://example/p",), provenance_refs=(),
+            quality_findings=(), risk_flags=(),
+        )
+
+    snap = snapshot()
+    facts = {eid: _fact(eid) for eid in ("e1", "e2", "e3")}
+    details = {eid: _detail(eid) for eid in ("e1", "e2", "e3")}
+    vector_port = SteppedVectorPort()
+    core = RecommendationCore(
+        RecommendDeps(
+            snapshot_port=FakeActiveSnapshotProvider(snap),
+            embedding_port=FakeQueryEmbeddingPort([0.1, 0.2], "fp-x"),
+            vector_port=vector_port,
+            facts_port=FakeProfessorFactPort(facts=facts, details=details),
+            llm_port=fake_llm_for_understanding(_output()),
+            ranking_port=FakeRankingProfilePort(
+                profile=RankingProfile.from_dict(ranking_profile_dict()),
+            ),
+            coverage_flags_by_build_id=coverage_flags_case(snap.build_id),
+        ),
+        RecommendSettings(),
+    )
+    resp = await core.recommend(RecommendRequest(query_text="NLP", limit=10))
+    ids = [r.entity_id for r in resp.results]
+    # step 400 is authoritative: only e3 persists; e1/e2 disappeared at step 400
+    assert "e3" in ids
+    assert "e1" not in ids
+    assert "e2" not in ids
+
+
+async def test_recommend_empty_new_ids_skips_hydrate():
+    """When all pref hits are already hydrated, hydrate is not called again."""
+    from dext_recommend import ProfessorFact, VectorHit
+    from dext_recommend.config import RecommendSettings
+    from dext_recommend.core.service import RecommendDeps, RecommendationCore
+    from dext_recommend.ports._fakes import (
+        FakeActiveSnapshotProvider, FakeProfessorFactPort, FakeQueryEmbeddingPort,
+        FakeRankingProfilePort, FakeVectorSearchPort,
+    )
+    from tests.dext_recommend._recfixtures import (
+        coverage_flags_case, fake_llm_for_understanding, professor_details_case,
+        ranking_profile_dict, snapshot,
+    )
+
+    # both steps return the same entity_ids e1, e2
+    same_hits = [
+        VectorHit("e1", 0.9, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_cv"],
+        }),
+        VectorHit("e2", 0.85, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_cv"],
+        }),
+    ]
+
+    class SteppedVectorPort(FakeVectorSearchPort):
+        def __init__(self):
+            super().__init__(hits=same_hits)
+        async def hybrid_recall(self, snapshot, qv, filters, oversample,
+                                profile_version, *, rrf_k, sparse_vector=None):
+            self.hybrid_recall_calls.append({
+                "oversample": oversample, "filters": filters,
+                "profile_version": profile_version,
+                "snapshot_build_id": snapshot.build_id, "rrf_k": rrf_k,
+                "sparse_vector": dict(sparse_vector) if sparse_vector else None,
+            })
+            return list(same_hits)
+
+    def _fact(eid, topics=("topic_cv",)):
+        return ProfessorFact(
+            entity_id=eid, display_name=eid.replace("_", " ").title(),
+            university="示例大学", org_units=("计算机学院",), title="Prof",
+            title_family="professor", master_eligibility="confirmed",
+            phd_eligibility="confirmed", role_status="included", profile_url=None,
+            profile_hash=None, research_summary="summary",
+            university_id="u_demo", city_name="北京", org_unit_ids=("ou_cs",),
+            topic_ids=topics,
+        )
+
+    def _detail(eid, topics=("topic_cv",)):
+        return ProfessorDetail(
+            build_id="b-1", profile_hash=None, entity_id=eid,
+            display_name=eid.replace("_", " ").title(), university="示例大学",
+            org_units=("计算机学院",), title="Prof", title_family="professor",
+            master_eligibility="confirmed", phd_eligibility="confirmed",
+            role_status="included", profile_url=None,
+            research_statements=("NLP research",), approved_topics=topics,
+            selected_publication_mentions=("paper A",), bio_snippets=(),
+            source_urls=("http://example/p",), provenance_refs=(),
+            quality_findings=(), risk_flags=(),
+        )
+
+    snap = snapshot()
+    facts = {eid: _fact(eid) for eid in ("e1", "e2")}
+    details = {eid: _detail(eid) for eid in ("e1", "e2")}
+    facts_port = FakeProfessorFactPort(facts=facts, details=details)
+    vector_port = SteppedVectorPort()
+    core = RecommendationCore(
+        RecommendDeps(
+            snapshot_port=FakeActiveSnapshotProvider(snap),
+            embedding_port=FakeQueryEmbeddingPort([0.1, 0.2], "fp-x"),
+            vector_port=vector_port,
+            facts_port=facts_port,
+            llm_port=fake_llm_for_understanding(_output()),
+            ranking_port=FakeRankingProfilePort(
+                profile=RankingProfile.from_dict(ranking_profile_dict()),
+            ),
+            coverage_flags_by_build_id=coverage_flags_case(snap.build_id),
+        ),
+        RecommendSettings(),
+    )
+    # 2 hits < limit 10 -> all 4 steps run; same ids each step
+    resp = await core.recommend(RecommendRequest(query_text="NLP", limit=10))
+    # hydrate called only on the first step (ids already cached after that)
+    assert len(facts_port.hydrate_calls) == 1
+    assert set(facts_port.hydrate_calls[0]["entity_ids"]) == {"e1", "e2"}
+    # response is well-formed and contains both candidates
+    ids = [r.entity_id for r in resp.results]
+    assert set(ids) == {"e1", "e2"}
+

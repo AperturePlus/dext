@@ -26,7 +26,6 @@ from dext_recommend.readiness import ActiveBuildSnapshot
 from dext_recommend.core.cards import assemble_card
 from dext_recommend.core.detail_fetch import fetch_details
 from dext_recommend.core.explanation import build_explanation
-from dext_recommend.core.filters import final_filter, payload_prefilter
 from dext_recommend.core.intent import resolve_recommend_route
 from dext_recommend.core.query_understanding import understand_query
 from dext_recommend.core.ranking_profile import RankingProfile
@@ -175,25 +174,21 @@ class RecommendationCore:
             )
 
         coverage_flags = self._deps.coverage_flags_by_build_id.get(snapshot.build_id, {})
-        org_unit_degraded = coverage_flags.get("org_unit_ids") is not True
-        hits_pool, steps_used = await recall_loop(
+        recall = await recall_loop(
             snapshot, self._deps.vector_port, list(embedding.vector),
             effective_filters, profile,
+            facts_port=self._deps.facts_port,
+            route=route, coverage_flags=coverage_flags,
+            review_policy=request.review_policy,
+            embedding_sparse_vector=embedding.sparse_vector,
             oversample_max=self._settings.oversample_max,
             request_oversample=request.oversample, limit=request.limit,
         )
-        # final filter is applied per-step in service (hydrated facts needed)
-        # Simpler: do one final filter on the largest pool (the last step's hits)
-        prefiltered = payload_prefilter(hits_pool, effective_filters, org_unit_degraded=org_unit_degraded)
-        fact_map = await self._deps.facts_port.hydrate(
-            snapshot, [h.entity_id for h in prefiltered],
-        )
-        review_policy = request.review_policy
-        survivors, filter_diag = final_filter(
-            prefiltered, fact_map, effective_filters, route, coverage_flags,
-            review_policy=review_policy,
-        )
-        recall_count = len(hits_pool)
+        survivors = list(recall.survivors)
+        fact_map = dict(recall.fact_map)
+        filter_diag = recall.filter_diagnostics
+        recall_count = recall.step_diags[-1].raw_hits if recall.step_diags else 0
+        steps_used = recall.steps_used
 
         if not survivors:
             resp = _error_response(
