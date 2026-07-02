@@ -170,33 +170,60 @@ class RecommendationCore:
             validate(resp)
             return resp
 
-        ctx = RecommendExecutionContext()
+        # R5: recommend only accepts already-resolved recommend-path context.
+        ctx = request.conversation_context
+        if ctx is not None:
+            from dext_recommend.core.conversation import _validate_context, ConversationValidationError
+            try:
+                resolved = _validate_context(ctx, phase="resolved")
+            except ConversationValidationError as e:
+                resp = _error_response(
+                    snapshot=None, profile=None, embedding_fingerprint=None,
+                    warning=_warn(RecommendationErrorCode.INVALID_CONVERSATION_STATE,
+                                  e.safe_message, severity="error"),
+                    phase_diagnostics=(),
+                )
+                validate(resp)
+                return resp
+            if resolved.intent == "detail_followup":
+                resp = _error_response(
+                    snapshot=None, profile=None, embedding_fingerprint=None,
+                    warning=_warn(RecommendationErrorCode.INVALID_CONVERSATION_STATE,
+                                  "detail_followup must go through ConversationDispatcher",
+                                  severity="error"),
+                    phase_diagnostics=(),
+                )
+                validate(resp)
+                return resp
+            request = dataclasses.replace(request, conversation_context=resolved)
+
+        exec_ctx = RecommendExecutionContext()
         try:
             return await asyncio.wait_for(
-                self._recommend_inner(request, vp, ctx),
+                self._recommend_pinned(request, vp, exec_ctx),
                 timeout=self._settings.total_timeout,
             )
         except asyncio.TimeoutError:
             return _error_response(
-                snapshot=ctx.snapshot, profile=ctx.profile,
-                embedding_fingerprint=ctx.embedding_fingerprint,
+                snapshot=exec_ctx.snapshot, profile=exec_ctx.profile,
+                embedding_fingerprint=exec_ctx.embedding_fingerprint,
                 warning=_warn(RecommendationErrorCode.REQUEST_TIMEOUT,
                               f"recommend exceeded {self._settings.total_timeout}s",
                               severity="error"),
-                phase_diagnostics=ctx.snapshot_phase_diagnostics(),
-                prior_warnings=ctx.snapshot_warnings(),
+                phase_diagnostics=exec_ctx.snapshot_phase_diagnostics(),
+                prior_warnings=exec_ctx.snapshot_warnings(),
             )
         except ClassifiedRecommendError as exc:
             return _error_response(
-                snapshot=ctx.snapshot, profile=ctx.profile,
-                embedding_fingerprint=ctx.embedding_fingerprint,
+                snapshot=exec_ctx.snapshot, profile=exec_ctx.profile,
+                embedding_fingerprint=exec_ctx.embedding_fingerprint,
                 warning=_warn(RecommendationErrorCode(exc.code),
                               f"{exc.phase} failed", severity="error"),
-                phase_diagnostics=ctx.snapshot_phase_diagnostics(),
-                prior_warnings=ctx.snapshot_warnings(),
+                phase_diagnostics=exec_ctx.snapshot_phase_diagnostics(),
+                prior_warnings=exec_ctx.snapshot_warnings(),
             )
 
-    async def _recommend_inner(
+    async def _recommend_pinned(
         self,
         request: RecommendRequest,
         vp: ViewerPermissions,
@@ -422,6 +449,10 @@ class RecommendationCore:
             returned_count=len(results),
             steps_used=steps_used,
         )
+        # TODO(spec §3.5): generation_profile_version should reflect the QU
+        # generation that ran for this request. Left None for direct recommend
+        # in R5 Task 5 — the QU versioning fix is a follow-up tracked in spec
+        # §3.5. The ConversationDispatcher (Task 6) sets it properly.
         resp = RecommendResponse(
             build_id=snapshot.build_id, ranking_profile_version=profile.version,
             embedding_fingerprint=embedding.embedding_fingerprint,

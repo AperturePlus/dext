@@ -2,7 +2,7 @@
 
 The Core instance holds NO request-mutable state. Every recommend() call
 creates a fresh RecommendExecutionContext and threads it through
-_recommend_inner, recall_loop, and fetch_details so two concurrent
+_recommend_pinned, recall_loop, and fetch_details so two concurrent
 requests on the same Core cannot cross-contaminate diagnostics or snapshot.
 """
 from __future__ import annotations

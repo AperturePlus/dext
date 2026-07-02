@@ -146,10 +146,12 @@ async def test_detail_followup_short_circuits_before_llm():
     from dext_recommend import ConversationContext
     resp = await core.recommend(RecommendRequest(
         query_text="NLP",
-        conversation_context=ConversationContext(intent="detail_followup"),
+        conversation_context=ConversationContext(
+            intent="detail_followup", intent_source="explicit",
+            anchor_entity_id="e1", session_id="s1", turn_id="t1"),
     ))
     assert resp.results == ()
-    assert any(w.code == "unsupported_for_recommend_core" for w in resp.warnings)
+    assert any(w.code == "invalid_conversation_state" for w in resp.warnings)
     assert core._deps.vector_port.hybrid_recall_calls == []
 
 
@@ -266,7 +268,7 @@ async def test_recommend_refine_direction_merge():
     resp = await core.recommend(RecommendRequest(
         query_text="换方向",
         filters=RecommendationFilters(),  # all defaults: empty + any
-        conversation_context=ConversationContext(intent="refine_direction"),
+        conversation_context=ConversationContext(intent="refine_direction", intent_source="explicit"),
     ))
     # the merge happened: hybrid_recall saw the merged filters
     assert core._deps.vector_port.hybrid_recall_calls
@@ -355,7 +357,7 @@ async def test_recommend_same_field_anchor_excluded_and_topic_overlap_ranked():
     resp = await core.recommend(RecommendRequest(
         query_text="NLP",
         conversation_context=ConversationContext(
-            intent="same_field", anchor_entity_id="e_nlp_anchor",
+            intent="same_field", intent_source="explicit", anchor_entity_id="e_nlp_anchor",
         ),
     ))
     ids = [r.entity_id for r in resp.results]
@@ -390,7 +392,7 @@ async def test_recommend_same_field_anchor_missing_falls_back():
     resp = await core.recommend(RecommendRequest(
         query_text="NLP",
         conversation_context=ConversationContext(
-            intent="same_field", anchor_entity_id="e_nlp_anchor",
+            intent="same_field", intent_source="explicit", anchor_entity_id="e_nlp_anchor",
         ),
     ))
     codes = [w.code for w in resp.warnings]
@@ -421,7 +423,7 @@ async def test_recommend_same_field_anchor_excluded_falls_back():
     resp = await core.recommend(RecommendRequest(
         query_text="NLP",
         conversation_context=ConversationContext(
-            intent="same_field", anchor_entity_id="e_nlp_anchor",
+            intent="same_field", intent_source="explicit", anchor_entity_id="e_nlp_anchor",
         ),
     ))
     codes = [w.code for w in resp.warnings]
@@ -448,7 +450,7 @@ async def test_recommend_same_field_anchor_without_topics_falls_back():
     resp = await core.recommend(RecommendRequest(
         query_text="NLP",
         conversation_context=ConversationContext(
-            intent="same_field", anchor_entity_id="e_nlp_anchor",
+            intent="same_field", intent_source="explicit", anchor_entity_id="e_nlp_anchor",
         ),
     ))
     codes = [w.code for w in resp.warnings]
@@ -489,7 +491,7 @@ async def test_recommend_same_field_boost_from_profile():
     resp = await core.recommend(RecommendRequest(
         query_text="NLP",
         conversation_context=ConversationContext(
-            intent="same_field", anchor_entity_id="e_nlp_anchor",
+            intent="same_field", intent_source="explicit", anchor_entity_id="e_nlp_anchor",
         ),
     ))
     ids = [r.entity_id for r in resp.results]
@@ -1266,16 +1268,17 @@ async def test_recommend_early_returns_preserve_accumulated_warnings():
     assert resp.results == ()
     assert len(resp.phase_diagnostics) >= 1  # snapshot/ranking/qu recorded
 
-    # unsupported (detail_followup): route unsupported warning + diag
+    # unsupported (detail_followup): admission rejects with invalid_conversation_state
     core2 = _core()
     resp2 = await core2.recommend(RecommendRequest(
         query_text="NLP",
-        conversation_context=ConversationContext(intent="detail_followup"),
+        conversation_context=ConversationContext(
+            intent="detail_followup", intent_source="explicit",
+            anchor_entity_id="e1", session_id="s1", turn_id="t1"),
     ))
     codes2 = [w.code for w in resp2.warnings]
-    assert "unsupported_for_recommend_core" in codes2
+    assert "invalid_conversation_state" in codes2
     assert resp2.results == ()
-    assert len(resp2.phase_diagnostics) >= 1  # snapshot recorded
 
     # no_candidates after filters: warning + diag (snapshot/ranking/qu/embedding/vector_recall/...)
     core3 = _core(hits=list(vector_hits_case("happy")),
@@ -1381,7 +1384,7 @@ async def test_recommend_no_candidates_preserves_prior_missing_anchor_warning():
         query_text="NLP",
         filters=RecommendationFilters(university_ids=("u_nonexistent",)),
         conversation_context=ConversationContext(
-            intent="same_field", anchor_entity_id="e_nlp_anchor",
+            intent="same_field", intent_source="explicit", anchor_entity_id="e_nlp_anchor",
         ),
     ))
     codes = [w.code for w in resp.warnings]
@@ -1469,7 +1472,7 @@ async def test_recommend_missing_anchor_then_vector_failure_preserves_both_warni
     resp = await core.recommend(RecommendRequest(
         query_text="NLP",
         conversation_context=ConversationContext(
-            intent="same_field", anchor_entity_id="e_nlp_anchor",
+            intent="same_field", intent_source="explicit", anchor_entity_id="e_nlp_anchor",
         ),
     ))
     codes = [w.code for w in resp.warnings]
@@ -1530,7 +1533,7 @@ async def test_recommend_missing_anchor_then_timeout_preserves_both_warnings():
     resp = await core.recommend(RecommendRequest(
         query_text="NLP",
         conversation_context=ConversationContext(
-            intent="same_field", anchor_entity_id="e_nlp_anchor",
+            intent="same_field", intent_source="explicit", anchor_entity_id="e_nlp_anchor",
         ),
     ))
     codes = [w.code for w in resp.warnings]
@@ -1582,3 +1585,30 @@ async def test_recommend_unauthorized_review_response_is_validated():
     assert "unauthorized_review" in codes
     validate(resp)  # must not raise
     assert resp.results == ()
+
+
+# ---- R5 Task 5: recommend rejects unresolved/detail_followup context ----
+
+
+async def test_recommend_rejects_unresolved_implicit_context():
+    core = _core()
+    req = RecommendRequest(
+        query_text="NLP",
+        conversation_context=ConversationContext(intent_source="implicit"),
+    )
+    resp = await core.recommend(req)
+    assert any(w.code == "invalid_conversation_state" and w.severity == "error"
+               for w in resp.warnings)
+
+
+async def test_recommend_rejects_detail_followup_context():
+    core = _core()
+    req = RecommendRequest(
+        query_text="NLP",
+        conversation_context=ConversationContext(
+            intent="detail_followup", intent_source="explicit", anchor_entity_id="e1",
+            session_id="s1", turn_id="t1"),
+    )
+    resp = await core.recommend(req)
+    assert any(w.code == "invalid_conversation_state" and w.severity == "error"
+               for w in resp.warnings)
