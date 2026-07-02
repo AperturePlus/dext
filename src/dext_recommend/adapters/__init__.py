@@ -6,14 +6,18 @@ dialect-agnostic mapping layer. Adapters never import dext_graph.
 from dext_recommend.adapters._catalog_fact_reader import (
     CatalogProfessorDetailRows, CatalogProfessorFactReader, CatalogSqliteFactReader,
 )
+from dext_recommend.adapters.active_snapshot import LiveActiveSnapshotProvider
 from dext_recommend.adapters.catalog_professor_facts import (
     CatalogProfessorFactAdapter,
 )
 from dext_recommend.adapters.catalog_release import CatalogReleaseAdapter
 from dext_recommend.adapters.graph_release import GraphReleaseAdapter
+from dext_recommend.adapters.generation_profile import LiveGenerationProfileAdapter
 from dext_recommend.adapters.ranking_profile import RankingProfileAdapter
 from dext_recommend.adapters.vector_release import VectorReleaseAdapter
 from dext_recommend.adapters.llm_generation import OpenAICompatibleLLMGenerationAdapter
+from dext_recommend.adapters.qdrant_search import LiveVectorSearchAdapter
+from dext_recommend.adapters.query_embedding import LiveQueryEmbeddingAdapter
 
 __all__ = [
     "CatalogProfessorDetailRows",
@@ -22,6 +26,10 @@ __all__ = [
     "CatalogReleaseAdapter",
     "CatalogSqliteFactReader",
     "GraphReleaseAdapter",
+    "LiveActiveSnapshotProvider",
+    "LiveGenerationProfileAdapter",
+    "LiveQueryEmbeddingAdapter",
+    "LiveVectorSearchAdapter",
     "OpenAICompatibleLLMGenerationAdapter",
     "RankingProfileAdapter",
     "VectorReleaseAdapter",

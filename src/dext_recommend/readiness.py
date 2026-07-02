@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
-from dext_recommend.adapters._readback_call import ReadbackCall, gather_safe
+from dext_recommend._readback_call import ReadbackCall, gather_safe
 from dext_recommend.config import RecommendSettings
 from dext_recommend.errors import (
     ErrorSeverity,

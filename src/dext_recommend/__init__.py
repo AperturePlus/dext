@@ -17,6 +17,7 @@ from dext_recommend.core import ConversationDispatcher, RecommendDeps, Recommend
 from dext_recommend.generation import AuxiliaryGenerationService
 from dext_recommend.errors import (
     ErrorSeverity, RecommendationError, RecommendationErrorCode,
+    RecommendationRuntimeError,
 )
 from dext_recommend.models import (
     AuxiliaryGenerationResult,
@@ -44,7 +45,12 @@ from dext_recommend.readiness import (
 )
 from dext_recommend.adapters import (
     CatalogProfessorFactAdapter, CatalogProfessorFactReader,
-    CatalogSqliteFactReader, OpenAICompatibleLLMGenerationAdapter,
+    CatalogSqliteFactReader, LiveActiveSnapshotProvider,
+    LiveGenerationProfileAdapter, LiveQueryEmbeddingAdapter,
+    LiveVectorSearchAdapter, OpenAICompatibleLLMGenerationAdapter,
+)
+from dext_recommend.runtime import (
+    LiveClients, LiveRecommendationRuntime, build_live_recommendation_runtime,
 )
 
 __version__ = "0.1.0"
@@ -83,6 +89,12 @@ __all__: list[str] = [
     "GraphReleaseObservation",
     "GraphReleasePort",
     "LLMGenerationPort",
+    "LiveActiveSnapshotProvider",
+    "LiveClients",
+    "LiveGenerationProfileAdapter",
+    "LiveQueryEmbeddingAdapter",
+    "LiveRecommendationRuntime",
+    "LiveVectorSearchAdapter",
     "MatchAnalysis",
     "OperationConfig",
     "OpenAICompatibleLLMGenerationAdapter",
@@ -111,6 +123,7 @@ __all__: list[str] = [
     "RecommendationCore",
     "RecommendationError",
     "RecommendationErrorCode",
+    "RecommendationRuntimeError",
     "RecommendationFilters",
     "RecommendationWarning",
     "RecommendedProfessor",
@@ -122,4 +135,5 @@ __all__: list[str] = [
     "VectorReleasePort",
     "VectorSearchPort",
     "ViewerPermissions",
+    "build_live_recommendation_runtime",
 ]

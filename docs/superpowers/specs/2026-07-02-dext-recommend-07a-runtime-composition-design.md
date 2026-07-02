@@ -45,8 +45,9 @@ async def build_live_recommendation_runtime(
 | `src/dext_recommend/runtime.py` | 新增 | `LiveRecommendationRuntime` + `LiveClients` + `build_live_recommendation_runtime()` — 唯一 production root |
 | `src/dext_recommend/adapters/active_snapshot.py` | 新增 | `LiveActiveSnapshotProvider` — 包装 `ReadinessService`，refresh task，stale fail-closed |
 | `src/dext_recommend/adapters/query_embedding.py` | 新增 | `LiveQueryEmbeddingAdapter` — 专用 `AsyncOpenAI`，snapshot-pinned model/provider/dimension/fingerprint 校验 |
-| `src/dext_recommend/adapters/qdrant_search.py` | 新增 | `LiveVectorSearchAdapter` — pinned physical collection，dense-only，alias/count readback |
+| `src/dext_recommend/adapters/qdrant_search.py` | 新增 | `LiveVectorSearchAdapter` — pinned physical collection，dense+sparse RRF，alias/count readback |
 | `src/dext_recommend/adapters/generation_profile.py` | 新增 | `LiveGenerationProfileAdapter` — `read_profile(path)` → `RecommendGenerationProfile.from_file`（当前仅有 Fake） |
+| `src/dext_recommend/adapters/_vector_reader.py` | 修改 | `QdrantReader` — readback 必须读真实 collection vector config / sample payload，不再接受 dimension/fingerprint 占位值 |
 | `src/dext_recommend/config.py` | 修改 | 新增 runtime-lifecycle / embedding / vector / llm 调优字段 |
 | `src/dext_recommend/errors.py` | 修改 | 新增 `RecommendationRuntimeError` |
 | `src/dext_recommend/__init__.py` + `adapters/__init__.py` | 修改 | re-export 新公开符号 |
@@ -90,9 +91,15 @@ class LiveRecommendationRuntime:
    实例（共享同一 generation_profile，client 独立）、`AsyncQdrantClient`、`AsyncGraphDatabase.driver(...)`。
 3. **构造 release adapters**：
    - `CatalogReleaseAdapter(CatalogSqliteReader(settings.catalog_path), sample_size=settings.readiness_sample_size)`
-   - `VectorReleaseAdapter(QdrantReader(qdrant_client, embedding_dimension=..., embedding_fingerprint=..., payload_schema_version=settings.qdrant_payload_schema_version))`
-     （dimension/fingerprint 在 readiness 成功后由 snapshot 提供校验，构造期用占位值即可，
-     因为 QdrantReader 只在 `read_current` 时用这些值做 sample 比对）
+   - `VectorReleaseAdapter(QdrantReader(qdrant_client, payload_schema_version=settings.qdrant_payload_schema_version))`
+    — R7a 必须先修改 `QdrantReader`：`read_current` 解析 alias 后从真实 physical collection 读取
+    named vector config（`dense` size）与 sample payload 中的 `embedding_fingerprint`；
+    **不得**再通过构造参数传入 dimension/fingerprint 占位值。否则 readiness 会把占位值当真并误判。
+    sample 读取不得全量 scroll collection：优先按 sample IDs retrieve/filtered-scroll；当
+    `sample_ids=()` 时读取一个任意 payload 作 fingerprint readback，collection 非空但 payload
+    缺 `embedding_fingerprint` 时 fail-fast。
+    `payload_schema_version` 当前来自 catalog/vector schema 配置，不来自现有 Qdrant payload；
+    Qdrant payload 尚未写入该字段前，不得把它作为请求路径 hard filter。
    - `GraphReleaseAdapter(Neo4jReader(neo4j_driver))`
    - `RankingProfileAdapter()`
    - `LiveGenerationProfileAdapter()`
@@ -103,21 +110,29 @@ class LiveRecommendationRuntime:
    `RecommendationRuntimeError(code="readiness_failed", retryable=True)`（readiness 失败通常瞬态：
    Qdrant 宕机、build 未 promote）。catalog 缺失 / Qdrant alias 缺失 / Neo4j pointer 缺失均
    表现为 readiness ERROR code，归到此错误。
-7. 从 readiness report 派生 `coverage_flags_by_build_id`：
+7. **校验 embedding runtime 配置与 startup snapshot**：`settings.embedding_provider` /
+   `settings.embedding_model` 必须非空且分别等于 `snapshot.embedding_provider` /
+   `snapshot.embedding_model`，否则 fail-fast：
+   `embedding_provider_mismatch` / `embedding_model_mismatch`。这一步必须在返回 runtime 前完成，
+   不能等到第一次请求才失败。dimension 由 provider 返回向量后在请求时防御性校验。
+8. 从 readiness report 派生 `coverage_flags_by_build_id`：
    `{snapshot.build_id: {"org_unit_ids": stat.passes, "profile_hash": ..., "role_status": ..., "eligibility": ...}}`
    — startup 时冻结，仅 snapshot.build_id 一条。
-8. 构造 request-path adapters：`LiveQueryEmbeddingAdapter(client=embedding_client, settings=settings)`、
+9. 构造 request-path adapters：`LiveQueryEmbeddingAdapter(client=embedding_client, settings=settings)`、
    `LiveVectorSearchAdapter(client=qdrant_client, settings=settings)`、
    `CatalogProfessorFactAdapter(CatalogSqliteFactReader(settings.catalog_path), settings=settings)`。
-9. 两份 LLM adapter：`OpenAICompatibleLLMGenerationAdapter.from_settings(settings, profile)` —
-   独立实例（core 与 aux）。
-10. `deps = RecommendDeps(snapshot_port=snapshot_provider, embedding_port=..., vector_port=...,
+10. 两份 LLM adapter 使用已构造或注入的 client，不调用 `from_settings()`：
+    `OpenAICompatibleLLMGenerationAdapter(client=openai_llm_core, model=settings.llm_model, profile=profile)`
+    与 `OpenAICompatibleLLMGenerationAdapter(client=openai_llm_aux, model=settings.llm_model, profile=profile)`。
+    生产路径在 step 2 构造真实 `AsyncOpenAI`；测试路径使用 `LiveClients` 注入的 fake client。
+    这样 fake-client 测试不会绕过 seam 去创建真实网络 client。
+11. `deps = RecommendDeps(snapshot_port=snapshot_provider, embedding_port=..., vector_port=...,
     facts_port=..., llm_port=core_llm, ranking_port=..., generation_profile_port=...,
     coverage_flags_by_build_id=coverage_flags)`。
-11. `core = assemble_core(deps, settings)`；
+12. `core = assemble_core(deps, settings)`；
     `conversation = ConversationDispatcher(core, ConstrainedGenerationPipeline(core_llm), settings)`；
     `aux = AuxiliaryGenerationService(core=core, pipeline=ConstrainedGenerationPipeline(aux_llm), settings=settings)`。
-12. 返回 `LiveRecommendationRuntime(...)`。返回前**最后一步**启动 snapshot refresh 后台 task。
+13. 返回 `LiveRecommendationRuntime(...)`。返回前**最后一步**启动 snapshot refresh 后台 task。
 
 **`aclose()` 逆序**：cancel+await refresh task → aux LLM client.close → core LLM client.close →
 embedding client.close → Qdrant client.close → Neo4j driver.close。每个 close 独立 try/except，
@@ -209,19 +224,26 @@ class LiveQueryEmbeddingAdapter:
 
 **`embed()` 契约（严格，snapshot-pinned）：**
 
-1. **Model pin**：`settings.embedding_model` 必须等于 `snapshot.embedding_model`。
-   不匹配 → `RecommendationRuntimeError(code="embedding_model_mismatch", retryable=False)`。
-2. **Provider check**：`settings.embedding_provider` 非空且等于 `snapshot.embedding_provider`。
-   不匹配 → `code="embedding_provider_mismatch", retryable=False`。
+1. **Defensive model/provider pin**：startup 已校验 `settings.embedding_model/provider` 与 snapshot
+   一致；`embed()` 再做一次轻量断言，防止测试或未来调用方绕过 runtime。
+   不匹配 → `embedding_model_mismatch` / `embedding_provider_mismatch`。
+2. 构造 provider input：优先使用 `settings.embedding_query_prefix + query_text`（若 prefix 非空）。
+   不在日志中记录该输入。
 3. `await asyncio.wait_for(client.embeddings.create(model=settings.embedding_model,
-   input=[query_text], encoding_format="float"), settings.embedding_timeout)`。
+   input=[provider_input], encoding_format="float"), settings.embedding_timeout)`。
    `embedding_max_retries` 控制 `APITimeoutError`/`APIConnectionError` 的重试（默认 1 次）。
 4. 取 `response.data[0].embedding` → `tuple(float(x) for x in ...)`。
 5. **Dimension pin**：`len(vector) == snapshot.embedding_dimension`。
    不匹配 → `code="embedding_dimension_mismatch", retryable=False`。
 6. **Fingerprint pin**：`embedding_fingerprint=snapshot.embedding_fingerprint`，供下游
    （Qdrant search payload、response envelope）pin。
-7. 返回 `EmbeddingResult(vector=..., embedding_fingerprint=snapshot.embedding_fingerprint, sparse_vector=None)`。
+7. 构造 sparse query vector：使用与 build pipeline 相同的 deterministic BM25 sparse hashing
+   （`settings.bm25_tokenizer_version`）。`dext_recommend` **不得**直接 import `dext_graph`；
+   实现时把该纯函数提升到中立模块或在 recommend adapter 内保持一份等价的小实现，并用测试锁定
+   与 build sink 的 `indices/values` shape。
+8. 返回 `EmbeddingResult(vector=..., embedding_fingerprint=snapshot.embedding_fingerprint,
+   sparse_vector={"indices": [...], "values": [...]})`。仅当显式配置禁用 sparse 时可返回
+   `None`，但 R7a 默认 production 路径必须产生 sparse vector 以匹配 professor collection。
 
 **错误分类：** `APITimeoutError`/`APIConnectionError`/`httpx.RequestError` 及 `asyncio.TimeoutError`
 → `code="embedding_unavailable", retryable=True`。`APIStatusError`（4xx/5xx）→ 同 code，
@@ -231,10 +253,9 @@ class LiveQueryEmbeddingAdapter:
 **禁止**记 `query_text`、vector、api key。`settings.safe_snapshot()` 已排除
 `embedding_api_key`/`llm_api_key`/`neo4j_password`，新字段保持该排除（测试断言）。
 
-**Dense-only 说明：** `sparse_vector=None` 恒定。`EmbeddingResult` 保留 `sparse_vector` 字段
-（frozen mapping 或 None），将来确认 sparse schema 后端口签名不变，仅 adapter 增 sparse 构造。
-R7a 在 readiness 时记 "dense-only" 能力标记（Qdrant adapter 在 readback 时检查 collection
-sparse 配置并记日志）。
+**Hybrid 说明：** 当前 professor Qdrant collection 已使用 named vectors：`dense` 与 `sparse`。
+R7a 不按 dense-only 降级实现。若 sparse 构造失败，应返回 `embedding_unavailable`，而不是静默
+只走 dense 搜索导致召回质量不可控。
 
 **测试点（injected fake AsyncOpenAI）：** 正常 → vector tuple + 正确 fingerprint；
 model mismatch → 结构化 error；provider 未设 → 结构化 error；dimension mismatch → 结构化 error；
@@ -260,21 +281,31 @@ class LiveVectorSearchAdapter:
 （捕获 `target_collection` 进 snapshot）；`hybrid_recall` 直接用 `snapshot.qdrant_alias_target`
 作为 Qdrant collection name。请求中途 alias 切换对在飞请求无影响。
 
-**`hybrid_recall()`（dense-only）：**
+**`hybrid_recall()`（dense+sparse RRF）：**
 1. `collection = snapshot.qdrant_alias_target`。空 →
    `RecommendationRuntimeError(code="vector_unavailable", retryable=True)`。
-2. 构造 Qdrant filter：`_build_filter(snapshot, filters)`，含强制 pin：
+2. 构造 Qdrant filter：`_build_filter(snapshot, filters)`，只做安全 pushdown：
    - `build_id == snapshot.build_id`（payload pin，防 alias 被 repoint 到不同 build 数据）
-   - `payload_schema_version == snapshot.qdrant_payload_schema_version`
-   - `role_status` / `master_eligibility` / `org_unit_ids` 来自 `RecommendationFilters`
-     （coverage flag false 时 org_unit filter 降级）
+   - `payload_schema_version` **仅在 payload 存在该字段时校验/过滤**；当前 build pipeline 尚未写入该字段，
+     不得把 `payload_schema_version == snapshot.qdrant_payload_schema_version` 作为 hard filter，
+     否则现有 ACTIVE collection 会被全部过滤为空。
+   - 可 push down `university_id`、`city` / `city_name`、`title_family`、
+     `master_eligibility`、`phd_eligibility`、`topic_ids` 等稳定 payload 字段。
+   - **不得在 adapter 内处理 org-unit coverage 降级**。当前 `VectorSearchPort.hybrid_recall`
+     不接收 coverage flags；org-unit hard-filter 降级已由 `recall_loop` / `payload_prefilter` /
+     `final_filter` 负责。R7a adapter 默认不 push down `org_unit_ids`，避免 coverage=false 时
+     在 Qdrant 层提前丢候选。
+   - 不 push down `role_status` / review gating；review 权限属于 core/facts authority path。
 3. `await asyncio.wait_for(client.query_points(collection_name=collection,
-   query=query_vector, using=<dense vector name>, limit=oversample, query_filter=filter,
+   prefetch=[Prefetch(query=query_vector, using="dense", limit=prefetch_limit),
+             Prefetch(query=SparseVector(...), using="sparse", limit=prefetch_limit)],
+   query=FusionQuery(fusion=Fusion.RRF), query_filter=filter, limit=oversample,
    with_payload=True, with_vectors=False), settings.qdrant_timeout)`。
-   - 本版 dense-only：`sparse_vector` 入参接受但忽略（startup 时记一次"dense-only"日志）。
-   - **实现期确认项**：Qdrant collection 使用 named vector 还是 default unnamed vector？
-     实现时查 build sink 确定并 pin name；unnamed 则 `using=None`。
-4. 映射 → `VectorHit(entity_id=str(p.id), score=float(p.score), payload=dict(p.payload or {}))`。
+   `prefetch_limit = max(oversample, rrf_k)` 或 ranking profile 约定值；不得小于 `oversample`。
+   `sparse_vector is None` 时 fail closed 为 `vector_unavailable`，不要静默 dense-only。
+4. 映射前做二次 payload pin：丢弃 `payload.build_id != snapshot.build_id` 的 poisoned hit；
+   如果 payload 带 `payload_schema_version` 且不等于 snapshot，也丢弃。该二次检查不依赖 Qdrant filter。
+   然后映射 → `VectorHit(entity_id=str(p.id), score=float(p.score), payload=dict(p.payload or {}))`。
    payload 由 `VectorHit.__post_init__` freeze。
 5. Qdrant exception/timeout → `code="vector_unavailable", retryable=True`。
 
@@ -292,14 +323,17 @@ exact count（Qdrant `exact=True`）。
 **`aclose()`：** 关 client（`AsyncQdrantClient.close()` 同步，需 guard）。
 
 **filter 翻译关注：** `RecommendationFilters` → Qdrant `Filter`/`FieldCondition`。
-纯可映射逻辑，但需小心 `org_unit_ids`（any-of）、`role_status` 排除
-（`excluded`/`review` gating）、coverage 降级路径。filter builder 作为 adapter 的私有
+R7a filter builder 只负责 payload-safe pushdown，不负责最终权限/资格裁决：
+`org_unit_ids`、`role_status`、review gating 与 coverage 降级保留在 core 的
+`payload_prefilter` / `final_filter`。filter builder 作为 adapter 的私有
 `_build_filter(snapshot, filters)` 方法；它是 R7a 新增真实逻辑，单独单测。
 
 **测试点（injected fake Qdrant client）：** 用 `snapshot.qdrant_alias_target` 而非
-`settings.qdrant_alias`；fake 中途 alias 切换不改被查 collection；`payload.build_id != snapshot.build_id`
-的 hit 被过滤掉（fake 返回 poisoned point，adapter 必须丢弃）；`role_status=excluded` 被排除；
-`count_readback` 返回 exact count；Qdrant exception → `vector_unavailable`；`aclose()` 关 client。
+`settings.qdrant_alias`；fake 中途 alias 切换不改被查 collection；query 使用 `dense` + `sparse`
+prefetch 和 RRF；`payload.build_id != snapshot.build_id` 的 hit 被过滤掉（fake 返回 poisoned point，
+adapter 必须丢弃）；payload 缺 `payload_schema_version` 时不误杀，payload 带错版本时丢弃；
+`org_unit_ids` 不下推（coverage 降级由 core 测）；`count_readback` 返回 exact count；
+Qdrant exception → `vector_unavailable`；`aclose()` 关 client。
 
 ## 7. 配置增量、错误类型、日志规范
 
@@ -313,13 +347,15 @@ runtime_startup_timeout: float = Field(default=30.0, gt=0.0)   # awaits readines
 
 # Embedding live adapter
 embedding_base_url: str = ""
+embedding_query_prefix: str = ""
+bm25_tokenizer_version: str = "bm25-simple-v1"
 embedding_timeout: float = Field(default=10.0, gt=0.0)
 embedding_max_retries: int = Field(default=1, ge=0, le=5)
 
 # Vector search live adapter
 qdrant_timeout: float = Field(default=10.0, gt=0.0)
 qdrant_query_limit_max: int = Field(default=1000, ge=1)
-qdrant_payload_schema_version: int = 2   # compared against snapshot
+qdrant_payload_schema_version: int = 2   # readiness schema config; not a hard query filter until payload emits it
 
 # Neo4j
 neo4j_max_connection_lifetime: float | None = None
@@ -328,9 +364,10 @@ neo4j_max_connection_lifetime: float | None = None
 llm_timeout: float = Field(default=20.0, gt=0.0)
 ```
 
-`embedding_model` / `embedding_provider` / `embedding_dimension` **不**重新添加——
-它们来自 snapshot，不来自 settings。`settings.embedding_model` 作为"配置 model"用于与 snapshot 比对
-（§5 step 1），且已存在于 `RecommendSettings`。
+`embedding_model` / `embedding_provider` 已存在于 `RecommendSettings`，作为 runtime 配置与
+startup snapshot 比对；`embedding_dimension` 不重新添加，权威值来自 snapshot 和 provider response。
+`embedding_query_prefix` / `bm25_tokenizer_version` 必须与构建侧策略一致；若生产值不匹配，
+会造成向量语义漂移或 sparse recall 漂移，应在 R7c acceptance 中纳入 manifest 校验。
 
 `safe_snapshot()` 保持现有排除 `{"embedding_api_key", "llm_api_key", "neo4j_password"}`——
 新字段均非 secret。一个新测试断言 secret-exclusion 在新字段后仍成立。
@@ -358,10 +395,10 @@ runtime startup 失败面向 operator）。
 |------|------|
 | `build_id`、`ranking_profile_version`、`generation_profile_version`、`embedding_fingerprint`、phase latency、error `code`、dependency name | query 原文、`StudentContext` 原文、embedding vector、contacts、API key/token/password、raw prompt、raw LLM output、被 content-policy 拒绝的原文 |
 
-content-policy 拒绝日志规则（只记 `content_policy_refusal` + 分类 code + operation + action，
-不记被拒原文或原始 LLM 输出）**已在 `dext_grounded.SafetyGuard` 实现**——R7a 不复制它；
-pipelines 用默认 `SafetyGuard()`，不装配第二套规则（spec §2：不得在 production composition
-中装配第二套规则）。
+content-policy 拒绝结果与 warning code 已由 `dext_grounded.SafetyGuard` 产生；R7a 不复制规则、
+不装配第二套 `SafetyGuard`。日志策略仍由 R7a runtime/adapters 自己遵守：遇到
+`content_policy_refusal` 时只能记录 refusal code、分类 code、operation 与 action，不得记录被拒原文
+或原始 LLM 输出。审计测试应覆盖 runtime/adapters 日志，而不是假设 `SafetyGuard` 负责落盘日志。
 
 ## 8. 测试策略与 TDD 顺序
 
@@ -369,12 +406,13 @@ TDD 顺序（避免大爆炸；每文件 RED→GREEN→commit）：
 
 1. `test_recommend_runtime_composition.py` — startup fail-fast/success（injected fakes）。先写，pin root 契约。
 2. `test_recommend_active_snapshot_provider.py` — refresh / stale / refresh-failure-preserves / shutdown。
-3. `test_recommend_query_embedding_adapter.py` — injected fake AsyncOpenAI。
-4. `test_recommend_qdrant_search_adapter.py` — injected fake Qdrant client。
-5. `test_recommend_runtime_shutdown.py` — close 顺序、不泄漏 task/client。
-6. `test_recommend_config.py` — 追加新字段 secret-exclusion 断言。
-7. `test_recommend_errors.py` — `RecommendationRuntimeError` 构造 / `__str__`。
-8. 最后：`uv run pytest tests/dext_recommend -q --tb=short`。本地 Qdrant/Neo4j/embedding 可用时
+3. `test_recommend_query_embedding_adapter.py` — injected fake AsyncOpenAI；dense vector + BM25 sparse vector。
+4. `test_recommend_vector_adapter.py` — 追加 `QdrantReader` 真实 collection config / sample payload fingerprint readback，不接受占位值。
+5. `test_recommend_qdrant_search_adapter.py` — injected fake Qdrant client；dense+sparse RRF、pinned collection、safe pushdown filter。
+6. `test_recommend_runtime_shutdown.py` — close 顺序、不泄漏 task/client。
+7. `test_recommend_config.py` — 追加新字段 secret-exclusion 断言。
+8. `test_recommend_errors.py` — `RecommendationRuntimeError` 构造 / `__str__`。
+9. 最后：`uv run pytest tests/dext_recommend -q --tb=short`。本地 Qdrant/Neo4j/embedding 可用时
    再跑 `integration`-marked 文件。
 
 **注入 seam 回顾：** `build_live_recommendation_runtime(settings=None, *, clients: LiveClients | None = None)`。
@@ -400,17 +438,18 @@ neo4j_driver=FakeNeo4jDriver(), openai_llm_core=FakeLLMClient(), openai_llm_aux=
 | 校验 generation profile manifest hash | §3 step 1；`RecommendGenerationProfile.from_file` 已强制 |
 | 缺 catalog/Qdrant/Neo4j/profile/hash mismatch 全 fail-fast | §3 steps 1、6 |
 | `RecommendationCore` 可用，无首次请求才 `NotImplementedError` | §3 — 所有 deps 构造期即 live |
-| `ConversationDispatcher` 可用 | §3 step 11 |
-| `AuxiliaryGenerationService` 可用 | §3 step 11 |
+| `ConversationDispatcher` 可用 | §3 step 12 |
+| `AuxiliaryGenerationService` 可用 | §3 step 12 |
 | refresh 成功才替换，失败保留旧 snapshot | §4 |
 | stale snapshot fail-closed | §4 `get_snapshot()` → None |
 | 请求用 pinned snapshot，alias 中途切换不混用 | §6 pinning 规则 |
-| shutdown 不泄漏 task/client/driver | §3 `aclose()` 逆序；§6 `aclose()`；test 5 |
-| 推荐域全量测试通过 | test step 8 |
+| shutdown 不泄漏 task/client/driver | §3 `aclose()` 逆序；§6 `aclose()`；test step 6 |
+| 推荐域全量测试通过 | test step 9 |
 
-**已知风险：** Qdrant filter 翻译（`_build_filter`）是 R7a 唯一非平凡新逻辑。
-它是最可能出现 payload-build-mismatch bug 的地方（spec bug-trap list）。保持为纯函数，
-在 adapter test 旁单独单测。
+**已知风险：** Qdrant readback 与 filter 翻译是 R7a 最容易出错的新逻辑。
+`QdrantReader` 必须读真实 collection config / payload fingerprint，不能使用占位值；
+`_build_filter` 必须保持 payload-safe pushdown，不能把 org-unit coverage / review 权限决策下沉。
+两者都要单独单测。
 
 ## 10. 韧性与观测补充
 
@@ -419,11 +458,13 @@ neo4j_driver=FakeNeo4jDriver(), openai_llm_core=FakeLLMClient(), openai_llm_aux=
 - 记录 build/profile/fingerprint、phase latency、错误码与 pool saturation；
   禁止记录 query 原文、embedding、联系人、API key。
 - content policy 命中只记录 `content_policy_refusal`、分类 code、operation 与 action；
-  禁止记录被拒绝原文或原始 LLM 输出（已由 `SafetyGuard` 实现）。
+  禁止记录被拒绝原文或原始 LLM 输出。R7a runtime/adapters 负责日志约束；`SafetyGuard`
+  只负责生成拒答结果与 warning code。
 
 ## 11. 实现期确认项（非阻塞设计，实现时落实）
 
-1. Qdrant collection 使用 named vector 还是 default unnamed vector？查 build sink 确定并 pin。
-2. `--run-integration` convention 是否已存在于 conftest？若无则新增 marker 注册。
-3. `QdrantReader` 构造期占位 `embedding_dimension`/`embedding_fingerprint` 的处理——readiness 成功后
-   snapshot 提供权威值，确认 QdrantReader 在 `read_current` 时用 snapshot 值而非占位值比对。
+1. Qdrant professor collection 已使用 named vectors `dense` 与 `sparse`；实现应直接 pin 这两个名字，
+   不再把 vector name 作为待确认项。
+2. 当前 Qdrant payload 未写入 `payload_schema_version`；R7a 请求路径只能“存在则校验”，不能 hard filter。
+   若后续要强制 schema payload pin，必须先改 build pipeline 并重建 ACTIVE collection。
+3. `--run-integration` convention 是否已存在于 conftest？若无则新增 marker 注册。

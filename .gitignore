@@ -20,8 +20,8 @@ __pycache__/
 **/node_modules/
 webui/dist/
 
-# Local Claude Code settings (personal)
-.claude/settings.local.json
+# Local Claude Code / Kilo settings (personal)
+.claude/
 .debug-scripts/
 
 .playwright*/

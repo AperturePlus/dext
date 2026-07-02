@@ -90,3 +90,24 @@ def test_config_has_query_max_chars_and_limit_max():
     s = RecommendSettings()
     assert s.query_max_chars > 0
     assert s.limit_max > 0
+
+
+def test_live_runtime_settings_defaults_and_secret_exclusion():
+    s = RecommendSettings(
+        embedding_api_key="embed-secret",
+        llm_api_key="llm-secret",
+        neo4j_password="neo-secret",
+    )
+    assert s.runtime_refresh_interval == 60.0
+    assert s.runtime_snapshot_max_age == 300.0
+    assert s.runtime_startup_timeout == 30.0
+    assert s.embedding_timeout == 10.0
+    assert s.embedding_max_retries == 1
+    assert s.qdrant_timeout == 10.0
+    assert s.qdrant_payload_schema_version == 2
+    assert s.llm_timeout == 20.0
+    snapshot = s.safe_snapshot()
+    assert not {"embedding_api_key", "llm_api_key", "neo4j_password"} & snapshot.keys()
+    assert "embed-secret" not in str(snapshot)
+    assert "llm-secret" not in str(snapshot)
+    assert "neo-secret" not in str(snapshot)

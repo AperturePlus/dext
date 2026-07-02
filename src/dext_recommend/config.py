@@ -39,6 +39,11 @@ class RecommendSettings(BaseSettings):
     embedding_provider: str = ""
     embedding_model: str = ""
     embedding_api_key: SecretStr = Field(default_factory=SecretStr)
+    embedding_base_url: str = ""
+    embedding_query_prefix: str = ""
+    bm25_tokenizer_version: str = "bm25-simple-v1"
+    embedding_timeout: float = Field(default=10.0, gt=0.0)
+    embedding_max_retries: int = Field(default=1, ge=0, le=5)
 
     # LLM (constrained generation)
     llm_api_key: SecretStr = Field(
@@ -48,6 +53,7 @@ class RecommendSettings(BaseSettings):
     llm_base_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-v4-flash"
     llm_max_retries: int = Field(default=1, ge=0, le=5)
+    llm_timeout: float = Field(default=20.0, gt=0.0)
 
     # Profile paths
     ranking_profile_path: Path = Path("data/recommend/ranking-profile.json")
@@ -67,6 +73,17 @@ class RecommendSettings(BaseSettings):
     coverage_threshold_profile_hash: float = Field(default=0.99, gt=0.0, le=1.0)
     coverage_threshold_role_status: float = Field(default=0.95, gt=0.0, le=1.0)
     coverage_threshold_eligibility: float = Field(default=0.95, gt=0.0, le=1.0)
+
+    # Live runtime lifecycle
+    runtime_refresh_interval: float = Field(default=60.0, gt=0.0)
+    runtime_snapshot_max_age: float = Field(default=300.0, gt=0.0)
+    runtime_startup_timeout: float = Field(default=30.0, gt=0.0)
+
+    # Live Qdrant/Neo4j clients
+    qdrant_timeout: float = Field(default=10.0, gt=0.0)
+    qdrant_query_limit_max: int = Field(default=1000, ge=1)
+    qdrant_payload_schema_version: int = Field(default=2, ge=1)
+    neo4j_max_connection_lifetime: float | None = Field(default=None, gt=0.0)
 
     # R4 catalog fact reads
     fact_read_timeout: float = Field(default=5.0, gt=0.0)

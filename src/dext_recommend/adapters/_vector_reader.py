@@ -5,6 +5,7 @@ ProfessorQdrant wrapper — only the qdrant_client async API.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Protocol
 
 from dext_recommend.ports.release_readback import ReadinessSourceError
@@ -42,13 +43,9 @@ class VectorReleaseReader(Protocol):
 
 class QdrantReader:
     def __init__(
-        self, client: Any, *,
-        embedding_dimension: int, embedding_fingerprint: str,
-        payload_schema_version: int = 2,
+        self, client: Any, *, payload_schema_version: int = 2,
     ) -> None:
         self._client = client
-        self._embedding_dimension = embedding_dimension
-        self._embedding_fingerprint = embedding_fingerprint
         self._payload_schema_version = payload_schema_version
 
     async def read_current(
@@ -68,22 +65,37 @@ class QdrantReader:
             raise ReadinessSourceError("qdrant", f"alias {alias} is ambiguous")
         target = matches[0]
         try:
-            count_result = await self._client.count(target, exact=True)
+            collection = await self._client.get_collection(collection_name=target)
+            embedding_dimension = _dense_dimension(collection)
+            count_result = await self._client.count(collection_name=target, exact=True)
             point_count = int(count_result.count)
-            points = []
-            offset = None
-            while True:
-                resp, offset = await self._client.scroll(
-                    collection_name=target, limit=256, offset=offset,
-                    with_payload=True, with_vectors=False,
+            records = []
+            if sample_ids:
+                records = list(await self._client.retrieve(
+                    collection_name=target,
+                    ids=list(sample_ids),
+                    with_payload=True,
+                    with_vectors=False,
+                ))
+            fingerprint_records = records
+            if point_count > 0 and not fingerprint_records:
+                arbitrary, _ = await self._client.scroll(
+                    collection_name=target,
+                    limit=1,
+                    with_payload=True,
+                    with_vectors=False,
                 )
-                for p in resp:
-                    points.append(dict(p.payload or {}))
-                    points[-1]["entity_id"] = str(p.id)
-                if offset is None:
-                    break
+                fingerprint_records = list(arbitrary)
+            embedding_fingerprint = _embedding_fingerprint(
+                fingerprint_records, point_count=point_count,
+            )
             wanted = set(sample_ids)
-            samples = [p for p in points if p.get("entity_id") in wanted]
+            samples = []
+            for point in records:
+                payload = dict(point.payload or {})
+                payload["entity_id"] = str(point.id)
+                if payload["entity_id"] in wanted:
+                    samples.append(payload)
             build_id = parse_build_id_from_collection(target)
         except ReadinessSourceError:
             raise
@@ -94,12 +106,53 @@ class QdrantReader:
             "target_collection": target,
             "build_id": build_id,
             "payload_schema_version": self._payload_schema_version,
-            "embedding_fingerprint": self._embedding_fingerprint,
-            "embedding_dimension": self._embedding_dimension,
+            "embedding_fingerprint": embedding_fingerprint,
+            "embedding_dimension": embedding_dimension,
             "point_count": point_count,
             "samples": samples,
             "coverage": _coverage_rows(samples),
         }
+
+
+def _dense_dimension(collection: Any) -> int:
+    try:
+        if isinstance(collection, Mapping):
+            config = collection["config"]
+        else:
+            config = collection.config
+        params = config["params"] if isinstance(config, Mapping) else config.params
+        vectors = params["vectors"] if isinstance(params, Mapping) else params.vectors
+        dense = vectors.get("dense") if isinstance(vectors, Mapping) else None
+        size = dense.get("size") if isinstance(dense, Mapping) else dense.size
+        dimension = int(size)
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise ReadinessSourceError(
+            "qdrant", "collection is missing named dense vector config",
+        ) from exc
+    if dimension <= 0:
+        raise ReadinessSourceError("qdrant", "dense vector dimension is invalid")
+    return dimension
+
+
+def _embedding_fingerprint(records: list[Any], *, point_count: int) -> str:
+    if point_count <= 0:
+        raise ReadinessSourceError(
+            "qdrant", "empty collection has no embedding fingerprint readback",
+        )
+    fingerprints: set[str] = set()
+    for point in records:
+        payload = dict(getattr(point, "payload", None) or {})
+        fingerprint = payload.get("embedding_fingerprint")
+        if not isinstance(fingerprint, str) or not fingerprint:
+            raise ReadinessSourceError(
+                "qdrant", "sample payload missing embedding_fingerprint",
+            )
+        fingerprints.add(fingerprint)
+    if len(fingerprints) != 1:
+        raise ReadinessSourceError(
+            "qdrant", "sample payload embedding_fingerprint is inconsistent",
+        )
+    return next(iter(fingerprints))
 
 
 def _coverage_rows(samples: list[dict]) -> list[dict]:

@@ -7,6 +7,7 @@ import pytest
 
 from dext_recommend import (
     ErrorSeverity, RecommendationError, RecommendationErrorCode,
+    RecommendationRuntimeError,
 )
 
 
@@ -99,3 +100,12 @@ def test_new_readiness_error_codes_registered():
     assert C.ELIGIBILITY_COVERAGE_INSUFFICIENT.value == "eligibility_coverage_insufficient"
     assert C.ORG_UNIT_FILTER_UNAVAILABLE.value == "org_unit_filter_unavailable"
     assert C.RANKING_PROFILE_UNAVAILABLE.value == "ranking_profile_unavailable"
+
+
+def test_runtime_error_has_safe_string_and_retryability():
+    error = RecommendationRuntimeError(
+        code="readiness_failed", message="readiness failed", retryable=True,
+    )
+    assert str(error) == "readiness failed"
+    assert error.args == ("readiness failed",)
+    assert error.retryable is True

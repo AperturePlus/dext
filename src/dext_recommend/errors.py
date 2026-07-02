@@ -81,4 +81,21 @@ class RecommendationError:
         }
 
 
-__all__ = ["ErrorSeverity", "RecommendationError", "RecommendationErrorCode"]
+@dataclass(frozen=True, slots=True)
+class RecommendationRuntimeError(RuntimeError):
+    """Secret-free operational failure from the live composition root."""
+
+    code: str
+    message: str
+    retryable: bool = False
+
+    def __post_init__(self) -> None:
+        RuntimeError.__init__(self, self.message)
+
+
+__all__ = [
+    "ErrorSeverity",
+    "RecommendationError",
+    "RecommendationErrorCode",
+    "RecommendationRuntimeError",
+]
