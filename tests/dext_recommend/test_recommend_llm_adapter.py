@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -39,11 +40,19 @@ async def test_adapter_uses_profile_prompt_budget_and_strict_json():
     result = await adapter.generate(
         op.system_prompt_id, {"query_text": "NLP"},
         FactBundle("b1", "implicit-intent", (), ()), None,
-        dict(op.json_schema), profile.version,
+        op.json_schema, profile.version,
     )
     assert result.output["intent"] == "new_search"
     assert calls.calls[0]["max_tokens"] == op.token_budget
     assert calls.calls[0]["timeout"] == op.timeout
+    assert calls.calls[0]["response_format"] == {"type": "json_object"}
+    payload = json.loads(calls.calls[0]["messages"][1]["content"])
+    contract = payload["output_contract"]
+    assert contract["json_schema"]["required"] == ["intent", "confidence", "rationale"]
+    assert contract["json_schema"]["properties"]["intent"]["enum"] == [
+        "new_search", "more_mentors", "same_field", "refine_direction", "detail_followup"
+    ]
+    assert "Include every field listed in json_schema.required." in contract["instructions"]
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 from typing import Any
@@ -12,11 +13,24 @@ from dext_grounded import (
 from dext_recommend.core.generation_profile import RecommendGenerationProfile
 
 
-def _json_default(value: object) -> object:
+def _jsonable(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
     if is_dataclass(value):
-        return asdict(value)
+        return _jsonable(asdict(value))
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(child) for key, child in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(child) for child in value]
+    if isinstance(value, (set, frozenset)):
+        return [_jsonable(child) for child in value]
+    return value
+
+
+def _json_default(value: object) -> object:
+    converted = _jsonable(value)
+    if converted is not value:
+        return converted
     raise TypeError(f"not JSON serializable: {type(value).__name__}")
 
 
@@ -120,10 +134,21 @@ class OpenAICompatibleLLMGenerationAdapter:
         operation = self._operations.get(system_prompt_id)
         if operation is None:
             raise ValueError(f"unknown system_prompt_id: {system_prompt_id}")
+        schema = _jsonable(json_schema if json_schema is not None else operation.json_schema)
         payload = {
             "user_inputs": user_inputs,
             "fact_bundle": fact_bundle,
             "student_context": student_context,
+            "output_contract": {
+                "instructions": [
+                    "Return exactly one JSON object and no markdown.",
+                    "The object must conform to output_contract.json_schema.",
+                    "Include every field listed in json_schema.required.",
+                    "Use only enum values declared in the schema.",
+                    "Do not include fields outside json_schema.properties.",
+                ],
+                "json_schema": schema,
+            },
         }
         response = await self._client.chat.completions.create(
             model=self._model,
@@ -145,7 +170,6 @@ class OpenAICompatibleLLMGenerationAdapter:
                     code="generation_parse_error", message="provider returned invalid JSON"
                 )],
             )
-        schema = json_schema or dict(operation.json_schema)
         errors = _schema_errors(output, schema)
         if errors:
             return GenerationResult(
