@@ -1,9 +1,10 @@
 # src/dext_recommend/core/intent.py
 """Intent routing — execute-only, no classification.
 
-R3 resolves the 4 recommend-path intents into route modifiers and validates
-minimum context. detail_followup is short-circuited as unsupported (R5 owns
-its execution). Free-text intent classification is out of scope (R5).
+R5 strict routing: terminal failures are surfaced as structured
+terminal_issues (severity=error) instead of falling back to new_search.
+detail_followup is flagged for the dispatcher (Task 6), not short-circuited.
+R3 ranking/filter semantics are unchanged.
 """
 from __future__ import annotations
 
@@ -18,36 +19,52 @@ _ALL_INTENTS = _RECOMMEND_INTENTS | {"detail_followup"}
 
 @dataclass(frozen=True, slots=True)
 class RecommendRoute:
-    intent: str                          # new_search|more_mentors|same_field|refine_direction
+    intent: str
     exclude_entity_ids: tuple[str, ...]
     anchor_entity_id: str | None
     refine_merge: bool
-    unsupported: str | None              # detail_followup -> "unsupported_for_recommend_core"
+    detail_followup: bool
+    terminal_issues: tuple[RecommendationWarning, ...]
     warnings: tuple[RecommendationWarning, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "exclude_entity_ids", tuple(self.exclude_entity_ids or ()))
+        object.__setattr__(self, "terminal_issues", tuple(self.terminal_issues or ()))
         object.__setattr__(self, "warnings", tuple(self.warnings or ()))
 
 
-def _warn(code: RecommendationErrorCode, message: str) -> RecommendationWarning:
-    return RecommendationWarning(code=code.value, message=message, severity="warning")
+def _terminal(code: RecommendationErrorCode, message: str) -> RecommendationWarning:
+    return RecommendationWarning(code=code.value, message=message, severity="error")
 
 
 def resolve_recommend_route(request: RecommendRequest) -> RecommendRoute:
     ctx = request.conversation_context
     intent = (ctx.intent if ctx is not None else None) or "new_search"
+    terminal: list[RecommendationWarning] = []
     warnings: list[RecommendationWarning] = []
+    detail_followup = False
 
     if intent not in _ALL_INTENTS:
-        warnings.append(_warn(RecommendationErrorCode.INVALID_INTENT, f"unknown intent: {intent!r}"))
-        intent = "new_search"
+        terminal.append(_terminal(RecommendationErrorCode.INVALID_INTENT, f"unknown intent: {intent!r}"))
+        return RecommendRoute(
+            intent="new_search", exclude_entity_ids=(), anchor_entity_id=None,
+            refine_merge=False, detail_followup=False,
+            terminal_issues=tuple(terminal), warnings=tuple(warnings),
+        )
 
     if intent == "detail_followup":
+        anchor = ctx.anchor_entity_id if ctx is not None else None
+        if not anchor:
+            terminal.append(_terminal(
+                RecommendationErrorCode.DETAIL_FOLLOWUP_REQUIRES_ANCHOR,
+                "detail_followup requires anchor_entity_id",
+            ))
+        detail_followup = True
         return RecommendRoute(
-            intent="new_search",
-            exclude_entity_ids=(), anchor_entity_id=None, refine_merge=False,
-            unsupported="unsupported_for_recommend_core", warnings=tuple(warnings),
+            intent="detail_followup", exclude_entity_ids=(),
+            anchor_entity_id=anchor, refine_merge=False,
+            detail_followup=detail_followup,
+            terminal_issues=tuple(terminal), warnings=tuple(warnings),
         )
 
     exclude_entity_ids: tuple[str, ...] = ()
@@ -57,22 +74,20 @@ def resolve_recommend_route(request: RecommendRequest) -> RecommendRoute:
     if intent == "more_mentors":
         prior = tuple(ctx.prior_result_entity_ids) if ctx is not None else ()
         if not prior:
-            warnings.append(_warn(
-                RecommendationErrorCode.MISSING_PRIOR_RESULTS,
-                "more_mentors requires prior_result_entity_ids; falling back to new_search",
+            terminal.append(_terminal(
+                RecommendationErrorCode.MORE_MENTORS_REQUIRES_PRIOR,
+                "more_mentors requires prior_result_entity_ids",
             ))
-            intent = "new_search"
         else:
             exclude_entity_ids = prior
 
     elif intent == "same_field":
         anchor = ctx.anchor_entity_id if ctx is not None else None
         if not anchor:
-            warnings.append(_warn(
-                RecommendationErrorCode.MISSING_ANCHOR,
-                "same_field requires anchor_entity_id; falling back to new_search",
+            terminal.append(_terminal(
+                RecommendationErrorCode.SAME_FIELD_REQUIRES_ANCHOR,
+                "same_field requires anchor_entity_id",
             ))
-            intent = "new_search"
         else:
             anchor_entity_id = anchor
 
@@ -80,11 +95,9 @@ def resolve_recommend_route(request: RecommendRequest) -> RecommendRoute:
         refine_merge = True
 
     return RecommendRoute(
-        intent=intent,
-        exclude_entity_ids=exclude_entity_ids,
-        anchor_entity_id=anchor_entity_id,
-        refine_merge=refine_merge,
-        unsupported=None,
+        intent=intent, exclude_entity_ids=exclude_entity_ids,
+        anchor_entity_id=anchor_entity_id, refine_merge=refine_merge,
+        detail_followup=False, terminal_issues=tuple(terminal),
         warnings=tuple(warnings),
     )
 

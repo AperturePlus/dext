@@ -84,7 +84,7 @@ def test_final_filter_org_unit_degraded_when_flag_missing():
 
     route = RecommendRoute(intent="new_search", exclude_entity_ids=(),
                           anchor_entity_id=None, refine_merge=False,
-                          unsupported=None, warnings=())
+                          detail_followup=False, terminal_issues=(), warnings=())
     fact = ProfessorFact(
         entity_id="e1", display_name="N", university="U", org_units=("CS",),
         title="Prof", title_family="professor", master_eligibility="confirmed",
@@ -110,7 +110,7 @@ def test_final_filter_org_unit_not_degraded_when_flag_true():
 
     route = RecommendRoute(intent="new_search", exclude_entity_ids=(),
                           anchor_entity_id=None, refine_merge=False,
-                          unsupported=None, warnings=())
+                          detail_followup=False, terminal_issues=(), warnings=())
     fact = ProfessorFact(
         entity_id="e1", display_name="N", university="U", org_units=("CS",),
         title="Prof", title_family="professor", master_eligibility="confirmed",

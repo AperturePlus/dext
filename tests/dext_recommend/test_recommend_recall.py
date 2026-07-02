@@ -23,7 +23,7 @@ def _profile(**over) -> RankingProfile:
 def _route() -> RecommendRoute:
     return RecommendRoute(
         intent="new_search", exclude_entity_ids=(), anchor_entity_id=None,
-        refine_merge=False, unsupported=None, warnings=(),
+        refine_merge=False, detail_followup=False, terminal_issues=(), warnings=(),
     )
 
 
@@ -137,7 +137,7 @@ async def test_recall_loop_filters_per_step_and_dedups_hydrate():
     ))
     route = RecommendRoute(intent="new_search", exclude_entity_ids=(),
                           anchor_entity_id=None, refine_merge=False,
-                          unsupported=None, warnings=())
+                          detail_followup=False, terminal_issues=(), warnings=())
     # step 100: e1 (will be filtered out by fact); step 200: e1 + e2
     hits_100 = [VectorHit(entity_id="e1", score=0.9, payload={})]
     hits_200 = [

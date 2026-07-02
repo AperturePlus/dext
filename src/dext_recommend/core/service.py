@@ -225,25 +225,22 @@ class RecommendationCore:
         route_warnings = ctx.warnings
         route_warnings.extend(route.warnings)
 
-        if route.unsupported:
-            warning = _warn(RecommendationErrorCode.UNSUPPORTED_FOR_RECOMMEND_CORE,
-                            route.unsupported, severity="warning")
+        if route.terminal_issues or route.detail_followup:
+            # R5 strict routing: terminal issues (severity=error) cannot proceed
+            # to the ranking pipeline. detail_followup is also not servicable by
+            # the direct recommend path (the conversation dispatcher in Task 6
+            # owns it); surface it as a terminal error here.
+            if route.detail_followup:
+                terminal = [_warn(RecommendationErrorCode.UNSUPPORTED_FOR_RECOMMEND_CORE,
+                                  "detail_followup not supported by recommend core",
+                                  severity="error")]
+            else:
+                terminal = list(route.terminal_issues)
             resp = _error_response(
                 snapshot=snapshot, profile=None, embedding_fingerprint=None,
-                warning=warning,
+                warning=terminal[0],
                 phase_diagnostics=ctx.snapshot_phase_diagnostics(),
-            )
-            # merge route warnings ahead of the unsupported warning, then rebuild
-            # the frozen+slots dataclass via object.__setattr__ (avoids fragile
-            # __dict__ spread on slots).
-            all_warnings = tuple(route_warnings) + tuple(resp.warnings)
-            resp = RecommendResponse(
-                build_id=resp.build_id, ranking_profile_version=resp.ranking_profile_version,
-                embedding_fingerprint=resp.embedding_fingerprint, taxonomy_version=resp.taxonomy_version,
-                query_understanding=resp.query_understanding, query=resp.query,
-                results=resp.results, suggested_followups=resp.suggested_followups,
-                warnings=all_warnings,
-                phase_diagnostics=resp.phase_diagnostics,
+                prior_warnings=tuple(route_warnings) + tuple(terminal),
             )
             validate(resp)
             return resp

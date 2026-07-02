@@ -136,7 +136,7 @@ def test_rerank_same_field_boosts_topic_overlap():
     profile = RankingProfile.from_dict(ranking_profile_dict())
     route = RecommendRoute(intent="new_search", exclude_entity_ids=(),
                           anchor_entity_id=None, refine_merge=False,
-                          unsupported=None, warnings=())
+                          detail_followup=False, terminal_issues=(), warnings=())
     # two candidates, identical semantic; one shares anchor topic
     hits = [
         VectorHit(entity_id="e_share", score=0.9, payload={}),
@@ -178,7 +178,7 @@ def test_rerank_same_field_components_always_present():
     profile = RankingProfile.from_dict(ranking_profile_dict())
     route = RecommendRoute(intent="new_search", exclude_entity_ids=(),
                           anchor_entity_id=None, refine_merge=False,
-                          unsupported=None, warnings=())
+                          detail_followup=False, terminal_issues=(), warnings=())
     hits = [VectorHit(entity_id="e1", score=0.5, payload={})]
     ranked = rerank(hits, {}, {}, {"e1": 1.0}, None, profile, route)
     assert "same_field_overlap" in ranked[0].score_components
@@ -199,7 +199,7 @@ def test_rerank_tie_break_configurable():
     profile = RankingProfile.from_dict(d)
     route = RecommendRoute(intent="new_search", exclude_entity_ids=(),
                           anchor_entity_id=None, refine_merge=False,
-                          unsupported=None, warnings=())
+                          detail_followup=False, terminal_issues=(), warnings=())
     # two candidates with identical score and semantic_score but different
     # evidence_count and entity_id. Custom tie_break puts entity_id asc
     # BEFORE evidence_count, so e_a (evidence=0) outranks e_b (evidence=5).
