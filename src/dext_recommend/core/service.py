@@ -144,6 +144,7 @@ class RecommendationCore:
             )
 
         coverage_flags = self._deps.coverage_flags_by_build_id.get(snapshot.build_id, {})
+        org_unit_degraded = coverage_flags.get("org_unit_ids") is not True
         hits_pool, steps_used = await recall_loop(
             snapshot, self._deps.vector_port, list(embedding.vector),
             effective_filters, profile,
@@ -152,7 +153,7 @@ class RecommendationCore:
         )
         # final filter is applied per-step in service (hydrated facts needed)
         # Simpler: do one final filter on the largest pool (the last step's hits)
-        prefiltered = payload_prefilter(hits_pool, effective_filters)
+        prefiltered = payload_prefilter(hits_pool, effective_filters, org_unit_degraded=org_unit_degraded)
         fact_map = await self._deps.facts_port.hydrate(
             snapshot, [h.entity_id for h in prefiltered],
         )
@@ -212,7 +213,7 @@ class RecommendationCore:
             results.append(card)
 
         warnings = list(route_warnings)
-        if filter_diag.org_unit_degraded:
+        if filter_diag.org_unit_degraded and effective_filters.org_unit_ids:
             warnings.append(_warn(RecommendationErrorCode.ORG_UNIT_FILTER_UNAVAILABLE,
                                   "org_unit hard filter degraded (coverage unavailable)"))
         if weak_explanation:

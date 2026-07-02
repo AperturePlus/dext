@@ -38,6 +38,8 @@ def _payload_match(payload: Mapping, key: str, requested: tuple[str, ...]) -> bo
 def payload_prefilter(
     hits: list[VectorHit] | tuple[VectorHit, ...],
     filters: RecommendationFilters,
+    *,
+    org_unit_degraded: bool = False,
 ) -> list[VectorHit]:
     out: list[VectorHit] = []
     for h in hits:
@@ -45,13 +47,16 @@ def payload_prefilter(
         for key, req in (
             ("university_id", filters.university_ids),
             ("city_name", filters.city_names),
-            ("org_unit_ids", filters.org_unit_ids),
             ("title_family", filters.title_families),
         ):
             m = _payload_match(h.payload, key, tuple(req))
             if m is False:
                 keep = False
                 break
+        if keep and not org_unit_degraded:
+            m = _payload_match(h.payload, "org_unit_ids", tuple(filters.org_unit_ids))
+            if m is False:
+                keep = False
         if filters.master_eligibility == "confirmed":
             m = _payload_match(h.payload, "master_eligibility", ("confirmed",))
             if m is False:
@@ -88,7 +93,7 @@ def final_filter(
     excluded = 0
     review = 0
     hard = 0
-    org_unit_degraded = not bool(coverage_flags.get("org_unit_ids", True))
+    org_unit_degraded = coverage_flags.get("org_unit_ids") is not True
     exclude_set = set(route.exclude_entity_ids)
 
     org_unit_hard = tuple(filters.org_unit_ids)

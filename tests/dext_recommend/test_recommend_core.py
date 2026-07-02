@@ -189,6 +189,43 @@ async def test_org_unit_degraded_when_coverage_false():
     assert "e_other_org" in ids
 
 
+async def test_recommend_org_unit_degraded_silent_when_not_requested():
+    """org_unit coverage missing but filters.org_unit_ids empty -> no warning."""
+    core = _core(
+        hits=list(vector_hits_case("happy")),
+        facts=professor_facts_case("happy"),
+        details=professor_details_case("happy"),
+        coverage=coverage_flags_case("b-1", org_unit_ids=None),
+    )
+    # request has NO org_unit_ids filter
+    from dext_recommend.models import RecommendRequest, RecommendationFilters
+    req = RecommendRequest(
+        query_text="computer vision", filters=RecommendationFilters(),
+        oversample=200, limit=5,
+    )
+    resp = await core.recommend(req)
+    codes = [w.code for w in resp.warnings]
+    assert "org_unit_filter_unavailable" not in codes
+
+
+async def test_recommend_org_unit_enforced_when_coverage_ok():
+    """flag True + org_unit requested -> mismatching candidate filtered (no over-softening)."""
+    hits = list(vector_hits_case("other_org"))
+    facts = professor_facts_case("other_org")
+    details = professor_details_case("no_statement")
+    core = _core(hits=hits, facts=facts, details=details,
+                 coverage=coverage_flags_case("b-1", org_unit_ids=True))
+    resp = await core.recommend(RecommendRequest(
+        query_text="NLP",
+        filters=RecommendationFilters(org_unit_ids=("ou_cs",)),
+    ))
+    ids = [r.entity_id for r in resp.results]
+    assert "e_other_org" not in ids
+    # no degradation warning
+    codes = [w.code for w in resp.warnings]
+    assert "org_unit_filter_unavailable" not in codes
+
+
 async def test_response_validation_runs():
     core = _core()
     resp = await core.recommend(RecommendRequest(query_text="NLP 导师"))

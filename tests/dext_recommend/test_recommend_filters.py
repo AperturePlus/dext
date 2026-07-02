@@ -22,6 +22,34 @@ def _route_for(intent: str = "new_search", prior=(), anchor=None):
     ))
 
 
+def test_payload_prefilter_skips_org_unit_when_degraded():
+    from dext_recommend.core.filters import payload_prefilter
+    from dext_recommend.models import RecommendationFilters
+    from dext_recommend.ports.vector_search import VectorHit
+
+    hits = [
+        VectorHit(entity_id="e1", score=0.9, payload={"org_unit_ids": ["ou_cs"]}),
+        VectorHit(entity_id="e2", score=0.8, payload={"org_unit_ids": ["ou_math"]}),
+    ]
+    filters = RecommendationFilters(org_unit_ids=("ou_cs",))
+    out = payload_prefilter(hits, filters, org_unit_degraded=True)
+    assert {h.entity_id for h in out} == {"e1", "e2"}
+
+
+def test_payload_prefilter_keeps_org_unit_when_not_degraded():
+    from dext_recommend.core.filters import payload_prefilter
+    from dext_recommend.models import RecommendationFilters
+    from dext_recommend.ports.vector_search import VectorHit
+
+    hits = [
+        VectorHit(entity_id="e1", score=0.9, payload={"org_unit_ids": ["ou_cs"]}),
+        VectorHit(entity_id="e2", score=0.8, payload={"org_unit_ids": ["ou_math"]}),
+    ]
+    filters = RecommendationFilters(org_unit_ids=("ou_cs",))
+    out = payload_prefilter(hits, filters, org_unit_degraded=False)
+    assert {h.entity_id for h in out} == {"e1"}
+
+
 def test_payload_prefilter_drops_unmatched_university():
     hits = vector_hits_case("happy")
     filters = RecommendationFilters(university_ids=("u_other",))
@@ -45,6 +73,57 @@ def test_final_filter_drops_excluded_role():
     assert "e_cv_excluded" not in ids
     assert "e_cv_strong" in ids
     assert diag.role_excluded == 1
+
+
+def test_final_filter_org_unit_degraded_when_flag_missing():
+    from dext_recommend.core.filters import final_filter, FilterDiagnostics
+    from dext_recommend.models import RecommendationFilters, RecommendationWarning
+    from dext_recommend.core.intent import RecommendRoute
+    from dext_recommend.ports.vector_search import VectorHit
+    from dext_recommend.ports.professor_facts import ProfessorFact
+
+    route = RecommendRoute(intent="new_search", exclude_entity_ids=(),
+                          anchor_entity_id=None, refine_merge=False,
+                          unsupported=None, warnings=())
+    fact = ProfessorFact(
+        entity_id="e1", display_name="N", university="U", org_units=("CS",),
+        title="Prof", title_family="professor", master_eligibility="confirmed",
+        phd_eligibility="confirmed", role_status="active", profile_url=None,
+        profile_hash=None, research_summary=None, org_unit_ids=("ou_math",),
+    )
+    hits = [VectorHit(entity_id="e1", score=0.9, payload={})]
+    # coverage_flags missing the key entirely -> degraded
+    survivors, diag = final_filter(
+        hits, {"e1": fact}, RecommendationFilters(org_unit_ids=("ou_cs",)),
+        route, coverage_flags={}, review_policy="exclude",
+    )
+    assert diag.org_unit_degraded is True
+    assert len(survivors) == 1  # not hard-filtered on org_unit
+
+
+def test_final_filter_org_unit_not_degraded_when_flag_true():
+    from dext_recommend.core.filters import final_filter
+    from dext_recommend.models import RecommendationFilters
+    from dext_recommend.core.intent import RecommendRoute
+    from dext_recommend.ports.vector_search import VectorHit
+    from dext_recommend.ports.professor_facts import ProfessorFact
+
+    route = RecommendRoute(intent="new_search", exclude_entity_ids=(),
+                          anchor_entity_id=None, refine_merge=False,
+                          unsupported=None, warnings=())
+    fact = ProfessorFact(
+        entity_id="e1", display_name="N", university="U", org_units=("CS",),
+        title="Prof", title_family="professor", master_eligibility="confirmed",
+        phd_eligibility="confirmed", role_status="active", profile_url=None,
+        profile_hash=None, research_summary=None, org_unit_ids=("ou_math",),
+    )
+    hits = [VectorHit(entity_id="e1", score=0.9, payload={})]
+    survivors, diag = final_filter(
+        hits, {"e1": fact}, RecommendationFilters(org_unit_ids=("ou_cs",)),
+        route, coverage_flags={"org_unit_ids": True}, review_policy="exclude",
+    )
+    assert diag.org_unit_degraded is False
+    assert len(survivors) == 0  # hard-filtered: org_unit mismatch
 
 
 def test_final_filter_review_excluded_by_default():
