@@ -28,6 +28,8 @@ class RankingProfile:
     detail_rerank_window_max: int
     match_level_thresholds: Mapping[str, float]
     tie_break: tuple[str, ...]
+    same_field_boost_per_topic: float
+    same_field_boost_max: float
 
     def __post_init__(self) -> None:
         if not self.version:
@@ -63,6 +65,10 @@ class RankingProfile:
             )
         if not self.tie_break:
             raise ValueError("RankingProfile.tie_break must be non-empty")
+        if not (0.0 <= self.same_field_boost_per_topic <= self.same_field_boost_max <= 1.0):
+            raise ValueError(
+                "require 0 <= same_field_boost_per_topic <= same_field_boost_max <= 1"
+            )
         object.__setattr__(self, "weights", freeze_mapping(self.weights))
         object.__setattr__(self, "oversample_steps", tuple(self.oversample_steps))
         object.__setattr__(
@@ -82,6 +88,8 @@ class RankingProfile:
             detail_rerank_window_max=d["detail_rerank_window_max"],
             match_level_thresholds=d["match_level_thresholds"],
             tie_break=tuple(d["tie_break"]),
+            same_field_boost_per_topic=d["same_field_boost_per_topic"],
+            same_field_boost_max=d["same_field_boost_max"],
         )
 
 

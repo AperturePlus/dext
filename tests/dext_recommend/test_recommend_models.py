@@ -170,6 +170,8 @@ def _profile():
         "detail_rerank_window_max": 100,
         "match_level_thresholds": {"excellent": 0.75, "strong": 0.55, "possible": 0.35},
         "tie_break": ("score", "semantic_score", "evidence_count", "entity_id"),
+        "same_field_boost_per_topic": 0.05,
+        "same_field_boost_max": 0.15,
     })
 
 

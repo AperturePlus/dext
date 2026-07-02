@@ -7,6 +7,7 @@ loop -> filters -> detail fan-out -> rerank -> cards -> validation.
 """
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -134,6 +135,36 @@ class RecommendationCore:
         # filters used downstream. Explicit request.filters always win.
         effective_filters = _effective_filters(request, qu, route)
 
+        anchor_topics: tuple[str, ...] = ()
+        if route.intent == "same_field" and route.anchor_entity_id:
+            anchor_map = await self._deps.facts_port.hydrate(
+                snapshot, [route.anchor_entity_id],
+            )
+            anchor_fact = anchor_map.get(route.anchor_entity_id)
+            anchor_unavailable = (
+                anchor_fact is None
+                or anchor_fact.role_status == "excluded"
+                or (anchor_fact.role_status == "review"
+                    and request.review_policy != "include_downranked")
+                or not anchor_fact.topic_ids
+            )
+            if anchor_unavailable:
+                route_warnings.append(_warn(
+                    RecommendationErrorCode.MISSING_ANCHOR,
+                    "anchor unavailable or lacks approved topics; falling back to new_search",
+                ))
+                route = dataclasses.replace(
+                    route, intent="new_search", anchor_entity_id=None,
+                )
+            else:
+                anchor_topics = tuple(anchor_fact.topic_ids)
+                route = dataclasses.replace(
+                    route,
+                    exclude_entity_ids=tuple(dict.fromkeys(
+                        route.exclude_entity_ids + (route.anchor_entity_id,)
+                    )),
+                )
+
         embedding = await self._deps.embedding_port.embed(snapshot, request.query_text)
         if embedding.embedding_fingerprint != snapshot.embedding_fingerprint:
             return _error_response(
@@ -197,6 +228,7 @@ class RecommendationCore:
         ranked = rerank(
             rerank_window, fact_map, detail_map, semantic_scores,
             request.student_context, profile, route, query_terms=query_terms,
+            anchor_topics=anchor_topics,
         )
         top = ranked[: request.limit]
         results = []

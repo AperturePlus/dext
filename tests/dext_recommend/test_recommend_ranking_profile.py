@@ -77,3 +77,33 @@ async def test_fake_ranking_profile_port_read_profile_raises_on_error():
     port = FakeRankingProfilePort(error=ReadinessSourceError("ranking", "boom"))
     with pytest.raises(ReadinessSourceError):
         await port.read_profile(Path("x"))
+
+
+def test_ranking_profile_validates_same_field_boost_fields():
+    from dext_recommend.core.ranking_profile import RankingProfile
+
+    base = dict(
+        version="r1", weights={"semantic_score": 0.50, "topic_statement_score": 0.18,
+            "student_fit_score": 0.12, "eligibility_score": 0.08,
+            "provenance_score": 0.08, "completeness_score": 0.04},
+        rrf_k=60, oversample_steps=(200, 400), detail_rerank_window=50,
+        detail_fetch_concurrency=8, detail_rerank_window_max=100,
+        match_level_thresholds={"excellent": 0.75, "strong": 0.55, "possible": 0.35},
+        tie_break=("score", "semantic_score", "evidence_count", "entity_id"),
+        same_field_boost_per_topic=0.05, same_field_boost_max=0.15,
+    )
+    RankingProfile.from_dict(base)  # ok
+
+    bad = dict(base, same_field_boost_per_topic=0.3, same_field_boost_max=0.15)
+    try:
+        RankingProfile.from_dict(bad)
+        assert False, "per_topic > max should raise"
+    except ValueError:
+        pass
+
+    bad2 = dict(base, same_field_boost_max=1.5)
+    try:
+        RankingProfile.from_dict(bad2)
+        assert False, "max > 1 should raise"
+    except ValueError:
+        pass

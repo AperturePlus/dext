@@ -38,6 +38,8 @@ def ranking_profile_dict(
     detail_rerank_window_max: int = 100,
     match_level_thresholds: dict | None = None,
     tie_break: tuple[str, ...] = ("score", "semantic_score", "evidence_count", "entity_id"),
+    same_field_boost_per_topic: float = 0.05,
+    same_field_boost_max: float = 0.15,
 ) -> dict:
     return {
         "version": version,
@@ -58,6 +60,8 @@ def ranking_profile_dict(
             "excellent": 0.75, "strong": 0.55, "possible": 0.35,
         },
         "tie_break": tie_break,
+        "same_field_boost_per_topic": same_field_boost_per_topic,
+        "same_field_boost_max": same_field_boost_max,
     }
 
 

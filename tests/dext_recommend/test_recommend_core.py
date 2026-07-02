@@ -256,3 +256,227 @@ async def test_recommend_refine_direction_merge():
     # response is well-formed (success or clean no_candidates)
     assert isinstance(resp, RecommendResponse)
 
+
+def _fact(eid: str, *, topic_ids: tuple[str, ...] = ("topic_cv",),
+          role: str = "included") -> ProfessorFact:
+    from dext_recommend import ProfessorFact
+    return ProfessorFact(
+        entity_id=eid, display_name=eid.replace("_", " ").title(),
+        university="示例大学", org_units=("计算机学院",), title="Prof",
+        title_family="professor", master_eligibility="confirmed",
+        phd_eligibility="confirmed", role_status=role, profile_url=None,
+        profile_hash=None, research_summary="summary",
+        university_id="u_demo", city_name="北京", org_unit_ids=("ou_cs",),
+        topic_ids=topic_ids,
+    )
+
+
+def _detail(eid: str, *, topics: tuple[str, ...] = ("topic_cv",)) -> ProfessorDetail:
+    return ProfessorDetail(
+        build_id="b-1", profile_hash=None, entity_id=eid,
+        display_name=eid.replace("_", " ").title(), university="示例大学",
+        org_units=("计算机学院",), title="Prof", title_family="professor",
+        master_eligibility="confirmed", phd_eligibility="confirmed",
+        role_status="included", profile_url=None,
+        research_statements=("NLP research",), approved_topics=topics,
+        selected_publication_mentions=("paper A",), bio_snippets=(),
+        source_urls=("http://example/p",), provenance_refs=(),
+        quality_findings=(), risk_flags=(),
+    )
+
+
+async def test_recommend_same_field_anchor_excluded_and_topic_overlap_ranked():
+    """Anchor not in results; topic-sharing candidates rank above non-sharing
+    when semantic scores are tied."""
+    from dext_recommend import VectorHit
+    # anchor has two topics; e_nlp_a shares one, e_nlp_b shares both,
+    # e_cv_strong shares none. All semantic tied so topic overlap is the
+    # only rank differentiator (same_field_boost).
+    hits = [
+        VectorHit("e_nlp_anchor", 0.90, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_nlp", "topic_ml"],
+        }),
+        VectorHit("e_nlp_a", 0.90, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_nlp"],
+        }),
+        VectorHit("e_nlp_b", 0.90, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_nlp", "topic_ml"],
+        }),
+        VectorHit("e_cv_strong", 0.90, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_cv"],
+        }),
+    ]
+    facts = {
+        "e_nlp_anchor": _fact("e_nlp_anchor", topic_ids=("topic_nlp", "topic_ml")),
+        "e_nlp_a": _fact("e_nlp_a", topic_ids=("topic_nlp",)),
+        "e_nlp_b": _fact("e_nlp_b", topic_ids=("topic_nlp", "topic_ml")),
+        "e_cv_strong": _fact("e_cv_strong", topic_ids=("topic_cv",)),
+    }
+    details = {
+        "e_nlp_anchor": _detail("e_nlp_anchor", topics=("topic_nlp", "topic_ml")),
+        "e_nlp_a": _detail("e_nlp_a", topics=("topic_nlp",)),
+        "e_nlp_b": _detail("e_nlp_b", topics=("topic_nlp", "topic_ml")),
+        "e_cv_strong": _detail("e_cv_strong", topics=("topic_cv",)),
+    }
+    core = _core(hits=hits, facts=facts, details=details)
+    resp = await core.recommend(RecommendRequest(
+        query_text="NLP",
+        conversation_context=ConversationContext(
+            intent="same_field", anchor_entity_id="e_nlp_anchor",
+        ),
+    ))
+    ids = [r.entity_id for r in resp.results]
+    # anchor excluded from results
+    assert "e_nlp_anchor" not in ids
+    # both nlp sharers present and ranked above the non-sharing cv candidate
+    assert "e_nlp_a" in ids
+    assert "e_nlp_b" in ids
+    assert "e_cv_strong" in ids
+    pos_a = ids.index("e_nlp_a")
+    pos_b = ids.index("e_nlp_b")
+    pos_cv = ids.index("e_cv_strong")
+    assert pos_a < pos_cv
+    assert pos_b < pos_cv
+
+
+async def test_recommend_same_field_anchor_missing_falls_back():
+    """Anchor not in ACTIVE build (fact None) -> missing_anchor warning + new_search."""
+    from dext_recommend import VectorHit
+    hits = [
+        VectorHit("e_nlp_a", 0.90, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_nlp"],
+        }),
+    ]
+    # anchor fact deliberately absent from facts map
+    facts = {"e_nlp_a": _fact("e_nlp_a", topic_ids=("topic_nlp",))}
+    details = {"e_nlp_a": _detail("e_nlp_a", topics=("topic_nlp",))}
+    core = _core(hits=hits, facts=facts, details=details)
+    resp = await core.recommend(RecommendRequest(
+        query_text="NLP",
+        conversation_context=ConversationContext(
+            intent="same_field", anchor_entity_id="e_nlp_anchor",
+        ),
+    ))
+    codes = [w.code for w in resp.warnings]
+    assert "missing_anchor" in codes
+    # fell back to new_search: anchor NOT excluded, e_nlp_a returned
+    ids = [r.entity_id for r in resp.results]
+    assert "e_nlp_a" in ids
+
+
+async def test_recommend_same_field_anchor_excluded_falls_back():
+    """Anchor role_status=excluded -> missing_anchor warning + new_search."""
+    from dext_recommend import VectorHit
+    hits = [
+        VectorHit("e_nlp_a", 0.90, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_nlp"],
+        }),
+    ]
+    facts = {
+        "e_nlp_anchor": _fact("e_nlp_anchor", topic_ids=("topic_nlp",),
+                              role="excluded"),
+        "e_nlp_a": _fact("e_nlp_a", topic_ids=("topic_nlp",)),
+    }
+    details = {"e_nlp_a": _detail("e_nlp_a", topics=("topic_nlp",))}
+    core = _core(hits=hits, facts=facts, details=details)
+    resp = await core.recommend(RecommendRequest(
+        query_text="NLP",
+        conversation_context=ConversationContext(
+            intent="same_field", anchor_entity_id="e_nlp_anchor",
+        ),
+    ))
+    codes = [w.code for w in resp.warnings]
+    assert "missing_anchor" in codes
+
+
+async def test_recommend_same_field_anchor_without_topics_falls_back():
+    """Anchor exists but topic_ids=() -> missing_anchor warning + new_search."""
+    from dext_recommend import VectorHit
+    hits = [
+        VectorHit("e_nlp_a", 0.90, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_nlp"],
+        }),
+    ]
+    facts = {
+        "e_nlp_anchor": _fact("e_nlp_anchor", topic_ids=()),
+        "e_nlp_a": _fact("e_nlp_a", topic_ids=("topic_nlp",)),
+    }
+    details = {"e_nlp_a": _detail("e_nlp_a", topics=("topic_nlp",))}
+    core = _core(hits=hits, facts=facts, details=details)
+    resp = await core.recommend(RecommendRequest(
+        query_text="NLP",
+        conversation_context=ConversationContext(
+            intent="same_field", anchor_entity_id="e_nlp_anchor",
+        ),
+    ))
+    codes = [w.code for w in resp.warnings]
+    assert "missing_anchor" in codes
+
+
+async def test_recommend_same_field_boost_from_profile():
+    """profile same_field_boost_per_topic=0 -> no boost (order by tie-break only)."""
+    from dext_recommend import VectorHit
+    hits = [
+        VectorHit("e_nlp_a", 0.90, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_nlp"],
+        }),
+        VectorHit("e_cv_strong", 0.90, {
+            "university_id": "u_demo", "city_name": "北京",
+            "org_unit_ids": ["ou_cs"], "title_family": "professor",
+            "master_eligibility": "confirmed", "phd_eligibility": "confirmed",
+            "role_status": "included", "topic_ids": ["topic_cv"],
+        }),
+    ]
+    facts = {
+        "e_nlp_anchor": _fact("e_nlp_anchor", topic_ids=("topic_nlp",)),
+        "e_nlp_a": _fact("e_nlp_a", topic_ids=("topic_nlp",)),
+        "e_cv_strong": _fact("e_cv_strong", topic_ids=("topic_cv",)),
+    }
+    details = {
+        "e_nlp_a": _detail("e_nlp_a", topics=("topic_nlp",)),
+        "e_cv_strong": _detail("e_cv_strong", topics=("topic_cv",)),
+    }
+    # boost disabled: per_topic=0 -> boost=0 for all, order is pure tie-break
+    prof = RankingProfile.from_dict(ranking_profile_dict(
+        same_field_boost_per_topic=0.0, same_field_boost_max=0.0,
+    ))
+    core = _core(hits=hits, facts=facts, details=details, profile=prof)
+    resp = await core.recommend(RecommendRequest(
+        query_text="NLP",
+        conversation_context=ConversationContext(
+            intent="same_field", anchor_entity_id="e_nlp_anchor",
+        ),
+    ))
+    ids = [r.entity_id for r in resp.results]
+    # both candidates present (anchor excluded), boost=0 means tie-break by
+    # entity_id asc since semantic scores are tied
+    assert "e_nlp_anchor" not in ids
+    assert "e_cv_strong" in ids
+    assert "e_nlp_a" in ids
+    # tie-break: entity_id asc -> e_cv_strong before e_nlp_a
+    assert ids.index("e_cv_strong") < ids.index("e_nlp_a")
+

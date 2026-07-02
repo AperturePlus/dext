@@ -112,3 +112,65 @@ def test_rerank_detail_present_increases_score():
 def resolve_recommend_request(request):
     # local alias to avoid typo in test imports
     return resolve_recommend_route(request)
+
+
+def test_rerank_same_field_boosts_topic_overlap():
+    from dext_recommend.core.rerank import rerank
+    from dext_recommend.core.ranking_profile import RankingProfile
+    from dext_recommend.core.intent import RecommendRoute
+    from dext_recommend.ports.vector_search import VectorHit
+    from dext_recommend.ports.professor_facts import ProfessorFact
+    from tests.dext_recommend._recfixtures import ranking_profile_dict
+
+    profile = RankingProfile.from_dict(ranking_profile_dict())
+    route = RecommendRoute(intent="new_search", exclude_entity_ids=(),
+                          anchor_entity_id=None, refine_merge=False,
+                          unsupported=None, warnings=())
+    # two candidates, identical semantic; one shares anchor topic
+    hits = [
+        VectorHit(entity_id="e_share", score=0.9, payload={}),
+        VectorHit(entity_id="e_other", score=0.9, payload={}),
+    ]
+    fact_share = ProfessorFact(
+        entity_id="e_share", display_name="N", university="U", org_units=("CS",),
+        title="Prof", title_family="professor", master_eligibility="confirmed",
+        phd_eligibility="confirmed", role_status="active", profile_url=None,
+        profile_hash=None, research_summary=None, topic_ids=("topic_nlp",),
+    )
+    fact_other = ProfessorFact(
+        entity_id="e_other", display_name="N", university="U", org_units=("CS",),
+        title="Prof", title_family="professor", master_eligibility="confirmed",
+        phd_eligibility="confirmed", role_status="active", profile_url=None,
+        profile_hash=None, research_summary=None, topic_ids=("topic_cv",),
+    )
+    fact_map = {"e_share": fact_share, "e_other": fact_other}
+    semantic = {"e_share": 1.0, "e_other": 1.0}
+    ranked = rerank(
+        hits, fact_map, {}, semantic, None, profile, route,
+        anchor_topics=("topic_nlp",),
+    )
+    assert ranked[0].entity_id == "e_share"
+    assert ranked[0].score_components["same_field_overlap"] > 0.0
+    assert ranked[0].score_components["same_field_boost"] > 0.0
+    assert ranked[1].score_components["same_field_overlap"] == 0.0
+    assert ranked[1].score_components["same_field_boost"] == 0.0
+
+
+def test_rerank_same_field_components_always_present():
+    """Even with no anchor_topics, both same_field_* keys exist and are 0.0."""
+    from dext_recommend.core.rerank import rerank
+    from dext_recommend.core.ranking_profile import RankingProfile
+    from dext_recommend.core.intent import RecommendRoute
+    from dext_recommend.ports.vector_search import VectorHit
+    from tests.dext_recommend._recfixtures import ranking_profile_dict
+
+    profile = RankingProfile.from_dict(ranking_profile_dict())
+    route = RecommendRoute(intent="new_search", exclude_entity_ids=(),
+                          anchor_entity_id=None, refine_merge=False,
+                          unsupported=None, warnings=())
+    hits = [VectorHit(entity_id="e1", score=0.5, payload={})]
+    ranked = rerank(hits, {}, {}, {"e1": 1.0}, None, profile, route)
+    assert "same_field_overlap" in ranked[0].score_components
+    assert "same_field_boost" in ranked[0].score_components
+    assert ranked[0].score_components["same_field_overlap"] == 0.0
+    assert ranked[0].score_components["same_field_boost"] == 0.0

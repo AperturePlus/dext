@@ -107,13 +107,22 @@ def _match_level(score: float, thresholds: Mapping[str, float]) -> str:
     return "weak"
 
 
-def _anchor_boost(eid: str, route: RecommendRoute, detail: ProfessorDetail | None,
-                  base: float) -> float:
-    if route.intent != "same_field" or route.anchor_entity_id != eid:
-        return base
-    if detail is None:
-        return base + 0.05
-    return base + 0.10  # anchor gets a deterministic boost
+def _same_field_affinity(
+    fact: ProfessorFact | None, anchor_topics: tuple[str, ...],
+    base: float, profile: RankingProfile,
+) -> tuple[float, float, float]:
+    """Return (new_score, overlap_component, boost)."""
+    if not anchor_topics or fact is None:
+        return base, 0.0, 0.0
+    cand = set(fact.topic_ids or ())
+    anchor = set(anchor_topics)
+    overlap_count = len(cand & anchor)
+    overlap_component = overlap_count / max(1, len(anchor))
+    boost = min(
+        profile.same_field_boost_max,
+        profile.same_field_boost_per_topic * overlap_count,
+    )
+    return min(1.0, base + boost), overlap_component, boost
 
 
 def rerank(
@@ -126,6 +135,7 @@ def rerank(
     route: RecommendRoute,
     *,
     query_terms: tuple[str, ...] = (),
+    anchor_topics: tuple[str, ...] = (),
 ) -> list[RerankEntry]:
     w = profile.weights
     entries: list[RerankEntry] = []
@@ -147,7 +157,9 @@ def rerank(
             + w["provenance_score"] * prov
             + w["completeness_score"] * comp
         )
-        score = _anchor_boost(eid, route, detail, score)
+        score, sf_overlap, sf_boost = _same_field_affinity(
+            fact, anchor_topics, score, profile,
+        )
         score = min(1.0, max(0.0, score))
         components = {
             "semantic_score": sem,
@@ -156,6 +168,8 @@ def rerank(
             "eligibility_score": elig,
             "provenance_score": prov,
             "completeness_score": comp,
+            "same_field_overlap": sf_overlap,
+            "same_field_boost": sf_boost,
         }
         entries.append(RerankEntry(
             entity_id=eid, score=score, score_components=components,

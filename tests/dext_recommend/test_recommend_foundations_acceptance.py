@@ -109,6 +109,8 @@ def test_core_wired_with_fakes_does_not_touch_real_services():
         "detail_rerank_window_max": 100,
         "match_level_thresholds": {"excellent": 0.75, "strong": 0.55, "possible": 0.35},
         "tie_break": ("score", "semantic_score", "evidence_count", "entity_id"),
+        "same_field_boost_per_topic": 0.05,
+        "same_field_boost_max": 0.15,
     })
     deps = RecommendDeps(
         snapshot_port=FakeActiveSnapshotProvider(snap),
