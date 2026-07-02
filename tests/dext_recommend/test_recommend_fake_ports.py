@@ -45,9 +45,26 @@ async def test_fake_vector_search_port_returns_preset_hits():
     port = FakeVectorSearchPort(hits=hits)
     assert isinstance(port, VectorSearchPort)
     out = await port.hybrid_recall(
-        _snap(), [0.1], filters=None, oversample=200, profile_version="r1"
+        _snap(), [0.1], filters=None, oversample=200, profile_version="r1",
+        rrf_k=60,
     )
     assert out == hits
+
+
+async def test_fake_vector_hybrid_recall_records_rrf_k_and_sparse_vector():
+    from tests.dext_recommend._recfixtures import snapshot, vector_hits_case
+    from dext_recommend.models import RecommendationFilters
+    from dext_recommend.ports._fakes import FakeVectorSearchPort
+
+    port = FakeVectorSearchPort(hits=vector_hits_case("happy"))
+    snap = snapshot()
+    await port.hybrid_recall(
+        snap, [0.1, 0.2], RecommendationFilters(), 200, "r1",
+        rrf_k=42, sparse_vector={"indices": [0, 1], "values": [0.5, 0.5]},
+    )
+    call = port.hybrid_recall_calls[-1]
+    assert call["rrf_k"] == 42
+    assert call["sparse_vector"] == {"indices": [0, 1], "values": [0.5, 0.5]}
 
 
 async def test_fake_professor_fact_port_returns_preset_detail():

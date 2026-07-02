@@ -41,6 +41,9 @@ class VectorSearchPort(Protocol):
         filters: RecommendationFilters,
         oversample: int,
         profile_version: str,
+        *,
+        rrf_k: int,
+        sparse_vector: Mapping | None = None,
     ) -> list[VectorHit]: ...
 
     async def alias_readback(self, snapshot: ActiveBuildSnapshot) -> AliasReadback: ...

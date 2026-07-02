@@ -1,6 +1,7 @@
 """In-memory fake ports for R2+ unit tests; never used in composition roots."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 from typing import TYPE_CHECKING
@@ -152,12 +153,17 @@ class FakeVectorSearchPort:
         filters: RecommendationFilters | None,
         oversample: int,
         profile_version: str,
+        *,
+        rrf_k: int,
+        sparse_vector: Mapping | None = None,
     ) -> list[VectorHit]:
         self.hybrid_recall_calls.append({
             "oversample": oversample,
             "filters": filters,
             "profile_version": profile_version,
             "snapshot_build_id": snapshot.build_id,
+            "rrf_k": rrf_k,
+            "sparse_vector": dict(sparse_vector) if sparse_vector else None,
         })
         return list(self._hits)
 

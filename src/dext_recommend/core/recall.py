@@ -55,6 +55,7 @@ async def recall_loop(
         steps_used += 1
         hits = await vector_port.hybrid_recall(
             snapshot, query_vector, filters, step, profile.version,
+            rrf_k=profile.rrf_k,
         )
         last_hits = list(hits)
         if len(hits) >= limit:
