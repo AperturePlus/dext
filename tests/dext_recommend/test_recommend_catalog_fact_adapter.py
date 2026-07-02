@@ -336,3 +336,35 @@ def test_get_detail_profile_hash_missing_adds_risk(tmp_path):
     ))
     assert d.profile_hash is None
     assert "profile_hash_missing" in d.risk_flags
+
+
+async def test_concurrent_hydrate_across_builds_does_not_mix(tmp_path):
+    # e1 under b1, e2 under b2 (different entity ids to isolate)
+    builds = [
+        ("b1", "ACTIVE", "cur-v1", "tax-v1", 6, 6, "{}"),
+        ("b2", "ACTIVE", "cur-v1", "tax-v1", 6, 6, "{}"),
+    ]
+    profs = [
+        ("e1", "b1", "A", "Prof.", "professor", "included", "[]",
+         "confirmed", "unknown", None, None, None, None, None, None, 1, 0.5),
+        ("e2", "b2", "B", "Prof.", "professor", "included", "[]",
+         "confirmed", "unknown", None, None, None, None, None, None, 1, 0.5),
+    ]
+    profiles = [
+        ("b1", "e1", "h1", "tv", "ti", "np", 10, _profile("e1"), "2026-01-01T00:00:00+00:00"),
+        ("b2", "e2", "h2", "tv", "ti", "np", 10, _profile("e2"), "2026-01-01T00:00:00+00:00"),
+    ]
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=builds,
+        canonical_professors=profs, professor_profiles=profiles,
+    )
+    adapter = CatalogProfessorFactAdapter(
+        CatalogSqliteFactReader(path), settings=RecommendSettings(),
+    )
+    s1, s2 = _snapshot("b1"), _snapshot("b2")
+    out1, out2 = await asyncio.gather(
+        adapter.hydrate(s1, ["e1", "e2"]),
+        adapter.hydrate(s2, ["e1", "e2"]),
+    )
+    assert set(out1) == {"e1"}  # b1 only has e1
+    assert set(out2) == {"e2"}  # b2 only has e2
