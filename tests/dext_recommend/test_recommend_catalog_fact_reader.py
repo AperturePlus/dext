@@ -226,3 +226,101 @@ def test_read_fact_rows_invalid_payload_raises_safe_error(tmp_path):
     assert exc.value.source == "catalog"
     # raw payload must NOT leak into the reason
     assert "not-json{" not in exc.value.reason
+
+
+def test_read_detail_rows_returns_full_evidence(tmp_path):
+    profs = [
+        ("e1", "b1", "A", "Prof.", "professor", "included", "[]",
+         "confirmed", "unknown", "areas", "bio1", "e@x", "123", "https://x/p", "https://x/e", 1, 0.9),
+    ]
+    profiles = [
+        ("b1", "e1", "h1", "tv", "ti", "np", 10,
+         _profile_payload("e1", university_id="u1", org_unit_ids=("ou_cs",), city="Beijing"),
+         "2026-01-01T00:00:00+00:00"),
+    ]
+    observations = [
+        ("obs1", "u1", "snap1", "https://x/p", "single_profile",
+         dumps({"affiliations": [{"org_unit_name": "Dept CS"}]}),
+         "rh1", "direct", "b1", "b1", 1),
+    ]
+    entity_observations = [("e1", "obs1", "strong", "b1")]
+    statements = [
+        ("s1", "b1", "e1", "obs1", "raw works on NLP", "works on NLP", "en", "sh1"),
+    ]
+    mentions = [
+        ("m1", "b1", "e1", "obs1", "raw paper", "Paper A", 2024, 0.9, 0),
+    ]
+    topics = [("tax-v1", "t1", "NLP", "nlp", "method", "active", "llm")]
+    topic_links = [
+        ("b1", "s1", "tax-v1", "t1", "PRIMARY_TOPIC", "span", "llm", 0.95, "approved",
+         "catalog:research-statement:b1:s1"),
+    ]
+    findings = [
+        ("f1", "b1", "warning", "incomplete_profile", "e1", None,
+         dumps({"note": "missing phone"}), 0),
+    ]
+    source_docs = [
+        ("doc1", "u1", "https://x/p", "ch1", "2026-01-01T00:00:00+00:00", "b1", "b1"),
+    ]
+    source_tasks = [
+        ("b1", "u1", "Tsinghua", "tsinghua", "/src", 0, "COMPLETED", "2026-01-01T00:00:00+00:00"),
+    ]
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=[_active_build()],
+        canonical_professors=profs, professor_profiles=profiles,
+        professor_observations=observations, entity_observations=entity_observations,
+        research_statements=statements, publication_mentions=mentions,
+        topics=topics, statement_topic_links=topic_links,
+        quality_findings=findings, source_documents=source_docs,
+        build_source_tasks=source_tasks, entities=[("e1", "professor", "active", None, "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00")],
+    )
+    reader = CatalogSqliteFactReader(path, timeout=5.0)
+    rows = asyncio.run(reader.read_detail_rows("b1", "e1"))
+    assert rows is not None
+    assert rows.canonical["display_name"] == "A"
+    assert rows.profile_payload["university_id"] == "u1"
+    assert rows.university_name == "Tsinghua"
+    assert len(rows.statements) == 1
+    assert rows.statements[0]["normalized_text"] == "works on NLP"
+    assert len(rows.mentions) == 1
+    assert len(rows.topic_links) == 1
+    assert rows.topic_links[0]["canonical_name"] == "NLP"
+    assert rows.topic_links[0]["review_status"] == "approved"
+    assert len(rows.findings) == 1
+    assert len(rows.source_urls) == 1
+    assert "https://x/p" in rows.source_urls[0]["source_url"]
+
+
+def test_read_detail_rows_excluded_returns_none(tmp_path):
+    profs = [
+        ("e1", "b1", "A", "Prof.", "professor", "excluded", "[]",
+         "confirmed", "unknown", None, None, None, None, None, None, 1, 0.5),
+    ]
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=[_active_build()],
+        canonical_professors=profs,
+    )
+    reader = CatalogSqliteFactReader(path, timeout=5.0)
+    assert asyncio.run(reader.read_detail_rows("b1", "e1")) is None
+
+
+def test_read_detail_rows_missing_returns_none(tmp_path):
+    path = build_catalog_db(tmp_path, schema_version=6, graph_builds=[_active_build()])
+    reader = CatalogSqliteFactReader(path, timeout=5.0)
+    assert asyncio.run(reader.read_detail_rows("b1", "nope")) is None
+
+
+def test_read_detail_rows_review_entity_returned_for_gating(tmp_path):
+    # review entities ARE returned by the reader; the adapter gates on viewer perms
+    profs = [
+        ("e1", "b1", "A", "Prof.", "professor", "review", "[]",
+         "confirmed", "unknown", None, None, None, None, None, None, 1, 0.5),
+    ]
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=[_active_build()],
+        canonical_professors=profs,
+    )
+    reader = CatalogSqliteFactReader(path, timeout=5.0)
+    rows = asyncio.run(reader.read_detail_rows("b1", "e1"))
+    assert rows is not None
+    assert rows.canonical["role_status"] == "review"
