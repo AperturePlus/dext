@@ -381,3 +381,20 @@ def test_new_error_codes_registered():
 def test_recommend_response_has_optional_generation_profile_version():
     from dext_recommend import RecommendResponse
     assert RecommendResponse.__dataclass_fields__["generation_profile_version"].default is None
+
+
+def test_professor_detail_rejects_contacts_in_fact_bundle():
+    import pytest
+    from dext_grounded import FactBundle, FactItem
+    from dext_grounded.content import ContentClass
+
+    bundle = FactBundle(
+        build_id="b1", subject_id="e1",
+        facts=(FactItem(
+            field="email", value="private@example.test",
+            content_class=ContentClass.UNCERTAIN,
+        ),),
+        source_refs=(),
+    )
+    with pytest.raises(ValueError, match="contacts"):
+        _detail_for_bundle_invariant(bundle)
