@@ -202,6 +202,7 @@ class FakeProfessorFactPort:
         self.get_detail_calls.append({
             "entity_id": entity_id, "include_contacts": include_contacts,
             "snapshot_build_id": snapshot.build_id,
+            "viewer_permissions": viewer_permissions,
         })
         return self._details[entity_id]
 

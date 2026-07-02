@@ -95,6 +95,16 @@ class ProfessorDetail:
         ):
             object.__setattr__(self, name, tuple(getattr(self, name) or ()))
         object.__setattr__(self, "contacts", freeze_mapping(self.contacts))
+        if self.fact_bundle.build_id != self.build_id:
+            raise ValueError("ProfessorDetail.fact_bundle build_id must match detail build_id")
+        if self.fact_bundle.subject_id != self.entity_id:
+            raise ValueError("ProfessorDetail.fact_bundle subject_id must match entity_id")
+        if tuple(self.fact_bundle.source_refs) != self.provenance_refs:
+            raise ValueError(
+                "ProfessorDetail.provenance_refs must equal fact_bundle.source_refs"
+            )
+        if any(item.field in {"email", "phone", "contacts"} for item in self.fact_bundle.facts):
+            raise ValueError("ProfessorDetail.fact_bundle must not contain contacts")
 
 
 @runtime_checkable
