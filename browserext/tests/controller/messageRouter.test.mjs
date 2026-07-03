@@ -4,12 +4,12 @@ import { importTsModule } from '../harness.mjs';
 
 // Fake controller: records calls + holds a state the router reads via getState.
 function fakeController(state) {
-  const calls = { tick: 0, start: [], bind: [], retryCapture: [], reopenCurrentJob: 0, deliverPageReady: [], deliverCaptureResult: [], deliverActionPrepared: [], deliverActionResult: [], unbind: 0, setAutoMode: [], setPaused: [], manualComplete: 0, manualSkip: [], manualFail: [], overrideUrl: [], resolveDecision: [], broadcastPanelState: [] };
+  const calls = { tick: 0, tickArgs: [], start: [], bind: [], retryCapture: [], reopenCurrentJob: 0, deliverPageReady: [], deliverCaptureResult: [], deliverActionPrepared: [], deliverActionResult: [], unbind: 0, setAutoMode: [], setPaused: [], manualComplete: 0, manualSkip: [], manualFail: [], overrideUrl: [], resolveDecision: [], broadcastPanelState: [] };
   return {
     calls,
     getNavScope: () => ({ boundTabId: state.boundTabId }),
     async getState() { return JSON.parse(JSON.stringify(state)); },
-    async tick() { calls.tick += 1; },
+    async tick(...args) { calls.tick += 1; calls.tickArgs.push(args); },
     async start(tabId) { calls.start.push(tabId); return { started: true }; },
     async retryCapture(documentId) { calls.retryCapture.push(documentId); },
     async reopenCurrentJob() { calls.reopenCurrentJob += 1; },
@@ -59,6 +59,42 @@ test('REGISTER from unbound tab → receipt with bound:false, isBoundTab:false (
     assert.equal(reply.state.bound, false);
     assert.equal(reply.state.isBoundTab, false);
     assert.equal(ctrl.calls.tick, 0, 'REGISTER does not tick');
+  } finally { await cleanup(); }
+});
+
+test('REGISTER from bound tab forces one backend probe before projecting state', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/messageRouter.ts', 'messageRouter.ts');
+  try {
+    const base = { boundTabId: 42, pendingDecision: null, phase: 'idle', currentJob: null, connected: false, autoMode: true, paused: false, navigation: null, lastError: null, navigationAttempt: 0 };
+    const ctrl = fakeController(base);
+    let connected = false;
+    ctrl.tick = async (...args) => {
+      ctrl.calls.tick += 1;
+      ctrl.calls.tickArgs.push(args);
+      connected = true;
+    };
+    ctrl.getState = async () => ({ ...base, connected });
+    const chr = fakeChrome();
+    const router = mod.createMessageRouter({ controller: ctrl, chrome: chr, api: {}, extensionId: EXT_ID, now: () => 1234 });
+    router.start();
+    const reply = await chr.fire({ op: 'REGISTER', url: 'https://xjtu.edu.cn/p' }, sender(42));
+    assert.equal(ctrl.calls.tick, 1);
+    assert.deepEqual(ctrl.calls.tickArgs, [[1234, { forceBackendProbe: true }]]);
+    assert.equal(reply.state.connected, true);
+  } finally { await cleanup(); }
+});
+
+test('REGISTER from non-bound tab remains read-only while another tab is bound', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/messageRouter.ts', 'messageRouter.ts');
+  try {
+    const ctrl = fakeController({ boundTabId: 42, pendingDecision: null, phase: 'idle', currentJob: null, connected: false, autoMode: true, paused: false, navigation: null, lastError: null, navigationAttempt: 0 });
+    const chr = fakeChrome();
+    const router = mod.createMessageRouter({ controller: ctrl, chrome: chr, api: {}, extensionId: EXT_ID });
+    router.start();
+    const reply = await chr.fire({ op: 'REGISTER', url: 'https://xjtu.edu.cn/p' }, sender(99));
+    assert.equal(ctrl.calls.tick, 0);
+    assert.equal(reply.state.bound, true);
+    assert.equal(reply.state.isBoundTab, false);
   } finally { await cleanup(); }
 });
 

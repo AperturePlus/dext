@@ -101,6 +101,13 @@ export function createMessageRouter(deps: MessageRouterDeps): MessageRouter {
 
     switch (message.op) {
       case 'REGISTER': {
+        // REGISTER is the first foreground UI render for a page. If this is
+        // already the bound tab, force one /status probe so a stale persisted
+        // backend backoff cannot keep showing "offline" after the backend is up.
+        if (tabId === state.boundTabId) {
+          await deps.controller.tick(now(), { forceBackendProbe: true });
+          state = await deps.controller.getState();
+        }
         const ps = await projectState();
         return { received: true, state: ps };
       }

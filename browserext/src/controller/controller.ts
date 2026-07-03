@@ -52,7 +52,7 @@ export interface CrawlControllerDeps {
 }
 
 export interface CrawlController extends NavController {
-  tick(now?: number): Promise<void>;
+  tick(now?: number, options?: ControllerTickOptions): Promise<void>;
   start(tabId: number, now?: number): Promise<StartResult>;
   bind(tabId: number, now?: number): Promise<void>;
   setAutoMode(mode: boolean, now?: number): Promise<void>;
@@ -77,6 +77,10 @@ export type StartResult =
   | { started: true }
   | { started: false; reason: 'bound_elsewhere'; boundTabId: number }
   | { started: false; reason: 'disabled' };
+
+export interface ControllerTickOptions {
+  forceBackendProbe?: boolean;
+}
 
 export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlController {
   const storage: ControllerStorage = deps.storage ?? createControllerStorage(deps.area ?? inMemoryArea());
@@ -683,7 +687,7 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
       } finally { release(); }
     },
 
-    async tick(now: number = Date.now()): Promise<void> {
+    async tick(now: number = Date.now(), options: ControllerTickOptions = {}): Promise<void> {
       const release = await mutex.acquire();
       try {
         const s = await ensureLoaded();
@@ -704,7 +708,8 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
 
         // 2. /status reconcile (slice 2), gated by nextBackendRetryAt.
         const backoffExpired = s.nextBackendRetryAt === null || now >= s.nextBackendRetryAt;
-        if (backoffExpired && deps.api) {
+        const shouldProbeBackend = options.forceBackendProbe || backoffExpired;
+        if (shouldProbeBackend && deps.api) {
           const status = await deps.api.getStatus();
           if (status === null) {
             s.connected = false;
@@ -890,9 +895,10 @@ export function createCrawlController(deps: CrawlControllerDeps = {}): CrawlCont
         release();
       }
 
-      // Reconcile immediately after the desired state is durable. tick() owns
-      // backend backoff, claim, and persist-before-navigate.
-      await controller.tick(now);
+      // Reconcile immediately after the desired state is durable. A foreground
+      // start is an explicit user action, so it gets one immediate /status probe
+      // even if an older persisted retry gate has not expired yet.
+      await controller.tick(now, { forceBackendProbe: true });
       return result;
     },
 

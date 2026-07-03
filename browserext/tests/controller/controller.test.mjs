@@ -210,7 +210,10 @@ test('tick: after backoff expires, /status is called again and success resets ba
     ];
     const api = {
       calls: { getStatus: 0 },
-      async getStatus() { return responses[api.calls.getStatus++] ?? responses[responses.length - 1]; },
+      async getStatus() {
+        const index = api.calls.getStatus++;
+        return index < responses.length ? responses[index] : responses[responses.length - 1];
+      },
       async failJob() {}, async skipJob() {}, async sendHeartbeat() {},
       async getDecision() { return null; },
     };
@@ -221,6 +224,44 @@ test('tick: after backoff expires, /status is called again and success resets ba
     await c.tick(7000);     // 7000 >= 7000 → /status up → reset
     const s = await c.getState();
     assert.equal(api.calls.getStatus, 2);
+    assert.equal(s.connected, true);
+    assert.equal(s.backendFailureCount, 0);
+    assert.equal(s.nextBackendRetryAt, null);
+  } finally { await cleanup(); }
+});
+
+test('start forces /status probe even when persisted backend backoff has not expired', async () => {
+  const { mod, cleanup } = await importTsModule('../src/controller/controller.ts', 'controller.ts');
+  try {
+    const area = fakeArea();
+    const responses = [
+      null,
+      { current_job: null, frontend_health: { alive: true, last_seen_seconds_ago: 0 } },
+    ];
+    const calls = { getStatus: 0, claimNextJob: 0 };
+    const api = {
+      async getStatus() {
+        const index = calls.getStatus++;
+        return index < responses.length ? responses[index] : responses[responses.length - 1];
+      },
+      async claimNextJob() { calls.claimNextJob += 1; return null; },
+      async failJob() {}, async skipJob() {}, async sendHeartbeat() {},
+      async getDecision() { return null; },
+    };
+    const chr = fakeChrome({ id: 42, url: 'https://x.edu.cn/' });
+    const c = mod.createCrawlController({ storage: mod.createControllerStorage(area), api, chrome: chr });
+    await c.bind(42, 1000);
+    await c.tick(5000);      // down → nextBackendRetryAt=7000
+
+    let s = await c.getState();
+    assert.equal(calls.getStatus, 1);
+    assert.equal(s.connected, false);
+    assert.equal(s.nextBackendRetryAt, 7000);
+
+    const result = await c.start(42, 6000); // 6000 < 7000, but foreground start forces probe
+    s = await c.getState();
+    assert.deepEqual(result, { started: true });
+    assert.equal(calls.getStatus, 2);
     assert.equal(s.connected, true);
     assert.equal(s.backendFailureCount, 0);
     assert.equal(s.nextBackendRetryAt, null);
