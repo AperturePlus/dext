@@ -185,6 +185,28 @@ async def test_legacy_build_is_idempotent_and_reaches_curating(tmp_path, monkeyp
     assert (await resume_build(second["build"]["id"], settings))["build"]["status"] == "WRITING_VECTOR"
 
 
+async def test_create_build_emits_snapshot_and_ingest_progress(tmp_path, monkeypatch):
+    settings = _settings(tmp_path, batch=1)
+    _source_db(settings.source_data_dir / "test.db", count=2)
+    _patch_runtime(monkeypatch)
+    monkeypatch.setenv("DEXT_TEST_STOP_AFTER_INGEST", "1")
+    events = []
+
+    result = await create_build(["测试大学"], settings, progress=events.append)
+
+    assert result["build"]["status"] == "CURATING"
+    assert any(event.stage == "snapshot" and event.action == "started" for event in events)
+    assert any(event.stage == "snapshot" and event.action == "completed" for event in events)
+    ingest_progress = [
+        event
+        for event in events
+        if event.stage == "ingest" and event.action == "progress"
+    ]
+    assert ingest_progress
+    assert ingest_progress[-1].current == 2
+    assert ingest_progress[-1].total == 2
+
+
 async def test_resume_rejects_incompatible_frozen_settings(tmp_path, monkeypatch):
     settings = _settings(tmp_path)
     _source_db(settings.source_data_dir / "test.db", count=1)
@@ -193,6 +215,20 @@ async def test_resume_rejects_incompatible_frozen_settings(tmp_path, monkeypatch
     changed = settings.model_copy(update={"build_read_batch": settings.build_read_batch + 1})
     with pytest.raises(CatalogError, match="build_read_batch"):
         await resume_build(result["build"]["id"], changed)
+
+
+async def test_resume_allows_embedding_max_concurrency_change(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    _source_db(settings.source_data_dir / "test.db", count=1)
+    _patch_runtime(monkeypatch)
+    result = await create_build(["测试大学"], settings)
+    changed = settings.model_copy(
+        update={"embedding_max_concurrency": settings.embedding_max_concurrency + 1}
+    )
+
+    resumed = await resume_build(result["build"]["id"], changed)
+
+    assert resumed["build"]["status"] == "WRITING_VECTOR"
 
 
 async def test_catalog_never_persists_embedding_api_key(tmp_path, monkeypatch):

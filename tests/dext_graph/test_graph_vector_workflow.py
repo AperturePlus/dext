@@ -93,11 +93,13 @@ async def test_vector_stage_uploads_only_eligible_professors_and_preserves_revie
         )
     embedding = FakeEmbeddingClient()
     sink = FakeProfessorSink()
+    events = []
     async with CatalogWriter(settings.catalog_path, max_queue=2) as writer:
         output = await run_vector_stage(
             writer,
             build_id,
             settings,
+            progress=events.append,
             embedding_client=embedding,
             qdrant_sink=sink,
             tokenizer=CharacterTokenizer(),
@@ -151,6 +153,14 @@ async def test_vector_stage_uploads_only_eligible_professors_and_preserves_revie
         assert set(point.payload["org_unit_ids"]) == affiliation_org_ids
     assert output["vector"]["status"] == "COMPLETED"
     assert output["vector"]["collection_name"] == f"dext_professors__{build_id}"
+    assert any(event.stage == "vector" and event.action == "progress" for event in events)
+    assert any(
+        event.stage == "vector"
+        and event.action == "completed"
+        and event.current == 2
+        and event.total == 2
+        for event in events
+    )
 
 
 @pytest.mark.asyncio
