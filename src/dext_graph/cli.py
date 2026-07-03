@@ -47,14 +47,22 @@ def _guard_catalog(action: Callable[[], Any], *, asynchronous: bool = False) -> 
 
 class _CatalogProgressReporter:
     _IMMEDIATE_ACTIONS = {"started", "completed", "failed"}
+    _HIDDEN_PROGRESS_COUNTERS = {"statement_id"}
+    _BAR_WIDTH = 30
 
     def __init__(self, *, interval_seconds: float = 1.0) -> None:
         self.interval_seconds = interval_seconds
         self._last_emit_by_key: dict[tuple[str, str, str], float] = {}
+        self._active_key: tuple[str, str, str] | None = None
+        self._active_width = 0
 
     def __call__(self, event: ProgressEvent) -> None:
         if not self._should_emit(event):
             return
+        if self._is_bar_event(event):
+            self._emit_bar(event)
+            return
+        self._finish_active_line()
         click.echo(self._format(event), err=True)
 
     def _should_emit(self, event: ProgressEvent) -> bool:
@@ -69,6 +77,82 @@ class _CatalogProgressReporter:
             return False
         self._last_emit_by_key[key] = now
         return True
+
+    def _emit_bar(self, event: ProgressEvent) -> None:
+        line = self._format_bar(event)
+        if not self._is_interactive():
+            click.echo(line, err=True)
+            return
+
+        key = self._event_key(event)
+        if self._active_key is not None and self._active_key != key:
+            click.echo(err=True)
+            self._active_width = 0
+        padding = " " * max(self._active_width - len(line), 0)
+        click.echo(f"\r{line}{padding}", nl=False, err=True)
+        self._active_key = key
+        self._active_width = len(line)
+        if event.total is not None and event.current == event.total:
+            click.echo(err=True)
+            self._active_key = None
+            self._active_width = 0
+
+    def _finish_active_line(self) -> None:
+        if self._active_key is not None and self._is_interactive():
+            click.echo(err=True)
+        self._active_key = None
+        self._active_width = 0
+
+    @staticmethod
+    def _event_key(event: ProgressEvent) -> tuple[str, str, str]:
+        return (event.stage, event.action, event.message)
+
+    @staticmethod
+    def _is_interactive() -> bool:
+        return click.get_text_stream("stderr").isatty()
+
+    @staticmethod
+    def _is_bar_event(event: ProgressEvent) -> bool:
+        return (
+            event.action == "progress"
+            and event.current is not None
+            and event.total not in (None, 0)
+        )
+
+    @classmethod
+    def _format_bar(cls, event: ProgressEvent) -> str:
+        current = max(int(event.current or 0), 0)
+        total = max(int(event.total or 0), 1)
+        percent = min((current / total) * 100, 100.0)
+        filled = min(int(((percent / 100) * cls._BAR_WIDTH) + 0.5), cls._BAR_WIDTH)
+        if current > 0 and filled == 0:
+            filled = 1
+        bar = "#" * filled + "-" * (cls._BAR_WIDTH - filled)
+        parts = [
+            f"[{event.stage}]",
+            event.message or event.action,
+            f"[{bar}]",
+            f"{percent:.1f}%",
+            f"{current}/{total}",
+        ]
+        counters = cls._format_progress_counters(event)
+        if counters:
+            parts.append(counters)
+        return " ".join(parts)
+
+    @classmethod
+    def _format_progress_counters(cls, event: ProgressEvent) -> str:
+        counters: list[str] = []
+        for key, value in sorted(event.counters.items()):
+            if key in cls._HIDDEN_PROGRESS_COUNTERS or value is None:
+                continue
+            text = str(value)
+            if len(text) > 32:
+                continue
+            counters.append(f"{key}={text}")
+            if len(counters) >= 4:
+                break
+        return " ".join(counters)
 
     @staticmethod
     def _format(event: ProgressEvent) -> str:

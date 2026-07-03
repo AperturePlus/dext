@@ -100,6 +100,11 @@ def test_cli_exposes_catalog_build_commands():
 
 
 def test_graph_build_progress_uses_stderr_and_keeps_stdout_json(monkeypatch):
+    long_statement_id = (
+        "0ee55d931865a5562fe90d4e6085899d"
+        "288c6a1baa0ae87ea888250143bf8d70"
+    )
+
     async def fake_create_build(universities, settings, *, progress=None):
         assert universities == []
         assert isinstance(settings, GraphSettings)
@@ -112,7 +117,10 @@ def test_graph_build_progress_uses_stderr_and_keeps_stdout_json(monkeypatch):
                     message="测试大学",
                     current=1,
                     total=2,
-                    counters={"observations": 1},
+                    counters={
+                        "observations": 1,
+                        "statement_id": long_statement_id,
+                    },
                 )
             )
         return {"build": {"id": "build-1", "status": "CURATING"}}
@@ -124,7 +132,11 @@ def test_graph_build_progress_uses_stderr_and_keeps_stdout_json(monkeypatch):
 
     assert result.exit_code == 0
     assert json.loads(result.stdout) == {"build": {"id": "build-1", "status": "CURATING"}}
-    assert "[ingest] progress build=build-1 测试大学 1/2" in result.stderr
+    assert "[ingest] 测试大学 [" in result.stderr
+    assert "###############---------------" in result.stderr
+    assert "50.0% 1/2" in result.stderr
+    assert "observations=1" in result.stderr
+    assert "statement_id" not in result.stderr
 
 
 def test_graph_build_no_progress_suppresses_stderr(monkeypatch):
