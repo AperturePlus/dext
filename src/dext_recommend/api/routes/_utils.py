@@ -8,8 +8,10 @@ from aiohttp import web
 
 from dext_recommend.api.keys import (
     APPLICATION_SERVICES_KEY,
+    REQUEST_ID_KEY,
     REPOSITORY_KEY,
     RUNTIME_KEY,
+    SETTINGS_KEY,
 )
 from dext_recommend.api.middleware import ApiError
 
@@ -63,14 +65,29 @@ async def write_sse(request: web.Request, events: list[tuple[str, dict[str, Any]
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
+            "X-Request-ID": request.get(REQUEST_ID_KEY, ""),
         },
     )
+    _apply_sse_cors(request, response)
     await response.prepare(request)
     for event, data in events:
         payload = json.dumps(data, ensure_ascii=False, sort_keys=True)
         await response.write(f"event: {event}\ndata: {payload}\n\n".encode("utf-8"))
     await response.write_eof()
     return response
+
+
+def _apply_sse_cors(request: web.Request, response: web.StreamResponse) -> None:
+    origin = request.headers.get("Origin")
+    if not origin:
+        return
+    allowed = tuple(getattr(request.app[SETTINGS_KEY], "cors_allowed_origins", ()) or ())
+    if origin not in allowed:
+        return
+    response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Vary"] = "Origin"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Expose-Headers"] = "X-Request-ID"
 
 
 __all__ = [

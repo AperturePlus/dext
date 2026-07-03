@@ -19,7 +19,7 @@ def routes(prefix: str) -> list[web.AbstractRouteDef]:
 
 async def handle_list_history(request: web.Request) -> web.Response:
     principal = await require_principal(request)
-    return ok({"items": await repository(request).list_history(str(principal.owner_id))})
+    return ok(await repository(request).list_history(str(principal.owner_id)))
 
 
 async def handle_put_history(request: web.Request) -> web.Response:
@@ -33,10 +33,10 @@ async def handle_put_history(request: web.Request) -> web.Response:
 async def handle_delete_history(request: web.Request) -> web.Response:
     principal = await require_principal(request)
     await repository(request).delete_history(str(principal.owner_id))
-    return ok(None)
+    return ok({"cleared": True})
 
 
 async def handle_delete_history_session(request: web.Request) -> web.Response:
     principal = await require_principal(request)
     await repository(request).delete_history(str(principal.owner_id), request.match_info["session_id"])
-    return ok(None)
+    return ok({"removed": True})

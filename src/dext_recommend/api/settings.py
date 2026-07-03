@@ -29,13 +29,14 @@ class AppSettings(BaseSettings):
     cookie_secure: bool = False
     cookie_domain: str | None = None
     cookie_samesite: str = "Lax"
+    cors_allowed_origins: tuple[str, ...] = ()
     csrf_allowed_origins: tuple[str, ...] = ()
     diagnostics_enabled: bool = False
     sse_heartbeat_seconds: float = Field(default=15.0, gt=0.0)
     idempotency_ttl_seconds: int = Field(default=60 * 60 * 24, ge=60)
     schema_bootstrap: bool = False
 
-    @field_validator("csrf_allowed_origins", mode="before")
+    @field_validator("cors_allowed_origins", "csrf_allowed_origins", mode="before")
     @classmethod
     def _split_origins(cls, value):
         if value is None or value == "":

@@ -6,7 +6,9 @@ from aiohttp import web
 from dext_recommend.api.routes import (
     conversations,
     favorites,
+    feedback,
     history,
+    home,
     identity,
     professors,
     profile,
@@ -20,25 +22,17 @@ def setup_routes(app: web.Application) -> None:
     routes: list[web.AbstractRouteDef] = []
     for module in (
         identity,
+        home,
         recommendations,
         professors,
         conversations,
         profile,
         favorites,
         history,
+        feedback,
     ):
         routes.extend(module.routes(API_PREFIX))
     app.add_routes(routes)
-
-    async def deferred(_: web.Request) -> web.Response:
-        from dext_recommend.api.middleware import ApiError
-        raise ApiError(404, "deferred_route", "route is deferred until a core service exists")
-
-    app.add_routes([
-        web.post(f"{API_PREFIX}/chat/route", deferred),
-        web.post(f"{API_PREFIX}/chat/quick-actions", deferred),
-        web.post(f"{API_PREFIX}/profile/achievements/extract", deferred),
-    ])
 
 
 __all__ = ["API_PREFIX", "setup_routes"]

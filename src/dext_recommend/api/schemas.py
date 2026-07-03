@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr
 
 
 class StrictModel(BaseModel):
@@ -12,20 +12,27 @@ class StrictModel(BaseModel):
 
 
 class AcademicScore(StrictModel):
-    gpa_bucket: StrictStr | None = None
-    rank_bucket: StrictStr | None = None
+    gpa: StrictFloat | StrictInt | None = None
+    scale: StrictFloat | StrictInt | None = None
+    rank_mode: Literal["none", "percent", "ordinal"] | None = None
+    percent: StrictInt | None = None
+    rank_position: StrictInt | None = None
+    rank_total: StrictInt | None = None
 
 
 class Competition(StrictModel):
-    name: StrictStr | None = None
+    name: StrictStr
     level: StrictStr | None = None
     award: StrictStr | None = None
+    year: StrictStr | None = None
 
 
 class ResearchItem(StrictModel):
-    title: StrictStr | None = None
-    summary: StrictStr | None = None
+    type: Literal["paper", "project", "patent", "other"]
+    title: StrictStr
     role: StrictStr | None = None
+    venue_or_status: StrictStr | None = None
+    year: StrictStr | None = None
 
 
 class UserProfile(StrictModel):
@@ -68,7 +75,7 @@ class AttemptCreateRequest(StrictModel):
 
 class ForkCreateRequest(StrictModel):
     source_turn_id: UUID
-    professor_id: StrictStr | None = None
+    professor_id: StrictStr
 
 
 class FeedbackRequest(StrictModel):
@@ -79,6 +86,18 @@ class ChatMessageRequest(StrictModel):
     session_id: UUID
     message: StrictStr = Field(min_length=1, max_length=4096)
     professor_id: StrictStr | None = None
+
+
+class RecommendationRecap(StrictModel):
+    professor_id: StrictStr | None = None
+    name: StrictStr | None = None
+    university: StrictStr | None = None
+    research_fields: list[StrictStr] = Field(default_factory=list, max_length=50)
+
+
+class QuickActionsRequest(StrictModel):
+    follow_up: StrictStr = Field(max_length=4096)
+    last_recommendations: list[RecommendationRecap] = Field(default_factory=list, max_length=5)
 
 
 class ProfessorCompareRequest(StrictModel):
@@ -95,13 +114,39 @@ class OutreachEmailRequest(StrictModel):
 
 
 class FavoriteRequest(StrictModel):
+    professor_id: StrictStr
+    name: StrictStr
+    university: StrictStr
+    college: StrictStr
+    title: StrictStr
+    research_fields: list[StrictStr] = Field(default_factory=list)
+    homepage_url: StrictStr | None = None
+    favorited_at: StrictStr | None = None
+
+
+class UserFeedbackContext(StrictModel):
+    route: StrictStr | None = None
+    session_id: StrictStr | None = None
+    message_id: StrictStr | None = None
     professor_id: StrictStr | None = None
-    snapshot: dict | None = None
+    competition_id: StrictStr | None = None
+    prompt: StrictStr | None = None
+    app_version: StrictStr | None = None
+    data_source_mode: Literal["llm", "http", "mock"] | None = None
+
+
+class UserFeedbackRequest(StrictModel):
+    id: StrictStr
+    type: Literal["recommendation", "missing_professor", "bug", "other"]
+    content: StrictStr = Field(min_length=1, max_length=5000)
+    contact: StrictStr | None = None
+    context: UserFeedbackContext = Field(default_factory=UserFeedbackContext)
+    created_at: StrictStr
 
 
 class HistoryItem(StrictModel):
     type: Literal["mentor", "competition"] = "mentor"
-    session_id: UUID
+    session_id: StrictStr
     prompt: StrictStr = Field(max_length=4096)
     created_at: StrictStr
     summary: StrictStr = Field(max_length=1000)
@@ -122,8 +167,11 @@ __all__ = [
     "MentorRecommendationRequest",
     "OutreachEmailRequest",
     "ProfessorCompareRequest",
+    "QuickActionsRequest",
+    "RecommendationRecap",
     "SessionCreateRequest",
     "StrictModel",
     "TurnCreateRequest",
     "UserProfile",
+    "UserFeedbackRequest",
 ]

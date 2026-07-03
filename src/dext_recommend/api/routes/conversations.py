@@ -20,6 +20,7 @@ from dext_recommend.api.schemas import (
     ChatMessageRequest,
     FeedbackRequest,
     ForkCreateRequest,
+    QuickActionsRequest,
     SessionCreateRequest,
     TurnCreateRequest,
 )
@@ -40,6 +41,8 @@ def routes(prefix: str) -> list[web.AbstractRouteDef]:
         web.patch(f"{prefix}/chat/messages/{{message_id}}/feedback", handle_feedback),
         web.post(f"{prefix}/chat/messages", handle_legacy_message),
         web.get(f"{prefix}/chat/stream", handle_legacy_stream),
+        web.post(f"{prefix}/chat/route", handle_chat_route),
+        web.post(f"{prefix}/chat/quick-actions", handle_quick_actions),
     ]
 
 
@@ -72,35 +75,45 @@ async def handle_delete_session(request: web.Request) -> web.Response:
         str(principal.owner_id),
         request.match_info["session_id"],
     )
-    return ok(None)
+    return ok({"deleted": True})
 
 
 async def handle_list_turns(request: web.Request) -> web.Response:
     principal = await require_principal(request)
-    return ok({"items": await repository(request).list_turns(
+    turns = await repository(request).list_turns(
         str(principal.owner_id),
         request.match_info["session_id"],
-    )})
+    )
+    flat_turns: list[dict] = []
+    messages: list[dict] = []
+    for turn in turns:
+        item = dict(turn)
+        messages.extend(item.pop("messages", []))
+        flat_turns.append(item)
+    return ok({"turns": flat_turns, "messages": messages})
 
 
 async def handle_create_turn(request: web.Request) -> web.StreamResponse:
     principal = await require_principal(request)
     dto = TurnCreateRequest.model_validate(await read_json(request))
     try:
+        idem = idempotency_key(request)
+        if idem != str(dto.request_id):
+            raise ApiError(422, "idempotency_key_mismatch", "Idempotency-Key must equal request_id")
         result = await services(request).create_turn_and_dispatch(
             principal,
             session_id=request.match_info["session_id"],
             text=dto.text,
             request_id=str(dto.request_id),
             expected_revision=dto.expected_revision,
-            idempotency_key=idempotency_key(request),
+            idempotency_key=idem,
         )
-        return await write_sse(request, [("done", result)])
+        return await write_sse(request, _sse_events(result))
     except Exception as exc:
-        if isinstance(exc, ApiError):
-            data = {"error_code": exc.error_code, "message": exc.message}
-        else:
-            data = {"error_code": "chat_turn_failed", "message": "chat turn failed"}
+        data = _sse_error_data(
+            exc,
+            session_id=request.match_info["session_id"],
+        )
         return await write_sse(request, [("error", data)])
 
 
@@ -123,18 +136,29 @@ async def handle_create_fork(request: web.Request) -> web.Response:
     ))
 
 
-async def handle_create_attempt(request: web.Request) -> web.Response:
+async def handle_create_attempt(request: web.Request) -> web.StreamResponse:
     principal = await require_principal(request)
     dto = AttemptCreateRequest.model_validate(await read_json(request))
-    result = await services(request).retry_turn_and_dispatch(
-        principal,
-        turn_id=request.match_info["turn_id"],
-        session_id=str(dto.session_id),
-        request_id=str(dto.request_id),
-        expected_revision=dto.expected_revision,
-        idempotency_key=idempotency_key(request),
-    )
-    return ok(result)
+    try:
+        idem = idempotency_key(request)
+        if idem != str(dto.request_id):
+            raise ApiError(422, "idempotency_key_mismatch", "Idempotency-Key must equal request_id")
+        result = await services(request).retry_turn_and_dispatch(
+            principal,
+            turn_id=request.match_info["turn_id"],
+            session_id=str(dto.session_id),
+            request_id=str(dto.request_id),
+            expected_revision=dto.expected_revision,
+            idempotency_key=idem,
+        )
+        return await write_sse(request, _sse_events(result))
+    except Exception as exc:
+        data = _sse_error_data(
+            exc,
+            session_id=str(getattr(locals().get("dto", None), "session_id", "")),
+            turn_id=request.match_info["turn_id"],
+        )
+        return await write_sse(request, [("error", data)])
 
 
 async def handle_cancel_attempt(request: web.Request) -> web.Response:
@@ -144,17 +168,18 @@ async def handle_cancel_attempt(request: web.Request) -> web.Response:
         request.match_info["attempt_id"],
     )
     services(request).attempts.cancel(str(principal.owner_id), request.match_info["attempt_id"])
-    return ok(result)
+    return ok({"interrupted": result.get("status") == "interrupted"})
 
 
 async def handle_feedback(request: web.Request) -> web.Response:
     principal = await require_principal(request)
     dto = FeedbackRequest.model_validate(await read_json(request))
-    return ok(await repository(request).patch_feedback(
+    await repository(request).patch_feedback(
         str(principal.owner_id),
         request.match_info["message_id"],
         dto.feedback,
-    ))
+    )
+    return ok({"updated": True})
 
 
 async def handle_legacy_message(request: web.Request) -> web.Response:
@@ -202,3 +227,72 @@ async def handle_legacy_stream(request: web.Request) -> web.StreamResponse:
         ("related_recommendations", {"items": related}),
         ("done", {"session_id": session_id}),
     ])
+
+
+async def handle_chat_route(request: web.Request) -> web.Response:
+    await require_principal(request)
+    body = await read_json(request)
+    follow_up = str(body.get("follow_up") or "").strip()
+    if not follow_up:
+        raise ApiError(422, "invalid_request", "follow_up is required")
+    keywords = ("推荐", "换", "筛选", "只看", "方向", "导师", "教授", "学校", "地区", "城市", "985", "211")
+    return ok({"need": any(word in follow_up for word in keywords)})
+
+
+async def handle_quick_actions(request: web.Request) -> web.Response:
+    await require_principal(request)
+    dto = QuickActionsRequest.model_validate(await read_json(request))
+    quick_actions = await runtime(request).quick_actions.generate(
+        dto.follow_up,
+        [item.model_dump(mode="json") for item in dto.last_recommendations],
+    )
+    return ok({"quick_actions": quick_actions})
+
+
+def _sse_events(result: dict) -> list[tuple[str, dict]]:
+    turn = result.get("turn") or {}
+    message = result.get("assistant_message")
+    session = result.get("session") or {}
+    session_id = str(session.get("id") or turn.get("session_id") or "")
+    turn_id = str(turn.get("id") or "")
+    attempt_id = str(result.get("attempt_id") or result.get("active_attempt_id") or "")
+    revision = int(session.get("revision") or result.get("revision") or 0)
+    route = turn.get("route") or "conversation"
+    base = {
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "attempt_id": attempt_id,
+        "revision": revision,
+    }
+    completed = {
+        **base,
+        "revision": int(session.get("revision") or revision),
+        "session": session,
+        "message": message,
+        "quick_actions": result.get("quick_actions") or [],
+    }
+    events: list[tuple[str, dict]] = [
+        ("ack", base),
+        ("route", {**base, "route": route}),
+    ]
+    if message and message.get("content"):
+        events.append(("delta", {**base, "text": message["content"]}))
+    events.append(("completed", completed))
+    return events
+
+
+def _sse_error_data(exc: Exception, *, session_id: str = "", turn_id: str = "", attempt_id: str = "") -> dict:
+    if isinstance(exc, ApiError):
+        code = exc.error_code
+        message = exc.message
+    else:
+        code = str(getattr(exc, "error_code", "chat_stream_failed"))
+        message = str(exc) if str(exc) else "chat stream failed"
+    return {
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "attempt_id": attempt_id,
+        "revision": 0,
+        "code": code,
+        "message": message,
+    }

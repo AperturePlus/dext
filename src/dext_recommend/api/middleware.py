@@ -42,6 +42,21 @@ def ok(data: Any = None, *, message: str = "ok", status: int = 200) -> web.Respo
     return json_response({"code": 0, "message": message, "data": data}, status=status)
 
 
+_ERROR_CODES = {
+    400: 40001,
+    401: 40101,
+    403: 40301,
+    404: 40401,
+    409: 40901,
+    413: 41301,
+    422: 42201,
+    429: 42901,
+    500: 50001,
+    503: 50301,
+    504: 50401,
+}
+
+
 def error_response(
     *,
     status: int,
@@ -52,7 +67,7 @@ def error_response(
 ) -> web.Response:
     return json_response(
         {
-            "code": status,
+            "code": _ERROR_CODES.get(status, status * 100 + 1),
             "error_code": error_code,
             "message": message,
             "request_id": request_id,
@@ -81,6 +96,11 @@ async def read_json(request: web.Request) -> dict[str, Any]:
 async def request_middleware(request: web.Request, handler):
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     request[REQUEST_ID_KEY] = request_id
+    if request.method == "OPTIONS":
+        response = web.Response(status=204)
+        response.headers["X-Request-ID"] = request_id
+        _apply_cors(request, response)
+        return response
     try:
         response = await handler(request)
     except ApiError as exc:
@@ -127,8 +147,13 @@ async def request_middleware(request: web.Request, handler):
             message=exc.message,
             request_id=request_id,
         )
-    except web.HTTPException:
-        raise
+    except web.HTTPException as exc:
+        response = error_response(
+            status=exc.status,
+            error_code="http_error",
+            message=exc.reason or "HTTP error",
+            request_id=request_id,
+        )
     except Exception:
         response = error_response(
             status=500,
@@ -136,8 +161,32 @@ async def request_middleware(request: web.Request, handler):
             message="internal server error",
             request_id=request_id,
         )
-    response.headers["X-Request-ID"] = request_id
+    if not getattr(response, "prepared", False):
+        response.headers["X-Request-ID"] = request_id
+        _apply_cors(request, response)
     return response
+
+
+def _apply_cors(request: web.Request, response: web.StreamResponse) -> None:
+    origin = request.headers.get("Origin")
+    if not origin:
+        return
+    settings = request.app[SETTINGS_KEY]
+    allowed = tuple(getattr(settings, "cors_allowed_origins", ()) or ())
+    if origin not in allowed:
+        return
+    response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Vary"] = "Origin"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Expose-Headers"] = "X-Request-ID"
+    requested_headers = request.headers.get("Access-Control-Request-Headers")
+    response.headers["Access-Control-Allow-Headers"] = (
+        requested_headers
+        or "Authorization, Content-Type, X-Request-ID, X-CSRF-Token, Idempotency-Key"
+    )
+    response.headers["Access-Control-Allow-Methods"] = (
+        "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    )
 
 
 __all__ = ["ApiError", "error_response", "json_response", "ok", "read_json", "request_middleware"]

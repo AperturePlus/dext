@@ -32,8 +32,9 @@ def student_context_from_profile(profile: UserProfile | None) -> StudentContext 
             *(
                 _compact_item(
                     item.title,
-                    item.summary,
+                    item.venue_or_status,
                     item.role,
+                    item.year,
                 )
                 for item in profile.research
             ),
@@ -48,8 +49,8 @@ def student_context_from_profile(profile: UserProfile | None) -> StudentContext 
         profile.degree_stage,
         profile.school,
         profile.major,
-        profile.score.gpa_bucket if profile.score else None,
-        profile.score.rank_bucket if profile.score else None,
+        _gpa_bucket(profile.score),
+        _rank_bucket(profile.score),
         achievements,
         competitions,
         *profile.research_interests,
@@ -60,8 +61,8 @@ def student_context_from_profile(profile: UserProfile | None) -> StudentContext 
         education_stage=profile.degree_stage or profile.target_degree,
         school=profile.school,
         major=profile.major,
-        gpa_bucket=profile.score.gpa_bucket if profile.score else None,
-        rank_bucket=profile.score.rank_bucket if profile.score else None,
+        gpa_bucket=_gpa_bucket(profile.score),
+        rank_bucket=_rank_bucket(profile.score),
         research_interests=list(profile.research_interests[:20]),
         achievements_summary=achievements or None,
         competition_experience_summary=competitions or None,
@@ -195,17 +196,31 @@ def outreach_to_public(value: OutreachDraft) -> dict[str, str]:
 
 
 def comparison_to_public(value: ProfessorComparison) -> dict[str, Any]:
+    professors = [
+        {
+            "professor_id": entity_id,
+            "name": value.display_names.get(entity_id, entity_id),
+            "university": "",
+            "college": "",
+            "title": "",
+            "research_fields": [],
+        }
+        for entity_id in value.entity_ids
+    ]
     return {
-        "summary": value.summary,
-        "professors": [
+        "professor_ids": list(value.entity_ids),
+        "professors": professors,
+        "rows": [
             {
-                "professor_id": entity_id,
-                "name": value.display_names.get(entity_id, entity_id),
-                "notes": list(value.professor_notes.get(entity_id, ())),
-                "evidence_gaps": list(value.evidence_gaps.get(entity_id, ())),
+                "dimension": "综合对比",
+                "cells": {
+                    entity_id: "；".join(value.professor_notes.get(entity_id, ()))
+                    for entity_id in value.entity_ids
+                },
             }
-            for entity_id in value.entity_ids
         ],
+        "summary": value.summary,
+        "suggestion": value.summary,
     }
 
 
@@ -254,11 +269,55 @@ def warning_to_public(value) -> dict[str, Any]:
 
 def _match_level(value: str) -> str:
     return {
-        "excellent": "Ип",
-        "strong": "жа",
-        "possible": "ЕЭ",
-        "weak": "ЕЭ",
+        "excellent": "高",
+        "strong": "中",
+        "possible": "低",
+        "weak": "低",
     }.get(value, value)
+
+
+def _gpa_bucket(score) -> str | None:
+    if score is None or score.gpa is None:
+        return None
+    scale = float(score.scale or 4.0)
+    if scale <= 0:
+        return "unknown"
+    ratio = float(score.gpa) / scale
+    if ratio >= 0.9:
+        return "top10"
+    if ratio >= 0.85:
+        return "top25"
+    if ratio >= 0.8:
+        return "high"
+    if ratio >= 0.7:
+        return "medium"
+    return "unknown"
+
+
+def _rank_bucket(score) -> str | None:
+    if score is None:
+        return None
+    if score.rank_mode == "percent" and score.percent is not None:
+        percent = int(score.percent)
+        if percent <= 5:
+            return "top5"
+        if percent <= 10:
+            return "top10"
+        if percent <= 25:
+            return "top25"
+        return "medium"
+    if score.rank_mode == "ordinal" and score.rank_position and score.rank_total:
+        if score.rank_total <= 0:
+            return "unknown"
+        percent = 100.0 * int(score.rank_position) / int(score.rank_total)
+        if percent <= 5:
+            return "top5"
+        if percent <= 10:
+            return "top10"
+        if percent <= 25:
+            return "top25"
+        return "medium"
+    return None
 
 
 def _compact_item(*parts: str | None) -> str | None:
