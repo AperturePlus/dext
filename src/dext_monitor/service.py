@@ -39,6 +39,14 @@ STAGE_ORDER = (
     "ACTIVE",
 )
 
+TOPIC_RELATION_PARTITIONS = (
+    "rel:PRIMARY_TOPIC",
+    "rel:USES_METHOD",
+    "rel:APPLIED_TO",
+    "rel:TARGETS_TASK",
+    "rel:STUDIES",
+)
+
 
 class MonitorService:
     """Application service for monitor DTOs."""
@@ -562,6 +570,142 @@ class MonitorService:
             "build_id": build_id,
             "orgunit": orgunit,
             "professors": professors,
+            "links": links,
+        }
+
+    def professor_topics(self, build_id: str, professor_graph_key: str) -> dict[str, Any]:
+        """One Professor node and its related Topic nodes.
+
+        The graph export models Topic membership via the evidence path
+        Professor -> ResearchStatement -> Topic. The monitor UI does not render
+        ResearchStatement nodes for this drill-down; it uses them only to
+        aggregate direct-looking Professor->Topic links grouped by
+        (topic_graph_key, relation_type).
+        """
+        with self.reader.connect() as connection:
+            self.reader.require_supported_schema(connection)
+            self._get_build(connection, build_id)
+            professor_row = connection.execute(
+                "SELECT payload_json FROM graph_export_rows "
+                "WHERE build_id=? AND partition_key='node:Professor' "
+                "AND json_extract(payload_json, '$.graph_key')=?",
+                (build_id, professor_graph_key),
+            ).fetchone()
+            if professor_row is None:
+                raise MonitorCatalogError(f"unknown professor graph key: {professor_graph_key}")
+            professor_payload = json_loads(professor_row["payload_json"], {})
+            professor = {
+                "graph_key": professor_graph_key,
+                "name": str(professor_payload.get("name") or professor_graph_key),
+                "title": professor_payload.get("title"),
+                "title_family": professor_payload.get("title_family"),
+                "role_status": str(professor_payload.get("role_status") or ""),
+            }
+
+            statement_rows = list(
+                connection.execute(
+                    "SELECT end_graph_key FROM graph_export_rows "
+                    "WHERE build_id=? AND partition_key='rel:HAS_RESEARCH_STATEMENT' "
+                    "AND start_graph_key=?",
+                    (build_id, professor_graph_key),
+                )
+            )
+            statement_keys = sorted(
+                {str(row["end_graph_key"]) for row in statement_rows if row["end_graph_key"]}
+            )
+            if not statement_keys:
+                return {
+                    "build_id": build_id,
+                    "professor": professor,
+                    "topics": [],
+                    "links": [],
+                }
+
+            partition_placeholders = ",".join("?" for _ in TOPIC_RELATION_PARTITIONS)
+            statement_placeholders = ",".join("?" for _ in statement_keys)
+            topic_rel_rows = list(
+                connection.execute(
+                    "SELECT partition_key, end_graph_key, payload_json FROM graph_export_rows "
+                    f"WHERE build_id=? AND partition_key IN ({partition_placeholders}) "
+                    f"AND start_graph_key IN ({statement_placeholders}) "
+                    "ORDER BY partition_key, row_key",
+                    (build_id, *TOPIC_RELATION_PARTITIONS, *statement_keys),
+                )
+            )
+            aggregate: dict[tuple[str, str], dict[str, Any]] = {}
+            topic_keys: set[str] = set()
+            for row in topic_rel_rows:
+                topic_key = str(row["end_graph_key"] or "")
+                if not topic_key:
+                    continue
+                relation = str(row["partition_key"]).removeprefix("rel:")
+                payload = json_loads(row["payload_json"], {})
+                evidence_count = int(payload.get("evidence_count") or 1)
+                confidence_value = payload.get("confidence")
+                confidence = (
+                    float(confidence_value)
+                    if confidence_value is not None
+                    else None
+                )
+                key = (topic_key, relation)
+                previous = aggregate.get(key)
+                if previous is None:
+                    aggregate[key] = {
+                        "source": professor_graph_key,
+                        "target": topic_key,
+                        "label": relation,
+                        "evidence_count": evidence_count,
+                        "confidence": confidence,
+                    }
+                else:
+                    previous["evidence_count"] += evidence_count
+                    if confidence is not None:
+                        old_confidence = previous.get("confidence")
+                        previous["confidence"] = (
+                            confidence
+                            if old_confidence is None
+                            else min(float(old_confidence), confidence)
+                        )
+                topic_keys.add(topic_key)
+
+            topics: list[dict[str, Any]] = []
+            if topic_keys:
+                topic_placeholders = ",".join("?" for _ in topic_keys)
+                rows = connection.execute(
+                    "SELECT payload_json FROM graph_export_rows "
+                    "WHERE build_id=? AND partition_key='node:Topic' "
+                    f"AND json_extract(payload_json, '$.graph_key') IN ({topic_placeholders})",
+                    (build_id, *sorted(topic_keys)),
+                )
+                for row in rows:
+                    payload = json_loads(row["payload_json"], {})
+                    graph_key = str(payload.get("graph_key") or payload.get("id") or "")
+                    if not graph_key:
+                        continue
+                    topics.append(
+                        {
+                            "graph_key": graph_key,
+                            "logical_id": str(payload.get("logical_id") or ""),
+                            "canonical_name": str(payload.get("canonical_name") or graph_key),
+                            "normalized_name": str(payload.get("normalized_name") or ""),
+                            "kind": str(payload.get("kind") or ""),
+                            "status": str(payload.get("status") or ""),
+                            "taxonomy_version": str(payload.get("taxonomy_version") or ""),
+                        }
+                    )
+
+        topic_names = {topic["graph_key"]: topic["canonical_name"] for topic in topics}
+        topics.sort(key=lambda t: (t["kind"], t["canonical_name"], t["graph_key"]))
+        links = [
+            link
+            for link in aggregate.values()
+            if link["target"] in topic_names
+        ]
+        links.sort(key=lambda link: (topic_names[link["target"]], link["label"]))
+        return {
+            "build_id": build_id,
+            "professor": professor,
+            "topics": topics,
             "links": links,
         }
 

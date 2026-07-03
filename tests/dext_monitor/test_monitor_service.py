@@ -798,10 +798,50 @@ def _write_professor_catalog(path: Path) -> str:
                 "INSERT INTO graph_export_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'p', 'c')",
                 (build_id, *row),
             )
+        topic_rows = [
+            ("node:ResearchStatement", "row-s1", "node", "ResearchStatement", None, None,
+             '{"graph_key":"s1","raw_text":"机器学习方向","language":"zh"}'),
+            ("node:ResearchStatement", "row-s2", "node", "ResearchStatement", None, None,
+             '{"graph_key":"s2","raw_text":"机器人感知","language":"zh"}'),
+            ("node:ResearchStatement", "row-s3", "node", "ResearchStatement", None, None,
+             '{"graph_key":"s3","raw_text":"暂无主题","language":"zh"}'),
+            ("node:Topic", "row-t1", "node", "Topic", None, None,
+             '{"graph_key":"t1","logical_id":"topic-1","canonical_name":"机器学习","normalized_name":"机器学习","kind":"method","status":"active","taxonomy_version":"tax-v1"}'),
+            ("node:Topic", "row-t2", "node", "Topic", None, None,
+             '{"graph_key":"t2","logical_id":"topic-2","canonical_name":"机器人","normalized_name":"机器人","kind":"application_domain","status":"active","taxonomy_version":"tax-v1"}'),
+            ("rel:HAS_RESEARCH_STATEMENT", "p1|s1", "relationship", "HAS_RESEARCH_STATEMENT", "p1", "s1",
+             '{"confidence":1.0,"evidence_count":1}'),
+            ("rel:HAS_RESEARCH_STATEMENT", "p1|s2", "relationship", "HAS_RESEARCH_STATEMENT", "p1", "s2",
+             '{"confidence":1.0,"evidence_count":1}'),
+            ("rel:HAS_RESEARCH_STATEMENT", "p2|s3", "relationship", "HAS_RESEARCH_STATEMENT", "p2", "s3",
+             '{"confidence":1.0,"evidence_count":1}'),
+            ("rel:PRIMARY_TOPIC", "s1|t1", "relationship", "PRIMARY_TOPIC", "s1", "t1",
+             '{"confidence":0.9,"evidence_count":1}'),
+            ("rel:PRIMARY_TOPIC", "s2|t1", "relationship", "PRIMARY_TOPIC", "s2", "t1",
+             '{"confidence":0.7,"evidence_count":2}'),
+            ("rel:USES_METHOD", "s2|t2", "relationship", "USES_METHOD", "s2", "t2",
+             '{"confidence":0.8,"evidence_count":1}'),
+        ]
+        for row in topic_rows:
+            connection.execute(
+                "INSERT INTO graph_export_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'p', 'c')",
+                (build_id, *row),
+            )
         connection.execute(
             "INSERT INTO graph_export_partitions VALUES (?, ?, 'node', 'Professor', ?, NULL, NULL, 'checksum', 'now')",
             (build_id, "node:Professor", 3),
         )
+        for partition, kind, label, count in [
+            ("node:ResearchStatement", "node", "ResearchStatement", 3),
+            ("node:Topic", "node", "Topic", 2),
+            ("rel:HAS_RESEARCH_STATEMENT", "relationship", "HAS_RESEARCH_STATEMENT", 3),
+            ("rel:PRIMARY_TOPIC", "relationship", "PRIMARY_TOPIC", 2),
+            ("rel:USES_METHOD", "relationship", "USES_METHOD", 1),
+        ]:
+            connection.execute(
+                "INSERT INTO graph_export_partitions VALUES (?, ?, ?, ?, ?, NULL, NULL, 'checksum', 'now')",
+                (build_id, partition, kind, label, count),
+            )
         connection.commit()
         return build_id
     finally:
@@ -852,6 +892,46 @@ def test_orgunit_professors_cross_org_professor_excluded(tmp_path: Path) -> None
     result = service.orgunit_professors(build_id, "org2")
     profs = {p["graph_key"] for p in result["professors"]}
     assert profs == {"p3"}  # only p3 is affiliated with org2
+
+
+def test_professor_topics_returns_professor_topic_subgraph(tmp_path: Path) -> None:
+    catalog = tmp_path / "catalog.db"
+    build_id = _write_professor_catalog(catalog)
+    service = MonitorService(_settings(catalog))
+
+    result = service.professor_topics(build_id, "p1")
+    assert set(result.keys()) == {"build_id", "professor", "topics", "links"}
+    assert result["build_id"] == build_id
+    assert result["professor"]["graph_key"] == "p1"
+    assert result["professor"]["name"] == "张三"
+
+    topics = {topic["graph_key"]: topic for topic in result["topics"]}
+    assert set(topics) == {"t1", "t2"}
+    assert topics["t1"]["canonical_name"] == "机器学习"
+    assert topics["t1"]["kind"] == "method"
+    assert topics["t2"]["canonical_name"] == "机器人"
+
+    links = {(link["target"], link["label"]): link for link in result["links"]}
+    assert set(links) == {("t1", "PRIMARY_TOPIC"), ("t2", "USES_METHOD")}
+    primary = links[("t1", "PRIMARY_TOPIC")]
+    assert primary["source"] == "p1"
+    assert primary["evidence_count"] == 3
+    assert primary["confidence"] == pytest.approx(0.7)
+    method = links[("t2", "USES_METHOD")]
+    assert method["source"] == "p1"
+    assert method["evidence_count"] == 1
+    assert method["confidence"] == pytest.approx(0.8)
+
+
+def test_professor_topics_professor_without_topics_returns_empty(tmp_path: Path) -> None:
+    catalog = tmp_path / "catalog.db"
+    build_id = _write_professor_catalog(catalog)
+    service = MonitorService(_settings(catalog))
+
+    result = service.professor_topics(build_id, "p2")
+    assert result["professor"]["graph_key"] == "p2"
+    assert result["topics"] == []
+    assert result["links"] == []
 
 
 def test_orgunit_professors_unknown_build_raises(tmp_path: Path) -> None:
@@ -968,6 +1048,33 @@ async def test_monitor_orgunit_professors_endpoint(tmp_path: Path) -> None:
         missing_body = await missing_resp.json()
         assert missing_body["error"]["type"] == "ValueError"
         assert "org_graph_key" in missing_body["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_monitor_professor_topics_endpoint(tmp_path: Path) -> None:
+    catalog = tmp_path / "catalog.db"
+    build_id = _write_professor_catalog(catalog)
+    app = create_app(_settings(catalog))
+    async with TestClient(TestServer(app)) as client:
+        url = f"/api/monitor/builds/{build_id}/professor-topics?professor_graph_key=p1"
+        resp = await client.get(url)
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["data"]["professor"]["graph_key"] == "p1"
+        assert {topic["graph_key"] for topic in body["data"]["topics"]} == {"t1", "t2"}
+        assert {
+            (link["target"], link["label"]) for link in body["data"]["links"]
+        } == {("t1", "PRIMARY_TOPIC"), ("t2", "USES_METHOD")}
+
+        etag = resp.headers["ETag"]
+        resp2 = await client.get(url, headers={"If-None-Match": etag})
+        assert resp2.status == 304
+
+        missing_resp = await client.get(f"/api/monitor/builds/{build_id}/professor-topics")
+        assert missing_resp.status == 400
+        missing_body = await missing_resp.json()
+        assert missing_body["error"]["type"] == "ValueError"
+        assert "professor_graph_key" in missing_body["error"]["message"]
 
 
 @pytest.mark.asyncio

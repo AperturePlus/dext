@@ -101,6 +101,20 @@ async def handle_orgunit_professors_query(request: web.Request) -> web.Response:
     )
 
 
+async def handle_professor_topics_query(request: web.Request) -> web.Response:
+    professor_graph_key = request.query.get("professor_graph_key")
+    if not professor_graph_key:
+        raise ValueError("professor_graph_key query parameter is required")
+    return json_response(
+        {
+            "data": service(request).professor_topics(
+                request.match_info["build_id"],
+                professor_graph_key,
+            )
+        }
+    )
+
+
 async def handle_findings(request: web.Request) -> web.Response:
     limit = int(request.query.get("limit", "100"))
     return json_response(
@@ -167,6 +181,10 @@ def create_app(settings: MonitorSettings | None = None) -> web.Application:
             web.get(
                 f"{API_PREFIX}/builds/{{build_id}}/orgunit/{{org_graph_key}}/professors",
                 handle_orgunit_professors,
+            ),
+            web.get(
+                f"{API_PREFIX}/builds/{{build_id}}/professor-topics",
+                handle_professor_topics_query,
             ),
             web.get(f"{API_PREFIX}/findings", handle_findings),
         ]
