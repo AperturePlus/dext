@@ -507,6 +507,9 @@ async def _semantic_choices(
         diagnostics.append(
             {"evidence_span": concept.evidence_span, "candidates": candidates}
         )
+        if not candidates:
+            choices[concept.evidence_span] = "new_topic"
+            continue
         choices[concept.evidence_span] = await llm_client.select(concept, candidates)
     return choices, diagnostics
 

@@ -49,6 +49,24 @@ class FakeTopicSink:
         return len(self.points)
 
 
+class EmptyCandidateSink(FakeTopicSink):
+    def __init__(self):
+        super().__init__()
+        self.queries = []
+
+    async def query(self, name, vector, *, taxonomy_version, kind, limit):
+        self.queries.append(
+            {
+                "name": name,
+                "vector": vector,
+                "taxonomy_version": taxonomy_version,
+                "kind": kind,
+                "limit": limit,
+            }
+        )
+        return []
+
+
 class UnusedLLM:
     async def extract(self, _text):
         raise AssertionError("no statement should invoke the LLM")
@@ -84,6 +102,25 @@ class ConcurrentLLM:
 
     async def select(self, _concept, _candidates):
         raise AssertionError("exact alias concepts should not invoke selection")
+
+
+class UnmatchedConceptLLM:
+    def __init__(self):
+        self.select_calls = 0
+
+    async def extract_with_diagnostics(self, raw_text):
+        return [
+            TopicConcept(
+                evidence_span="不存在方法",
+                canonical_name="不存在方法",
+                kind="method",
+                relation_type="USES_METHOD",
+            )
+        ], 0
+
+    async def select(self, _concept, _candidates):
+        self.select_calls += 1
+        raise AssertionError("empty candidate lists should not invoke selection")
 
 
 def _prepare_link_catalog(tmp_path, statements):
@@ -145,6 +182,21 @@ async def _run_linking(path, manifest, settings, llm):
             settings=settings,
             embedding_client=FakeEmbedding(),
             topic_sink=FakeTopicSink(),
+            llm_client=llm,
+        )
+
+
+async def _run_linking_with_sink(path, manifest, settings, llm, sink):
+    async with CatalogWriter(path, max_queue=2) as writer:
+        return await _link_statements(
+            writer,
+            build_id="build-1",
+            taxonomy_version=manifest.version,
+            collection_name="topic-candidates",
+            tokenizer=CharacterTokenizer(),
+            settings=settings,
+            embedding_client=FakeEmbedding(),
+            topic_sink=sink,
             llm_client=llm,
         )
 
@@ -252,6 +304,28 @@ async def test_topic_statement_linking_runs_external_calls_concurrently(tmp_path
             "WHERE build_id='build-1' AND sink='topic_link'"
         ).fetchone()
         assert checkpoint == ("statement-06", 6)
+
+
+@pytest.mark.asyncio
+async def test_topic_statement_linking_skips_selector_when_no_candidates(tmp_path):
+    path, manifest = _prepare_link_catalog(
+        tmp_path, [("statement-01", "statement-01 使用不存在方法")]
+    )
+    settings = _topic_settings(path, concurrency=1)
+    llm = UnmatchedConceptLLM()
+    sink = EmptyCandidateSink()
+
+    completed = await _run_linking_with_sink(path, manifest, settings, llm, sink)
+
+    assert completed == 1
+    assert len(sink.queries) == 1
+    assert llm.select_calls == 0
+    with sqlite3.connect(path) as connection:
+        row = connection.execute(
+            "SELECT method,review_status FROM statement_topic_links "
+            "WHERE build_id='build-1' AND statement_id='statement-01'"
+        ).fetchone()
+        assert row == ("llm_new_topic", "review")
 
 
 @pytest.mark.asyncio
