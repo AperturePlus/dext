@@ -37,6 +37,7 @@ from dext_graph.catalog.ids import (
     uuid7,
 )
 from dext_graph.catalog.models import BuildSource, CATALOG_SCHEMA_VERSION
+from dext_graph.catalog.progress import ProgressCallback, emit_progress
 from dext_graph.catalog.source import (
     LegacySourceRow,
     SnapshotInspection,
@@ -62,7 +63,6 @@ _RESUME_SETTING_KEYS = (
     "embedding_dimension",
     "embedding_max_input_tokens",
     "embedding_request_batch",
-    "embedding_max_concurrency",
     "embedding_passage_prefix",
     "tokenizer_model",
     "tokenizer_revision",
@@ -877,6 +877,8 @@ async def _ingest_source(
     build_id: str,
     task: dict[str, Any],
     settings: GraphSettings,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> None:
     snapshot_row = await writer.execute(
         lambda connection: connection.execute(
@@ -906,6 +908,18 @@ async def _ingest_source(
         transactional=False,
     )
     last_key = int(checkpoint["last_key"]) if checkpoint and checkpoint["last_key"] else 0
+    professor_count = int(inspection.row_counts.get("professors") or 0)
+    processed_rows = int(task.get("rows_read") or 0)
+    emit_progress(
+        progress,
+        "ingest",
+        "started",
+        build_id=build_id,
+        message=str(task["university_id"]),
+        current=processed_rows,
+        total=professor_count,
+        counters={"university_id": task["university_id"]},
+    )
     queue: asyncio.Queue[_PreparedBatch | None] = asyncio.Queue(
         maxsize=settings.build_write_queue
     )
@@ -929,16 +943,34 @@ async def _ingest_source(
         await queue.put(None)
 
     async def consumer() -> None:
+        nonlocal processed_rows
         commits = 0
         while True:
             prepared = await queue.get()
             try:
                 if prepared is None:
                     return
-                await writer.execute(
+                stats = await writer.execute(
                     lambda connection, batch=prepared: _commit_batch(
                         connection, build_id, task["university_id"], batch
                     )
+                )
+                processed_rows += prepared.source_rows
+                emit_progress(
+                    progress,
+                    "ingest",
+                    "progress",
+                    build_id=build_id,
+                    message=str(task["university_id"]),
+                    current=processed_rows,
+                    total=professor_count,
+                    counters={
+                        "batch_rows": prepared.source_rows,
+                        "observations": len(prepared.observations),
+                        "documents": len(prepared.documents),
+                        "findings": len(prepared.findings),
+                        **stats,
+                    },
                 )
                 commits += 1
                 _check_rss(settings)
@@ -951,7 +983,7 @@ async def _ingest_source(
     async with asyncio.TaskGroup() as group:
         group.create_task(producer())
         group.create_task(consumer())
-    await writer.execute(
+    finalize = await writer.execute(
         lambda connection: _finalize_source(
             connection,
             build_id,
@@ -959,6 +991,16 @@ async def _ingest_source(
             inspection,
             settings.build_min_source_retention_ratio,
         )
+    )
+    emit_progress(
+        progress,
+        "ingest",
+        "completed",
+        build_id=build_id,
+        message=str(task["university_id"]),
+        current=professor_count,
+        total=professor_count,
+        counters=finalize,
     )
 
 
@@ -999,11 +1041,21 @@ async def _run_build(
     writer: CatalogWriter,
     build_id: str,
     settings: GraphSettings,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     build = await writer.execute(
         lambda connection: _load_build(connection, build_id), transactional=False
     )
     if build["status"] == "CURATING":
+        emit_progress(
+            progress,
+            "build",
+            "completed",
+            build_id=build_id,
+            message="stage 1 already completed",
+            counters={"status": build["status"]},
+        )
         return build_status(settings.catalog_path, build_id)
     if build["status"] not in {"CREATED", "SNAPSHOTTING", "INGESTING", "FAILED"}:
         raise CatalogError(
@@ -1011,6 +1063,15 @@ async def _run_build(
         )
     tasks = await writer.execute(
         lambda connection: _load_tasks(connection, build_id), transactional=False
+    )
+    emit_progress(
+        progress,
+        "build",
+        "started",
+        build_id=build_id,
+        message="stage 1 source snapshot and ingest",
+        total=len(tasks),
+        counters={"status": build["status"], "sources": len(tasks)},
     )
     if any(task["source_snapshot_id"] is None for task in tasks):
         await writer.execute(
@@ -1022,6 +1083,17 @@ async def _run_build(
         for task in tasks:
             if task["source_snapshot_id"] is not None:
                 continue
+            emit_progress(
+                progress,
+                "snapshot",
+                "started",
+                build_id=build_id,
+                message=str(task["university_id"]),
+                counters={
+                    "university_id": task["university_id"],
+                    "source_path": task["source_path"],
+                },
+            )
             await writer.execute(
                 lambda connection, current=task: _set_task_state(
                     connection,
@@ -1036,6 +1108,19 @@ async def _run_build(
                 nonlocal chunks
                 chunks += 1
                 _check_rss(settings)
+                emit_progress(
+                    progress,
+                    "snapshot",
+                    "progress",
+                    build_id=build_id,
+                    message=str(task["university_id"]),
+                    current=max(total - remaining, 0),
+                    total=total,
+                    counters={
+                        "sqlite_status": status,
+                        "chunks": chunks,
+                    },
+                )
                 kill_after = os.getenv("DEXT_TEST_KILL_AFTER_BACKUP_CHUNKS")
                 if kill_after and chunks >= int(kill_after):
                     os._exit(91)
@@ -1055,9 +1140,25 @@ async def _run_build(
                         connection, build_id, current, snapshot
                     )
                 )
+                emit_progress(
+                    progress,
+                    "snapshot",
+                    "completed",
+                    build_id=build_id,
+                    message=str(task["university_id"]),
+                    counters={"snapshot_id": result.id, "reused": result.reused_file},
+                )
             except Exception as exc:  # noqa: BLE001 -- persist per-source failure
                 error = _safe_error(exc)
                 snapshot_errors.append(f"{task['university_id']}: {error}")
+                emit_progress(
+                    progress,
+                    "snapshot",
+                    "failed",
+                    build_id=build_id,
+                    message=str(task["university_id"]),
+                    counters={"error": error},
+                )
                 await writer.execute(
                     lambda connection, current=task, message=error: _set_task_state(
                         connection,
@@ -1101,10 +1202,20 @@ async def _run_build(
             )
         )
         try:
-            await _ingest_source(writer, build_id, task, settings)
+            await _ingest_source(
+                writer, build_id, task, settings, progress=progress
+            )
         except Exception as exc:  # noqa: BLE001 -- continue other universities
             error = _safe_error(exc)
             ingest_errors.append(f"{task['university_id']}: {error}")
+            emit_progress(
+                progress,
+                "ingest",
+                "failed",
+                build_id=build_id,
+                message=str(task["university_id"]),
+                counters={"error": error},
+            )
             await writer.execute(
                 lambda connection, current=task, message=error: _set_task_state(
                     connection,
@@ -1127,18 +1238,51 @@ async def _run_build(
                 connection, build_id, "FAILED", error=message, summary=summary
             )
         )
+        emit_progress(
+            progress,
+            "build",
+            "failed",
+            build_id=build_id,
+            message=message,
+            counters=_progress_summary(summary),
+        )
     else:
         await writer.execute(
             lambda connection: _update_build_status(
                 connection, build_id, "CURATING", error=None, summary=summary
             )
         )
+        emit_progress(
+            progress,
+            "build",
+            "completed",
+            build_id=build_id,
+            message="stage 1 completed",
+            counters=_progress_summary(summary),
+        )
     return build_status(settings.catalog_path, build_id)
 
 
-def _backup_progress(settings: GraphSettings):
+def _backup_progress(
+    settings: GraphSettings,
+    progress_callback: ProgressCallback | None = None,
+    *,
+    build_id: str | None = None,
+    stage: str = "catalog_backup",
+    message: str = "catalog backup",
+):
     def progress(status: int, remaining: int, total: int) -> None:
         _check_rss(settings)
+        emit_progress(
+            progress_callback,
+            stage,
+            "progress",
+            build_id=build_id,
+            message=message,
+            current=max(total - remaining, 0),
+            total=total,
+            counters={"sqlite_status": status},
+        )
 
     return progress
 
@@ -1164,54 +1308,112 @@ def _preflight_build_storage(
     )
 
 
+def _progress_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "source_count",
+        "rows_read",
+        "observations_written",
+        "observations_inserted",
+        "observations_reused",
+        "documents_seen",
+        "quality_findings",
+        "peak_observed_rss_bytes",
+    )
+    return {key: summary[key] for key in keys if key in summary}
+
+
 async def _run_topic_and_vector(
-    writer: CatalogWriter, build_id: str, settings: GraphSettings
+    writer: CatalogWriter,
+    build_id: str,
+    settings: GraphSettings,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     if os.getenv("DEXT_TEST_SKIP_TOPICS") != "1":
         from dext_graph.catalog.topic_workflow import run_topic_stage
 
-        result = await run_topic_stage(writer, build_id, settings)
+        result = await run_topic_stage(
+            writer, build_id, settings, progress=progress
+        )
         if result["build"]["status"] != "WRITING_VECTOR":
             return result
     from dext_graph.catalog.vector_workflow import run_vector_stage
 
-    return await run_vector_stage(writer, build_id, settings)
+    return await run_vector_stage(writer, build_id, settings, progress=progress)
 
 
 async def create_build(
     university_names: list[str] | tuple[str, ...],
     settings: GraphSettings | None = None,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     settings = settings or GraphSettings()
     _reset_peak_rss()
     sources = resolve_build_sources(university_names, settings)
     build_id = uuid7()
+    emit_progress(
+        progress,
+        "build",
+        "started",
+        build_id=build_id,
+        message="create build",
+        total=len(sources),
+        counters={"sources": len(sources)},
+    )
     with catalog_write_lock(settings.catalog_path):
         _preflight_build_storage(sources, settings)
+        emit_progress(
+            progress,
+            "catalog_backup",
+            "started",
+            build_id=build_id,
+            message="catalog backup",
+        )
         backup_existing_catalog(
-            settings.catalog_path, progress_hook=_backup_progress(settings)
+            settings.catalog_path,
+            progress_hook=_backup_progress(
+                settings,
+                progress,
+                build_id=build_id,
+                stage="catalog_backup",
+                message="catalog backup",
+            ),
+        )
+        emit_progress(
+            progress,
+            "catalog_backup",
+            "completed",
+            build_id=build_id,
+            message="catalog backup",
         )
         path = initialize_catalog(settings.catalog_path)
         async with CatalogWriter(path, max_queue=settings.build_write_queue) as writer:
             await writer.execute(
                 lambda connection: _insert_build(connection, build_id, sources, settings)
             )
-            result = await _run_build(writer, build_id, settings)
+            result = await _run_build(writer, build_id, settings, progress=progress)
             if os.getenv("DEXT_TEST_STOP_AFTER_INGEST") == "1":
                 return result
             if result["build"]["status"] == "CURATING":
                 from dext_graph.catalog.curation import run_curation
 
-                result = await run_curation(writer, build_id, settings)
+                result = await run_curation(
+                    writer, build_id, settings, progress=progress
+                )
             if result["build"]["status"] == "EMBEDDING":
                 from dext_graph.catalog.graph_workflow import run_graph_stage
 
-                result = await run_graph_stage(writer, build_id, settings)
+                result = await run_graph_stage(
+                    writer, build_id, settings, progress=progress
+                )
             if (
                 result["build"]["status"] == "WRITING_VECTOR"
                 and os.getenv("DEXT_TEST_SKIP_VECTOR") != "1"
             ):
-                return await _run_topic_and_vector(writer, build_id, settings)
+                return await _run_topic_and_vector(
+                    writer, build_id, settings, progress=progress
+                )
             return result
 
 
@@ -1242,6 +1444,8 @@ def _assert_resume_compatible(build: dict[str, Any], settings: GraphSettings) ->
 async def resume_build(
     build_id: str,
     settings: GraphSettings | None = None,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     settings = settings or GraphSettings()
     _reset_peak_rss()
@@ -1254,7 +1458,30 @@ async def resume_build(
     if build["status"] == "WRITING_VECTOR" and os.getenv("DEXT_TEST_SKIP_VECTOR") == "1":
         return build_status(path, build_id)
     with catalog_write_lock(path):
-        backup_existing_catalog(path, progress_hook=_backup_progress(settings))
+        emit_progress(
+            progress,
+            "catalog_backup",
+            "started",
+            build_id=build_id,
+            message="catalog backup",
+        )
+        backup_existing_catalog(
+            path,
+            progress_hook=_backup_progress(
+                settings,
+                progress,
+                build_id=build_id,
+                stage="catalog_backup",
+                message="catalog backup",
+            ),
+        )
+        emit_progress(
+            progress,
+            "catalog_backup",
+            "completed",
+            build_id=build_id,
+            message="catalog backup",
+        )
         initialize_catalog(path)
         async with CatalogWriter(path, max_queue=settings.build_write_queue) as writer:
             has_curation_run = await writer.execute(
@@ -1290,50 +1517,68 @@ async def resume_build(
             ):
                 if os.getenv("DEXT_TEST_SKIP_VECTOR") == "1":
                     return build_status(path, build_id)
-                return await _run_topic_and_vector(writer, build_id, settings)
+                return await _run_topic_and_vector(
+                    writer, build_id, settings, progress=progress
+                )
             if build["status"] in {"EMBEDDING", "WRITING_GRAPH"} or (
                 build["status"] == "FAILED" and has_graph_run
             ):
                 from dext_graph.catalog.graph_workflow import run_graph_stage
 
-                result = await run_graph_stage(writer, build_id, settings)
+                result = await run_graph_stage(
+                    writer, build_id, settings, progress=progress
+                )
                 if (
                     result["build"]["status"] == "WRITING_VECTOR"
                     and os.getenv("DEXT_TEST_SKIP_VECTOR") != "1"
                 ):
-                    return await _run_topic_and_vector(writer, build_id, settings)
+                    return await _run_topic_and_vector(
+                        writer, build_id, settings, progress=progress
+                    )
                 return result
             if build["status"] == "CURATING" or (
                 build["status"] == "FAILED" and has_curation_run and not has_graph_run
             ):
                 from dext_graph.catalog.curation import run_curation
 
-                result = await run_curation(writer, build_id, settings)
+                result = await run_curation(
+                    writer, build_id, settings, progress=progress
+                )
                 if result["build"]["status"] == "EMBEDDING":
                     from dext_graph.catalog.graph_workflow import run_graph_stage
 
-                    result = await run_graph_stage(writer, build_id, settings)
+                    result = await run_graph_stage(
+                        writer, build_id, settings, progress=progress
+                    )
                     if (
                         result["build"]["status"] == "WRITING_VECTOR"
                         and os.getenv("DEXT_TEST_SKIP_VECTOR") != "1"
                     ):
-                        return await _run_topic_and_vector(writer, build_id, settings)
+                        return await _run_topic_and_vector(
+                            writer, build_id, settings, progress=progress
+                        )
                     return result
                 return result
-            result = await _run_build(writer, build_id, settings)
+            result = await _run_build(writer, build_id, settings, progress=progress)
             if result["build"]["status"] == "CURATING":
                 from dext_graph.catalog.curation import run_curation
 
-                result = await run_curation(writer, build_id, settings)
+                result = await run_curation(
+                    writer, build_id, settings, progress=progress
+                )
             if result["build"]["status"] == "EMBEDDING":
                 from dext_graph.catalog.graph_workflow import run_graph_stage
 
-                result = await run_graph_stage(writer, build_id, settings)
+                result = await run_graph_stage(
+                    writer, build_id, settings, progress=progress
+                )
                 if (
                     result["build"]["status"] == "WRITING_VECTOR"
                     and os.getenv("DEXT_TEST_SKIP_VECTOR") != "1"
                 ):
-                    return await _run_topic_and_vector(writer, build_id, settings)
+                    return await _run_topic_and_vector(
+                        writer, build_id, settings, progress=progress
+                    )
                 return result
             return result
 

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 import click
+
+from dext_graph.catalog.progress import ProgressEvent
 
 
 def _emit(value: dict[str, Any]) -> None:
@@ -40,6 +43,58 @@ def _guard_catalog(action: Callable[[], Any], *, asynchronous: bool = False) -> 
         _emit(result)
     except (CatalogError, ValueError) as exc:
         raise click.ClickException(str(exc)) from None
+
+
+class _CatalogProgressReporter:
+    _IMMEDIATE_ACTIONS = {"started", "completed", "failed"}
+
+    def __init__(self, *, interval_seconds: float = 1.0) -> None:
+        self.interval_seconds = interval_seconds
+        self._last_emit_by_key: dict[tuple[str, str, str], float] = {}
+
+    def __call__(self, event: ProgressEvent) -> None:
+        if not self._should_emit(event):
+            return
+        click.echo(self._format(event), err=True)
+
+    def _should_emit(self, event: ProgressEvent) -> bool:
+        if event.action in self._IMMEDIATE_ACTIONS:
+            return True
+        if event.total is not None and event.current == event.total:
+            return True
+        now = time.monotonic()
+        key = (event.stage, event.action, event.message)
+        previous = self._last_emit_by_key.get(key)
+        if previous is not None and now - previous < self.interval_seconds:
+            return False
+        self._last_emit_by_key[key] = now
+        return True
+
+    @staticmethod
+    def _format(event: ProgressEvent) -> str:
+        parts = [f"[{event.stage}]", event.action]
+        if event.build_id:
+            parts.append(f"build={event.build_id}")
+        if event.message:
+            parts.append(event.message)
+        if event.current is not None:
+            if event.total not in (None, 0):
+                percent = (event.current / event.total) * 100
+                parts.append(f"{event.current}/{event.total} ({percent:.1f}%)")
+            else:
+                parts.append(str(event.current))
+        counters = [
+            f"{key}={value}"
+            for key, value in sorted(event.counters.items())
+            if value is not None
+        ]
+        if counters:
+            parts.append(" ".join(counters))
+        return " ".join(parts)
+
+
+def _progress_reporter(enabled: bool) -> _CatalogProgressReporter | None:
+    return _CatalogProgressReporter() if enabled else None
 
 
 @click.group()
@@ -119,38 +174,68 @@ def value_validation() -> None:
     metavar="NAME",
     help="University name from entrances.yaml. Repeatable; omit for all existing canonical DBs.",
 )
-def build_command(universities: tuple[str, ...]) -> None:
+@click.option(
+    "--progress/--no-progress",
+    "show_progress",
+    default=True,
+    show_default=True,
+    help="Emit human-readable progress to stderr.",
+)
+def build_command(universities: tuple[str, ...], show_progress: bool) -> None:
     """Create a build, snapshot sources, and ingest legacy observations."""
     from dext_graph.catalog.workflow import create_build
     from dext_graph.config import GraphSettings
 
     settings = GraphSettings()
+    progress = _progress_reporter(show_progress)
     _guard_catalog(
-        lambda: create_build(list(universities), settings),
+        lambda: create_build(list(universities), settings, progress=progress),
         asynchronous=True,
     )
 
 
 @graph.command("resume")
 @click.argument("build_id")
-def resume_command(build_id: str) -> None:
+@click.option(
+    "--progress/--no-progress",
+    "show_progress",
+    default=True,
+    show_default=True,
+    help="Emit human-readable progress to stderr.",
+)
+def resume_command(build_id: str, show_progress: bool) -> None:
     """Resume a failed or interrupted catalog build."""
     from dext_graph.catalog.workflow import resume_build
     from dext_graph.config import GraphSettings
 
     settings = GraphSettings()
-    _guard_catalog(lambda: resume_build(build_id, settings), asynchronous=True)
+    progress = _progress_reporter(show_progress)
+    _guard_catalog(
+        lambda: resume_build(build_id, settings, progress=progress),
+        asynchronous=True,
+    )
 
 
 @graph.command("vector")
 @click.argument("build_id")
-def vector_command(build_id: str) -> None:
+@click.option(
+    "--progress/--no-progress",
+    "show_progress",
+    default=True,
+    show_default=True,
+    help="Emit human-readable progress to stderr.",
+)
+def vector_command(build_id: str, show_progress: bool) -> None:
     """Run or resume the stage-4 Qdrant semantic projection."""
     from dext_graph.catalog.vector_workflow import vector_build
     from dext_graph.config import GraphSettings
 
     settings = GraphSettings()
-    _guard_catalog(lambda: vector_build(build_id, settings), asynchronous=True)
+    progress = _progress_reporter(show_progress)
+    _guard_catalog(
+        lambda: vector_build(build_id, settings, progress=progress),
+        asynchronous=True,
+    )
 
 
 @graph.command("validate")
@@ -182,13 +267,24 @@ def topics_group() -> None:
 
 @topics_group.command("build")
 @click.argument("build_id")
-def topics_build_command(build_id: str) -> None:
+@click.option(
+    "--progress/--no-progress",
+    "show_progress",
+    default=True,
+    show_default=True,
+    help="Emit human-readable progress to stderr.",
+)
+def topics_build_command(build_id: str, show_progress: bool) -> None:
     """Run or resume stage-5 Topic linking and graph projection."""
     from dext_graph.catalog.topic_workflow import topic_build
     from dext_graph.config import GraphSettings
 
     settings = GraphSettings()
-    _guard_catalog(lambda: topic_build(build_id, settings), asynchronous=True)
+    progress = _progress_reporter(show_progress)
+    _guard_catalog(
+        lambda: topic_build(build_id, settings, progress=progress),
+        asynchronous=True,
+    )
 
 
 @topics_group.command("suggest-merges")

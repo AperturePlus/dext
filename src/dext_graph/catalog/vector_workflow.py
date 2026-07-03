@@ -21,6 +21,7 @@ from dext_graph.catalog.db import (
 from dext_graph.catalog.evidence import rebuild_graph_partitions
 from dext_graph.catalog.neo4j_sink import write_neo4j_exports
 from dext_graph.catalog.org_units import entity_org_unit_map
+from dext_graph.catalog.progress import ProgressCallback, emit_progress
 from dext_graph.catalog.semantic import (
     build_semantic_profile,
     load_embedding_cache,
@@ -525,6 +526,7 @@ async def run_vector_stage(
     build_id: str,
     settings: GraphSettings,
     *,
+    progress: ProgressCallback | None = None,
     embedding_client: Any | None = None,
     qdrant_sink: Any | None = None,
     tokenizer: Any | None = None,
@@ -563,6 +565,13 @@ async def run_vector_stage(
     neo4j_writer = neo4j_writer or write_neo4j_exports
 
     try:
+        emit_progress(
+            progress,
+            "vector",
+            "started",
+            build_id=build_id,
+            message="professor semantic projection",
+        )
         collection_name = professor_collection_name(build_id)
         await qdrant_sink.create_collection(
             collection_name, dimension=settings.embedding_dimension
@@ -576,6 +585,26 @@ async def run_vector_stage(
             transactional=False,
         )
         fingerprint = _embedding_fingerprint(settings, tokenizer.identity)
+        expected = await writer.execute(
+            lambda connection: connection.execute(
+                """
+                SELECT COUNT(*) FROM canonical_professors
+                WHERE build_id=? AND active=1 AND role_status!='excluded'
+                """,
+                (build_id,),
+            ).fetchone()[0],
+            transactional=False,
+        )
+        emit_progress(
+            progress,
+            "vector",
+            "progress",
+            build_id=build_id,
+            message=collection_name,
+            current=0,
+            total=int(expected),
+            counters={"collection": collection_name, "eligible_professors": int(expected)},
+        )
         uploaded = 0
         batches = 0
         while True:
@@ -605,6 +634,16 @@ async def run_vector_stage(
                 embedding_client=embedding_client,
                 fingerprint=fingerprint,
             )
+            emit_progress(
+                progress,
+                "vector",
+                "progress",
+                build_id=build_id,
+                message="embedding batch ready",
+                current=uploaded,
+                total=int(expected),
+                counters={"batch_rows": len(rows), "batches": batches + 1},
+            )
             await qdrant_sink.upsert(collection_name, points)
             await writer.execute(
                 lambda connection, key=str(rows[-1]["entity_id"]), count=len(rows): _checkpoint(
@@ -613,25 +652,34 @@ async def run_vector_stage(
             )
             uploaded += len(rows)
             batches += 1
+            emit_progress(
+                progress,
+                "vector",
+                "progress",
+                build_id=build_id,
+                message=collection_name,
+                current=uploaded,
+                total=int(expected),
+                counters={
+                    "collection": collection_name,
+                    "batch_rows": len(rows),
+                    "batches": batches,
+                    "uploaded": uploaded,
+                    "last_entity_id": rows[-1]["entity_id"],
+                },
+            )
             limit = os.getenv("DEXT_TEST_KILL_AFTER_QDRANT_BATCHES")
             if limit and batches >= int(limit):
                 os._exit(97)
-        expected = await writer.execute(
-            lambda connection: connection.execute(
-                """
-                SELECT COUNT(*) FROM canonical_professors
-                WHERE build_id=? AND active=1 AND role_status!='excluded'
-                """,
-                (build_id,),
-            ).fetchone()[0],
-            transactional=False,
-        )
         count = await qdrant_sink.count(collection_name)
         await rebuild_graph_partitions(
-            writer, build_id, settings, ("node:Professor",)
+            writer, build_id, settings, ("node:Professor",), progress=progress
         )
         if os.getenv("DEXT_TEST_SKIP_NEO4J") != "1":
-            await neo4j_writer(writer, build_id, settings)
+            if neo4j_writer is write_neo4j_exports:
+                await neo4j_writer(writer, build_id, settings, progress=progress)
+            else:
+                await neo4j_writer(writer, build_id, settings)
         await writer.execute(
             lambda connection: _finish(
                 connection,
@@ -641,9 +689,26 @@ async def run_vector_stage(
                 collection_count=count,
             )
         )
+        emit_progress(
+            progress,
+            "vector",
+            "completed",
+            build_id=build_id,
+            message=collection_name,
+            current=count,
+            total=int(expected),
+            counters={"collection": collection_name, "qdrant_count": count},
+        )
     except Exception as exc:  # noqa: BLE001 - persist resumable vector failure
-        await writer.execute(
-            lambda connection: _fail(connection, build_id, run_id, _safe_error(exc))
+        error = _safe_error(exc)
+        await writer.execute(lambda connection: _fail(connection, build_id, run_id, error))
+        emit_progress(
+            progress,
+            "vector",
+            "failed",
+            build_id=build_id,
+            message="professor semantic projection",
+            counters={"error": error},
         )
     finally:
         if owns_embedding:
@@ -656,14 +721,46 @@ async def run_vector_stage(
     return build_status(writer.path, build_id)
 
 
-async def vector_build(build_id: str, settings: GraphSettings | None = None) -> dict[str, Any]:
+async def vector_build(
+    build_id: str,
+    settings: GraphSettings | None = None,
+    *,
+    progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
     settings = settings or GraphSettings()
     path = Path(settings.catalog_path).expanduser().resolve()
     with catalog_write_lock(path):
-        backup_existing_catalog(path)
+        from dext_graph.catalog.workflow import _backup_progress
+
+        emit_progress(
+            progress,
+            "catalog_backup",
+            "started",
+            build_id=build_id,
+            message="catalog backup",
+        )
+        backup_existing_catalog(
+            path,
+            progress_hook=_backup_progress(
+                settings,
+                progress,
+                build_id=build_id,
+                stage="catalog_backup",
+                message="catalog backup",
+            ),
+        )
+        emit_progress(
+            progress,
+            "catalog_backup",
+            "completed",
+            build_id=build_id,
+            message="catalog backup",
+        )
         initialize_catalog(path)
         async with CatalogWriter(path, max_queue=settings.build_write_queue) as writer:
-            return await run_vector_stage(writer, build_id, settings)
+            return await run_vector_stage(
+                writer, build_id, settings, progress=progress
+            )
 
 
 __all__ = ["run_vector_stage", "vector_build"]

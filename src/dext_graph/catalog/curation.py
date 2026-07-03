@@ -30,6 +30,7 @@ from dext_graph.catalog.normalization import (
     normalize_url,
     split_multivalue,
 )
+from dext_graph.catalog.progress import ProgressCallback, emit_progress
 from dext_graph.catalog.rules import CurationRules, classify_role, load_curation_rules
 from dext_graph.config import GraphSettings
 
@@ -819,7 +820,12 @@ def _deactivate_stale_claims(connection: sqlite3.Connection, build_id: str) -> N
 
 
 async def _run_identity(
-    writer: CatalogWriter, build_id: str, settings: GraphSettings, rules: CurationRules
+    writer: CatalogWriter,
+    build_id: str,
+    settings: GraphSettings,
+    rules: CurationRules,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> None:
     tasks = await writer.execute(
         lambda c: [dict(row) for row in c.execute(
@@ -829,12 +835,34 @@ async def _run_identity(
     batch_counter = 0
     for task in tasks:
         university_id = task["university_id"]
+        emit_progress(
+            progress,
+            "curation",
+            "started",
+            build_id=build_id,
+            message=f"identity {university_id}",
+            counters={"sink": _IDENTITY_SINK, "university_id": university_id},
+        )
         last = await writer.execute(lambda c, u=university_id: _last_key(c, build_id, _IDENTITY_SINK, u), transactional=False)
 
         async def consume(rows: list[dict[str, Any]], university: str = university_id) -> None:
             nonlocal batch_counter
             await writer.execute(lambda c: _commit_identity_batch(c, build_id, university, rows, rules))
             batch_counter += 1
+            emit_progress(
+                progress,
+                "curation",
+                "progress",
+                build_id=build_id,
+                message=f"identity {university}",
+                counters={
+                    "sink": _IDENTITY_SINK,
+                    "university_id": university,
+                    "batch_rows": len(rows),
+                    "batches": batch_counter,
+                    "last_key": rows[-1]["stream_key"],
+                },
+            )
             limit = os.getenv("DEXT_TEST_KILL_AFTER_CURATION_IDENTITY_BATCHES")
             if limit and batch_counter >= int(limit):
                 os._exit(93)
@@ -852,7 +880,12 @@ async def _run_identity(
 
 
 async def _run_fields(
-    writer: CatalogWriter, build_id: str, settings: GraphSettings, rules: CurationRules
+    writer: CatalogWriter,
+    build_id: str,
+    settings: GraphSettings,
+    rules: CurationRules,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> None:
     tasks = await writer.execute(
         lambda c: [dict(row) for row in c.execute(
@@ -862,12 +895,34 @@ async def _run_fields(
     batch_counter = 0
     for task in tasks:
         university_id = task["university_id"]
+        emit_progress(
+            progress,
+            "curation",
+            "started",
+            build_id=build_id,
+            message=f"fields {university_id}",
+            counters={"sink": _FIELD_SINK, "university_id": university_id},
+        )
         last = await writer.execute(lambda c, u=university_id: _last_key(c, build_id, _FIELD_SINK, u), transactional=False)
 
         async def consume(rows: list[dict[str, Any]], university: str = university_id) -> None:
             nonlocal batch_counter
             await writer.execute(lambda c: _commit_field_batch(c, build_id, university, rows, rules))
             batch_counter += 1
+            emit_progress(
+                progress,
+                "curation",
+                "progress",
+                build_id=build_id,
+                message=f"fields {university}",
+                counters={
+                    "sink": _FIELD_SINK,
+                    "university_id": university,
+                    "batch_rows": len(rows),
+                    "batches": batch_counter,
+                    "last_key": rows[-1]["stream_key"],
+                },
+            )
             limit = os.getenv("DEXT_TEST_KILL_AFTER_CURATION_FIELD_BATCHES")
             if limit and batch_counter >= int(limit):
                 os._exit(94)
@@ -887,7 +942,12 @@ async def _run_fields(
 
 
 async def _run_canonical(
-    writer: CatalogWriter, build_id: str, settings: GraphSettings, rules: CurationRules
+    writer: CatalogWriter,
+    build_id: str,
+    settings: GraphSettings,
+    rules: CurationRules,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> None:
     tasks = await writer.execute(
         lambda c: [dict(row) for row in c.execute(
@@ -897,12 +957,34 @@ async def _run_canonical(
     batch_counter = 0
     for task in tasks:
         university_id = task["university_id"]
+        emit_progress(
+            progress,
+            "curation",
+            "started",
+            build_id=build_id,
+            message=f"canonical {university_id}",
+            counters={"sink": _CANONICAL_SINK, "university_id": university_id},
+        )
         last = await writer.execute(lambda c, u=university_id: _last_key(c, build_id, _CANONICAL_SINK, u), transactional=False)
 
         async def consume(rows: list[dict[str, Any]], university: str = university_id) -> None:
             nonlocal batch_counter
             await writer.execute(lambda c: _commit_canonical_batch(c, build_id, university, rows, rules))
             batch_counter += 1
+            emit_progress(
+                progress,
+                "curation",
+                "progress",
+                build_id=build_id,
+                message=f"canonical {university}",
+                counters={
+                    "sink": _CANONICAL_SINK,
+                    "university_id": university,
+                    "batch_rows": len(rows),
+                    "batches": batch_counter,
+                    "last_key": rows[-1]["stream_key"],
+                },
+            )
             limit = os.getenv("DEXT_TEST_KILL_AFTER_CURATION_CANONICAL_BATCHES")
             if limit and batch_counter >= int(limit):
                 os._exit(95)
@@ -966,7 +1048,11 @@ def _fail_run(connection: sqlite3.Connection, build_id: str, run_id: str, error:
 
 
 async def run_curation(
-    writer: CatalogWriter, build_id: str, settings: GraphSettings
+    writer: CatalogWriter,
+    build_id: str,
+    settings: GraphSettings,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     rules = load_curation_rules()
     run_id = await writer.execute(lambda c: _prepare_run(c, build_id, rules))
@@ -979,14 +1065,36 @@ async def run_curation(
 
         return build_status(settings.catalog_path, build_id)
     try:
-        await _run_identity(writer, build_id, settings, rules)
+        emit_progress(
+            progress,
+            "curation",
+            "started",
+            build_id=build_id,
+            message="curation stage",
+        )
+        await _run_identity(writer, build_id, settings, rules, progress=progress)
         await writer.execute(lambda c: _deactivate_stale_claims(c, build_id))
-        await _run_fields(writer, build_id, settings, rules)
-        await _run_canonical(writer, build_id, settings, rules)
+        await _run_fields(writer, build_id, settings, rules, progress=progress)
+        await _run_canonical(writer, build_id, settings, rules, progress=progress)
         await writer.execute(lambda c: _finish_run(c, build_id, run_id))
+        emit_progress(
+            progress,
+            "curation",
+            "completed",
+            build_id=build_id,
+            message="curation stage",
+        )
     except Exception as exc:  # noqa: BLE001 -- persist resumable stage failure
         error = _safe_error(exc)
         await writer.execute(lambda c: _fail_run(c, build_id, run_id, error))
+        emit_progress(
+            progress,
+            "curation",
+            "failed",
+            build_id=build_id,
+            message="curation stage",
+            counters={"error": error},
+        )
     from dext_graph.catalog.workflow import build_status
 
     return build_status(settings.catalog_path, build_id)

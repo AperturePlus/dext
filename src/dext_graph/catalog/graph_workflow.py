@@ -25,6 +25,7 @@ from dext_graph.catalog.evidence import (
 )
 from dext_graph.catalog.ids import hash_parts
 from dext_graph.catalog.neo4j_sink import write_neo4j_exports
+from dext_graph.catalog.progress import ProgressCallback, emit_progress
 from dext_graph.config import GraphSettings
 
 
@@ -152,7 +153,11 @@ def _fail(
 
 
 async def run_graph_stage(
-    writer: CatalogWriter, build_id: str, settings: GraphSettings
+    writer: CatalogWriter,
+    build_id: str,
+    settings: GraphSettings,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     run_id = await writer.execute(lambda connection: _prepare_run(connection, build_id))
     run = await writer.execute(
@@ -166,15 +171,52 @@ async def run_graph_stage(
 
         return build_status(writer.path, build_id)
     try:
+        emit_progress(
+            progress,
+            "graph",
+            "started",
+            build_id=build_id,
+            message="graph evidence/export stage",
+        )
+        emit_progress(
+            progress,
+            "evidence",
+            "started",
+            build_id=build_id,
+            message="materialize evidence",
+        )
         await materialize_evidence(writer, build_id, settings)
-        await freeze_graph_exports(writer, build_id, settings)
+        emit_progress(
+            progress,
+            "evidence",
+            "completed",
+            build_id=build_id,
+            message="materialize evidence",
+        )
+        await freeze_graph_exports(writer, build_id, settings, progress=progress)
         await writer.execute(lambda connection: _start_graph_write(connection, build_id))
         if os.getenv("DEXT_TEST_SKIP_NEO4J") != "1":
-            await write_neo4j_exports(writer, build_id, settings)
+            await write_neo4j_exports(
+                writer, build_id, settings, progress=progress
+            )
         await writer.execute(lambda connection: _finish(connection, build_id, run_id))
+        emit_progress(
+            progress,
+            "graph",
+            "completed",
+            build_id=build_id,
+            message="graph evidence/export stage",
+        )
     except Exception as exc:  # noqa: BLE001 - persist resumable graph failure
-        await writer.execute(
-            lambda connection: _fail(connection, build_id, run_id, _safe_error(exc))
+        error = _safe_error(exc)
+        await writer.execute(lambda connection: _fail(connection, build_id, run_id, error))
+        emit_progress(
+            progress,
+            "graph",
+            "failed",
+            build_id=build_id,
+            message="graph evidence/export stage",
+            counters={"error": error},
         )
     from dext_graph.catalog.workflow import build_status
 
@@ -182,15 +224,45 @@ async def run_graph_stage(
 
 
 async def graph_build(
-    build_id: str, settings: GraphSettings | None = None
+    build_id: str,
+    settings: GraphSettings | None = None,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     settings = settings or GraphSettings()
     path = Path(settings.catalog_path).expanduser().resolve()
     with catalog_write_lock(path):
-        backup_existing_catalog(path)
+        from dext_graph.catalog.workflow import _backup_progress
+
+        emit_progress(
+            progress,
+            "catalog_backup",
+            "started",
+            build_id=build_id,
+            message="catalog backup",
+        )
+        backup_existing_catalog(
+            path,
+            progress_hook=_backup_progress(
+                settings,
+                progress,
+                build_id=build_id,
+                stage="catalog_backup",
+                message="catalog backup",
+            ),
+        )
+        emit_progress(
+            progress,
+            "catalog_backup",
+            "completed",
+            build_id=build_id,
+            message="catalog backup",
+        )
         initialize_catalog(path)
         async with CatalogWriter(path, max_queue=settings.build_write_queue) as writer:
-            return await run_graph_stage(writer, build_id, settings)
+            return await run_graph_stage(
+                writer, build_id, settings, progress=progress
+            )
 
 
 __all__ = ["graph_build", "run_graph_stage"]

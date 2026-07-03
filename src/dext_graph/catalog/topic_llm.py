@@ -30,7 +30,9 @@ class TopicLLMClient:
         if self._owns_client:
             await self._client.close()
 
-    async def extract(self, raw_text: str) -> list[TopicConcept]:
+    async def extract_with_diagnostics(
+        self, raw_text: str
+    ) -> tuple[list[TopicConcept], int]:
         response = await self._client.chat.completions.create(
             model=self.settings.topic_llm_model,
             messages=[
@@ -60,7 +62,12 @@ class TopicLLMClient:
             raise ValueValidationError("Topic extractor response lacks concepts array")
         objects = [item for item in values if isinstance(item, dict)]
         validated = validate_concepts(raw_text, objects)
-        self.last_rejected_count = len(values) - len(validated)
+        rejected_count = len(values) - len(validated)
+        return validated, rejected_count
+
+    async def extract(self, raw_text: str) -> list[TopicConcept]:
+        validated, rejected_count = await self.extract_with_diagnostics(raw_text)
+        self.last_rejected_count = rejected_count
         return validated
 
     async def select(

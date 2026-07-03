@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ from dext_graph.catalog.db import (
 from dext_graph.catalog.evidence import freeze_graph_exports
 from dext_graph.catalog.neo4j_sink import write_neo4j_exports
 from dext_graph.catalog.normalization import normalize_text
+from dext_graph.catalog.progress import ProgressCallback, emit_progress
 from dext_graph.catalog.topic_llm import TopicLLMClient
 from dext_graph.catalog.topic_sink import TopicQdrant, TopicVectorPoint, topic_collection_name
 from dext_graph.catalog.topics import (
@@ -38,6 +41,7 @@ from dext_graph.embeddings import EmbeddingClient
 from dext_graph.profiles import TransformersTokenizer, prefixed_input
 
 TOPIC_RUN_VERSION = "topic-dag-v1"
+_TERMINAL_TOPIC_LINK_STATUSES = frozenset({"succeeded", "terminal-invalid-input"})
 
 
 def _safe_error(exc: BaseException) -> str:
@@ -124,12 +128,14 @@ def _active_topics(connection: sqlite3.Connection, taxonomy_version: str) -> lis
 async def _build_candidate_collection(
     writer: CatalogWriter,
     *,
+    build_id: str,
     taxonomy_version: str,
     fingerprint: str,
     settings: GraphSettings,
     tokenizer: Any,
     embedding_client: Any,
     topic_sink: Any,
+    progress: ProgressCallback | None = None,
 ) -> tuple[str, int]:
     name = topic_collection_name(taxonomy_version, fingerprint)
     await topic_sink.create_collection(name, dimension=settings.embedding_dimension)
@@ -150,6 +156,16 @@ async def _build_candidate_collection(
     if existing is not None and str(existing["status"]) == "READY":
         count = await topic_sink.count(name)
         if count == len(topics) == int(existing["point_count"]):
+            emit_progress(
+                progress,
+                "topics",
+                "completed",
+                build_id=build_id,
+                message="candidate collection already ready",
+                current=count,
+                total=len(topics),
+                counters={"collection": name, "topics": count},
+            )
             return name, count
     now = utcnow_iso()
     await writer.execute(
@@ -194,6 +210,20 @@ async def _build_candidate_collection(
             for topic, vector in zip(batch, embedded.vectors, strict=True)
         ]
         await topic_sink.upsert(name, points)
+        emit_progress(
+            progress,
+            "topics",
+            "progress",
+            build_id=build_id,
+            message="candidate collection",
+            current=min(offset + len(batch), len(topics)),
+            total=len(topics),
+            counters={
+                "collection": name,
+                "batch_rows": len(batch),
+                "offset": offset,
+            },
+        )
     count = await topic_sink.count(name)
     if count != len(topics):
         raise CatalogError(f"Topic Qdrant count mismatch: expected {len(topics)}, found {count}")
@@ -215,45 +245,30 @@ async def _build_candidate_collection(
     return name, count
 
 
-def _last_statement_key(connection: sqlite3.Connection, build_id: str) -> str:
-    row = connection.execute(
-        "SELECT last_key FROM sink_checkpoints WHERE build_id=? "
-        "AND sink='topic_link' AND partition_key='statements'",
-        (build_id,),
-    ).fetchone()
-    return str(row[0]) if row and row[0] is not None else ""
-
-
 def _checkpoint_statement(
-    connection: sqlite3.Connection, build_id: str, statement_id: str
+    connection: sqlite3.Connection,
+    build_id: str,
+    statement_id: str,
+    *,
+    rows_delta: int,
 ) -> None:
     connection.execute(
         """
         INSERT INTO sink_checkpoints(
           build_id,sink,partition_key,last_key,last_batch_id,rows_written,updated_at
-        ) VALUES (?,'topic_link','statements',?,NULL,1,?)
+        ) VALUES (?,'topic_link','statements',?,NULL,?,?)
         ON CONFLICT(build_id,sink,partition_key) DO UPDATE SET
-          last_key=excluded.last_key,
-          rows_written=sink_checkpoints.rows_written + 1,
+          last_key=CASE
+            WHEN sink_checkpoints.last_key IS NULL
+              OR sink_checkpoints.last_key < excluded.last_key
+            THEN excluded.last_key
+            ELSE sink_checkpoints.last_key
+          END,
+          rows_written=sink_checkpoints.rows_written + excluded.rows_written,
           updated_at=excluded.updated_at
         """,
-        (build_id, statement_id, utcnow_iso()),
+        (build_id, statement_id, rows_delta, utcnow_iso()),
     )
-
-
-def _next_statement(
-    connection: sqlite3.Connection, build_id: str, after_statement_id: str
-) -> dict[str, Any] | None:
-    row = connection.execute(
-        """
-        SELECT s.id,s.raw_text FROM research_statements s
-        LEFT JOIN topic_link_jobs j ON j.build_id=s.build_id AND j.statement_id=s.id
-        WHERE s.build_id=? AND s.id>? AND (j.status IS NULL OR j.status!='succeeded')
-        ORDER BY s.id LIMIT 1
-        """,
-        (build_id, after_statement_id),
-    ).fetchone()
-    return dict(row) if row is not None else None
 
 
 def _mark_job(
@@ -288,6 +303,159 @@ def _mark_job(
             utcnow_iso(),
         ),
     )
+
+
+def _reset_running_jobs(connection: sqlite3.Connection, build_id: str) -> int:
+    cursor = connection.execute(
+        """
+        UPDATE topic_link_jobs
+        SET status='retry',last_error=?,updated_at=?
+        WHERE build_id=? AND status='running'
+        """,
+        ("interrupted_run_reset", utcnow_iso(), build_id),
+    )
+    return int(cursor.rowcount)
+
+
+def _claim_statement(
+    connection: sqlite3.Connection, build_id: str
+) -> dict[str, Any] | None:
+    row = connection.execute(
+        """
+        SELECT s.id,s.raw_text FROM research_statements s
+        LEFT JOIN topic_link_jobs j ON j.build_id=s.build_id AND j.statement_id=s.id
+        WHERE s.build_id=? AND (j.status IS NULL OR j.status IN ('pending','retry'))
+        ORDER BY s.id LIMIT 1
+        """,
+        (build_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    statement = dict(row)
+    _mark_job(
+        connection,
+        build_id=build_id,
+        statement_id=str(statement["id"]),
+        status="running",
+    )
+    return statement
+
+
+def _job_enters_terminal(
+    connection: sqlite3.Connection,
+    *,
+    build_id: str,
+    statement_id: str,
+    status: str,
+) -> bool:
+    if status not in _TERMINAL_TOPIC_LINK_STATUSES:
+        return False
+    row = connection.execute(
+        "SELECT status FROM topic_link_jobs WHERE build_id=? AND statement_id=?",
+        (build_id, statement_id),
+    ).fetchone()
+    return row is None or str(row["status"]) not in _TERMINAL_TOPIC_LINK_STATUSES
+
+
+def _mark_job_and_checkpoint(
+    connection: sqlite3.Connection,
+    *,
+    build_id: str,
+    statement_id: str,
+    status: str,
+    candidates: list[dict[str, Any]] | None = None,
+    error: str | None = None,
+) -> bool:
+    entered_terminal = _job_enters_terminal(
+        connection, build_id=build_id, statement_id=statement_id, status=status
+    )
+    _mark_job(
+        connection,
+        build_id=build_id,
+        statement_id=statement_id,
+        status=status,
+        candidates=candidates,
+        error=error,
+    )
+    if status in _TERMINAL_TOPIC_LINK_STATUSES:
+        _checkpoint_statement(
+            connection,
+            build_id,
+            statement_id,
+            rows_delta=1 if entered_terminal else 0,
+        )
+    return entered_terminal
+
+
+def _complete_invalid_statement(
+    connection: sqlite3.Connection, *, build_id: str, statement_id: str
+) -> bool:
+    return _mark_job_and_checkpoint(
+        connection,
+        build_id=build_id,
+        statement_id=statement_id,
+        status="terminal-invalid-input",
+        error="empty_or_punctuation_only_statement",
+    )
+
+
+def _complete_linked_statement(
+    connection: sqlite3.Connection,
+    *,
+    build_id: str,
+    statement_id: str,
+    raw_text: str,
+    concepts: list[TopicConcept],
+    rejected_count: int,
+    semantic_choices: dict[str, tuple[str, float] | str],
+    candidates: list[dict[str, Any]],
+) -> bool:
+    if rejected_count:
+        record_topic_finding(
+            connection,
+            build_id=build_id,
+            code="topic_concept_rejected",
+            reference=statement_id,
+            details={
+                "statement_id": statement_id,
+                "rejected_concepts": rejected_count,
+                "reason": "invalid_evidence_kind_or_relation",
+            },
+        )
+    apply_statement_concepts(
+        connection,
+        build_id=build_id,
+        statement_id=statement_id,
+        raw_text=raw_text,
+        concepts=[
+            {
+                "evidence_span": concept.evidence_span,
+                "canonical_name": concept.canonical_name,
+                "kind": concept.kind,
+                "relation_type": concept.relation_type,
+            }
+            for concept in concepts
+        ],
+        semantic_choices=semantic_choices,
+    )
+    return _mark_job_and_checkpoint(
+        connection,
+        build_id=build_id,
+        statement_id=statement_id,
+        status="succeeded",
+        candidates=candidates,
+    )
+
+
+async def _extract_statement_concepts(
+    llm_client: Any, raw_text: str
+) -> tuple[list[TopicConcept], int]:
+    extractor = getattr(llm_client, "extract_with_diagnostics", None)
+    if extractor is not None:
+        concepts, rejected_count = await extractor(raw_text)
+        return list(concepts), int(rejected_count)
+    concepts = await llm_client.extract(raw_text)
+    return list(concepts), int(getattr(llm_client, "last_rejected_count", 0) or 0)
 
 
 async def _semantic_choices(
@@ -354,124 +522,170 @@ async def _link_statements(
     embedding_client: Any,
     topic_sink: Any,
     llm_client: Any,
+    progress: ProgressCallback | None = None,
 ) -> int:
     completed = 0
-    last_statement_id = await writer.execute(
-        lambda connection: _last_statement_key(connection, build_id),
+    await writer.execute(lambda connection: _reset_running_jobs(connection, build_id))
+    total = await writer.execute(
+        lambda connection: int(
+            connection.execute(
+                "SELECT COUNT(*) FROM research_statements WHERE build_id=?",
+                (build_id,),
+            ).fetchone()[0]
+        ),
         transactional=False,
     )
-    while True:
-        statement = await writer.execute(
-            lambda connection: _next_statement(
-                connection, build_id, last_statement_id
-            ),
-            transactional=False,
-        )
-        if statement is None:
-            return completed
-        statement_id = str(statement["id"])
-        if normalize_text(statement["raw_text"]) is None:
-            await writer.execute(
-                lambda connection: _mark_job(
-                    connection,
-                    build_id=build_id,
-                    statement_id=statement_id,
-                    status="terminal-invalid-input",
-                    error="empty_or_punctuation_only_statement",
-                )
-            )
-            await writer.execute(
-                lambda connection: _checkpoint_statement(
-                    connection, build_id, statement_id
-                )
-            )
-            last_statement_id = statement_id
-            continue
+    already_terminal = await writer.execute(
+        lambda connection: int(
+            connection.execute(
+                "SELECT COUNT(*) FROM topic_link_jobs WHERE build_id=? "
+                "AND status IN ('succeeded','terminal-invalid-input')",
+                (build_id,),
+            ).fetchone()[0]
+        ),
+        transactional=False,
+    )
+    processed = already_terminal
+    emit_progress(
+        progress,
+        "topics",
+        "started",
+        build_id=build_id,
+        message="statement linking",
+        current=already_terminal,
+        total=total,
+    )
+
+    async def mark_retry(statement_id: str, error: str) -> None:
         await writer.execute(
-            lambda connection: _mark_job(
+            lambda connection, sid=statement_id, err=error: _mark_job(
                 connection,
                 build_id=build_id,
-                statement_id=statement_id,
-                status="running",
+                statement_id=sid,
+                status="retry",
+                error=err,
             )
         )
-        try:
-            concepts = await llm_client.extract(str(statement["raw_text"]))
-            rejected = int(getattr(llm_client, "last_rejected_count", 0) or 0)
-            if rejected:
-                await writer.execute(
-                    lambda connection: record_topic_finding(
-                        connection,
+
+    async def worker(_worker_id: int) -> None:
+        nonlocal completed, processed
+        current_statement_id: str | None = None
+        while True:
+            statement = await writer.execute(
+                lambda connection: _claim_statement(connection, build_id)
+            )
+            if statement is None:
+                return
+            statement_id = str(statement["id"])
+            current_statement_id = statement_id
+            raw_text = str(statement["raw_text"])
+            try:
+                if normalize_text(raw_text) is None:
+                    entered_terminal = await writer.execute(
+                        lambda connection, sid=statement_id: _complete_invalid_statement(
+                            connection, build_id=build_id, statement_id=sid
+                        )
+                    )
+                    current_statement_id = None
+                    if entered_terminal:
+                        processed += 1
+                    emit_progress(
+                        progress,
+                        "topics",
+                        "progress",
                         build_id=build_id,
-                        code="topic_concept_rejected",
-                        reference=statement_id,
-                        details={
+                        message="statement linking",
+                        current=min(processed, total),
+                        total=total,
+                        counters={
                             "statement_id": statement_id,
-                            "rejected_concepts": rejected,
-                            "reason": "invalid_evidence_kind_or_relation",
+                            "status": "terminal-invalid-input",
                         },
                     )
+                    continue
+                concepts, rejected = await _extract_statement_concepts(
+                    llm_client, raw_text
                 )
-            choices, candidates = await _semantic_choices(
-                concepts,
-                taxonomy_version=taxonomy_version,
-                collection_name=collection_name,
-                writer=writer,
-                tokenizer=tokenizer,
-                settings=settings,
-                embedding_client=embedding_client,
-                topic_sink=topic_sink,
-                llm_client=llm_client,
-            )
-            await writer.execute(
-                lambda connection: apply_statement_concepts(
-                    connection,
+                choices, candidates = await _semantic_choices(
+                    concepts,
+                    taxonomy_version=taxonomy_version,
+                    collection_name=collection_name,
+                    writer=writer,
+                    tokenizer=tokenizer,
+                    settings=settings,
+                    embedding_client=embedding_client,
+                    topic_sink=topic_sink,
+                    llm_client=llm_client,
+                )
+                entered_terminal = await writer.execute(
+                    lambda connection, sid=statement_id: _complete_linked_statement(
+                        connection,
+                        build_id=build_id,
+                        statement_id=sid,
+                        raw_text=raw_text,
+                        concepts=concepts,
+                        rejected_count=rejected,
+                        semantic_choices=choices,
+                        candidates=candidates,
+                    )
+                )
+                current_statement_id = None
+                if entered_terminal:
+                    completed += 1
+                    processed += 1
+                emit_progress(
+                    progress,
+                    "topics",
+                    "progress",
                     build_id=build_id,
-                    statement_id=statement_id,
-                    raw_text=str(statement["raw_text"]),
-                    concepts=[
-                        {
-                            "evidence_span": concept.evidence_span,
-                            "canonical_name": concept.canonical_name,
-                            "kind": concept.kind,
-                            "relation_type": concept.relation_type,
-                        }
-                        for concept in concepts
-                    ],
-                    semantic_choices=choices,
+                    message="statement linking",
+                    current=min(processed, total),
+                    total=total,
+                    counters={
+                        "statement_id": statement_id,
+                        "concepts": len(concepts),
+                        "candidates": len(candidates),
+                    },
                 )
+                limit = os.getenv("DEXT_TEST_KILL_AFTER_TOPIC_JOBS")
+                if limit and completed >= int(limit):
+                    os._exit(95)
+            except asyncio.CancelledError:
+                if current_statement_id is not None:
+                    with suppress(Exception):
+                        await asyncio.shield(
+                            mark_retry(current_statement_id, "cancelled")
+                        )
+                raise
+            except Exception as exc:
+                if current_statement_id is not None:
+                    await mark_retry(current_statement_id, _safe_error(exc))
+                    current_statement_id = None
+                raise
+
+    tasks = [
+        asyncio.create_task(worker(index), name=f"topic-link-worker-{index}")
+        for index in range(settings.topic_link_concurrency)
+    ]
+    pending: set[asyncio.Task[None]] = set(tasks)
+    try:
+        while pending:
+            done, pending = await asyncio.wait(
+                pending, return_when=asyncio.FIRST_EXCEPTION
             )
-            await writer.execute(
-                lambda connection: _mark_job(
-                    connection,
-                    build_id=build_id,
-                    statement_id=statement_id,
-                    status="succeeded",
-                    candidates=candidates,
-                )
-            )
-            await writer.execute(
-                lambda connection: _checkpoint_statement(
-                    connection, build_id, statement_id
-                )
-            )
-            last_statement_id = statement_id
-            completed += 1
-            limit = os.getenv("DEXT_TEST_KILL_AFTER_TOPIC_JOBS")
-            if limit and completed >= int(limit):
-                os._exit(95)
-        except Exception as exc:
-            error = _safe_error(exc)
-            await writer.execute(
-                lambda connection: _mark_job(
-                    connection,
-                    build_id=build_id,
-                    statement_id=statement_id,
-                    status="retry",
-                    error=error,
-                )
-            )
-            raise
+            for task in done:
+                exc = task.exception()
+                if exc is not None:
+                    for pending_task in pending:
+                        pending_task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    raise exc
+        return completed
+    except asyncio.CancelledError:
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        raise
 
 
 def _finish(
@@ -543,6 +757,7 @@ async def run_topic_stage(
     build_id: str,
     settings: GraphSettings,
     *,
+    progress: ProgressCallback | None = None,
     embedding_client: Any | None = None,
     topic_sink: Any | None = None,
     llm_client: Any | None = None,
@@ -579,19 +794,36 @@ async def run_topic_stage(
         llm_client = TopicLLMClient(settings)
     neo4j_writer = neo4j_writer or write_neo4j_exports
     try:
+        emit_progress(
+            progress,
+            "topics",
+            "started",
+            build_id=build_id,
+            message="topic taxonomy/linking stage",
+        )
         relation_count = await writer.execute(
             lambda connection: materialize_taxonomy_relations(
                 connection, build_id=build_id, manifest=manifest
             )
         )
+        emit_progress(
+            progress,
+            "topics",
+            "progress",
+            build_id=build_id,
+            message="taxonomy relations",
+            counters={"relations": relation_count},
+        )
         collection_name, topic_count = await _build_candidate_collection(
             writer,
+            build_id=build_id,
             taxonomy_version=manifest.version,
             fingerprint=fingerprint,
             settings=settings,
             tokenizer=tokenizer,
             embedding_client=embedding_client,
             topic_sink=topic_sink,
+            progress=progress,
         )
         await _link_statements(
             writer,
@@ -603,9 +835,13 @@ async def run_topic_stage(
             embedding_client=embedding_client,
             topic_sink=topic_sink,
             llm_client=llm_client,
+            progress=progress,
         )
-        await freeze_graph_exports(writer, build_id, settings)
-        await neo4j_writer(writer, build_id, settings)
+        await freeze_graph_exports(writer, build_id, settings, progress=progress)
+        if neo4j_writer is write_neo4j_exports:
+            await neo4j_writer(writer, build_id, settings, progress=progress)
+        else:
+            await neo4j_writer(writer, build_id, settings)
         await writer.execute(
             lambda connection: _finish(
                 connection,
@@ -614,6 +850,16 @@ async def run_topic_stage(
                 topic_count=topic_count,
                 relation_count=relation_count,
             )
+        )
+        emit_progress(
+            progress,
+            "topics",
+            "completed",
+            build_id=build_id,
+            message="topic taxonomy/linking stage",
+            current=topic_count,
+            total=topic_count,
+            counters={"topics": topic_count, "relations": relation_count},
         )
     except Exception as exc:
         error = _safe_error(exc)
@@ -634,6 +880,14 @@ async def run_topic_stage(
                 ),
             )
         )
+        emit_progress(
+            progress,
+            "topics",
+            "failed",
+            build_id=build_id,
+            message="topic taxonomy/linking stage",
+            counters={"error": error},
+        )
     finally:
         if owns_embedding:
             await embedding_client.close()
@@ -647,14 +901,46 @@ async def run_topic_stage(
     return build_status(writer.path, build_id)
 
 
-async def topic_build(build_id: str, settings: GraphSettings | None = None) -> dict[str, Any]:
+async def topic_build(
+    build_id: str,
+    settings: GraphSettings | None = None,
+    *,
+    progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
     settings = settings or GraphSettings()
     path = Path(settings.catalog_path).expanduser().resolve()
     with catalog_write_lock(path):
-        backup_existing_catalog(path)
+        from dext_graph.catalog.workflow import _backup_progress
+
+        emit_progress(
+            progress,
+            "catalog_backup",
+            "started",
+            build_id=build_id,
+            message="catalog backup",
+        )
+        backup_existing_catalog(
+            path,
+            progress_hook=_backup_progress(
+                settings,
+                progress,
+                build_id=build_id,
+                stage="catalog_backup",
+                message="catalog backup",
+            ),
+        )
+        emit_progress(
+            progress,
+            "catalog_backup",
+            "completed",
+            build_id=build_id,
+            message="catalog backup",
+        )
         initialize_catalog(path)
         async with CatalogWriter(path, max_queue=settings.build_write_queue) as writer:
-            return await run_topic_stage(writer, build_id, settings)
+            return await run_topic_stage(
+                writer, build_id, settings, progress=progress
+            )
 
 
 __all__ = ["TOPIC_RUN_VERSION", "run_topic_stage", "topic_build"]

@@ -50,6 +50,7 @@ class GraphSettings(BaseSettings):
     topic_llm_timeout_seconds: float = 90.0
     topic_llm_max_retries: int = 2
     topic_candidate_top_k: int = 8
+    topic_link_concurrency: int = 8
     topic_merge_min_score: float = 0.90
 
     tokenizer_model: str = "BAAI/bge-m3"
@@ -83,6 +84,7 @@ class GraphSettings(BaseSettings):
         "embedding_queue_maxsize",
         "topic_llm_max_retries",
         "topic_candidate_top_k",
+        "topic_link_concurrency",
         "profile_max_tokens",
         "source_read_batch",
         "qdrant_upsert_batch",

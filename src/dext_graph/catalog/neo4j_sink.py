@@ -11,6 +11,7 @@ from typing import Any
 
 from dext_graph.catalog.db import CatalogError, CatalogWriter, connect_catalog_read_only, utcnow_iso
 from dext_graph.catalog.evidence import PARTITIONS
+from dext_graph.catalog.progress import ProgressCallback, emit_progress
 from dext_graph.config import GraphSettings
 
 _LABELS = (
@@ -149,7 +150,11 @@ def _load_batch(
 
 
 async def write_neo4j_exports(
-    writer: CatalogWriter, build_id: str, settings: GraphSettings
+    writer: CatalogWriter,
+    build_id: str,
+    settings: GraphSettings,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, int]:
     try:
         from neo4j import AsyncGraphDatabase
@@ -175,6 +180,14 @@ async def write_neo4j_exports(
         async with driver.session(database=settings.neo4j_database) as session:
             batch_counter = 0
             for partition in PARTITIONS:
+                emit_progress(
+                    progress,
+                    "neo4j",
+                    "started",
+                    build_id=build_id,
+                    message=partition,
+                    counters={"partition": partition},
+                )
                 written = 0
                 while True:
                     last = await writer.execute(
@@ -196,10 +209,34 @@ async def write_neo4j_exports(
                     )
                     written += len(rows)
                     batch_counter += 1
+                    emit_progress(
+                        progress,
+                        "neo4j",
+                        "progress",
+                        build_id=build_id,
+                        message=partition,
+                        current=written,
+                        counters={
+                            "partition": partition,
+                            "batch_rows": len(rows),
+                            "batches": batch_counter,
+                            "last_key": rows[-1]["row_key"],
+                        },
+                    )
                     limit = os.getenv("DEXT_TEST_KILL_AFTER_NEO4J_BATCHES")
                     if limit and batch_counter >= int(limit):
                         os._exit(96)
                 counts[partition] = written
+                emit_progress(
+                    progress,
+                    "neo4j",
+                    "completed",
+                    build_id=build_id,
+                    message=partition,
+                    current=written,
+                    total=written,
+                    counters={"partition": partition, "rows": written},
+                )
         await validate_neo4j_exports(driver, build_id, settings)
         return counts
     finally:

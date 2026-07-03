@@ -27,6 +27,7 @@ from dext_graph.catalog.org_units import (
     iter_resolved_affiliations,
     load_org_records,
 )
+from dext_graph.catalog.progress import ProgressCallback, emit_progress
 from dext_graph.config import GraphSettings
 
 EVIDENCE_VERSION = "evidence-v1"
@@ -800,6 +801,7 @@ async def freeze_graph_exports(
     settings: GraphSettings,
     *,
     partitions: tuple[str, ...] | None = None,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, int]:
     selected = partitions or PARTITIONS
     unknown = set(selected) - set(PARTITIONS)
@@ -808,6 +810,14 @@ async def freeze_graph_exports(
     counts: dict[str, int] = {}
     batches = 0
     for partition in selected:
+        emit_progress(
+            progress,
+            "graph_export",
+            "started",
+            build_id=build_id,
+            message=partition,
+            counters={"partition": partition},
+        )
         last = await writer.execute(
             lambda connection, value=partition: _last_key(
                 connection, build_id, "graph_export", value
@@ -832,6 +842,19 @@ async def freeze_graph_exports(
                         )
                     )
                     batches += 1
+                    emit_progress(
+                        progress,
+                        "graph_export",
+                        "progress",
+                        build_id=build_id,
+                        message=partition,
+                        counters={
+                            "partition": partition,
+                            "batch_rows": len(batch),
+                            "batches": batches,
+                            "last_key": batch[-1].row_key,
+                        },
+                    )
                     limit = os.getenv("DEXT_TEST_KILL_AFTER_EXPORT_BATCHES")
                     if limit and batches >= int(limit):
                         os._exit(98)
@@ -843,6 +866,19 @@ async def freeze_graph_exports(
                     )
                 )
                 batches += 1
+                emit_progress(
+                    progress,
+                    "graph_export",
+                    "progress",
+                    build_id=build_id,
+                    message=partition,
+                    counters={
+                        "partition": partition,
+                        "batch_rows": len(batch),
+                        "batches": batches,
+                        "last_key": batch[-1].row_key,
+                    },
+                )
                 limit = os.getenv("DEXT_TEST_KILL_AFTER_EXPORT_BATCHES")
                 if limit and batches >= int(limit):
                     os._exit(98)
@@ -857,6 +893,16 @@ async def freeze_graph_exports(
                 ).fetchone()[0]
             ),
             transactional=False,
+        )
+        emit_progress(
+            progress,
+            "graph_export",
+            "completed",
+            build_id=build_id,
+            message=partition,
+            current=counts[partition],
+            total=counts[partition],
+            counters={"partition": partition, "rows": counts[partition]},
         )
     return counts
 
@@ -888,6 +934,8 @@ async def rebuild_graph_partitions(
     build_id: str,
     settings: GraphSettings,
     partitions: tuple[str, ...],
+    *,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, int]:
     unknown = set(partitions) - set(PARTITIONS)
     if unknown:
@@ -896,7 +944,7 @@ async def rebuild_graph_partitions(
         lambda connection: _reset_graph_partitions(connection, build_id, partitions)
     )
     return await freeze_graph_exports(
-        writer, build_id, settings, partitions=partitions
+        writer, build_id, settings, partitions=partitions, progress=progress
     )
 
 
