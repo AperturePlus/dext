@@ -243,6 +243,7 @@ async def graph_build(
         )
         backup_existing_catalog(
             path,
+            retention=settings.catalog_backup_retention,
             progress_hook=_backup_progress(
                 settings,
                 progress,

@@ -672,7 +672,7 @@ async def validate_build(
     settings = settings or GraphSettings()
     path = Path(settings.catalog_path).expanduser().resolve()
     with catalog_write_lock(path):
-        backup_existing_catalog(path)
+        backup_existing_catalog(path, retention=settings.catalog_backup_retention)
         initialize_catalog(path)
         async with CatalogWriter(path, max_queue=settings.build_write_queue) as writer:
             return await run_validation(
@@ -846,7 +846,7 @@ async def promote_build(
     settings = settings or GraphSettings()
     path = Path(settings.catalog_path).expanduser().resolve()
     with catalog_write_lock(path):
-        backup_existing_catalog(path)
+        backup_existing_catalog(path, retention=settings.catalog_backup_retention)
         initialize_catalog(path)
         async with CatalogWriter(path, max_queue=settings.build_write_queue) as writer:
             return await run_promotion(

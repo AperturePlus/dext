@@ -18,6 +18,7 @@ class GraphSettings(BaseSettings):
 
     value_validation_root: Path = Path("data/value-validation")
     catalog_path: Path = Path("data/catalog/catalog.db")
+    catalog_backup_retention: int = 2
     source_data_dir: Path = Path("data/universities")
     seed_path: Path = Path("entrances.yaml")
     taxonomy_path: Path = Path("taxonomy/research-topics.yaml")
@@ -34,7 +35,7 @@ class GraphSettings(BaseSettings):
     embedding_dimension: int = 1024
     embedding_max_input_tokens: int = 8192
     embedding_request_batch: int = 16
-    embedding_max_concurrency: int = 4
+    embedding_max_concurrency: int = 8
     embedding_timeout_seconds: float = 60.0
     embedding_max_retries: int = 5
     embedding_queue_maxsize: int = 8
@@ -77,6 +78,7 @@ class GraphSettings(BaseSettings):
 
     @field_validator(
         "embedding_dimension",
+        "catalog_backup_retention",
         "embedding_max_input_tokens",
         "embedding_request_batch",
         "embedding_max_concurrency",

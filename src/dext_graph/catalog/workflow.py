@@ -1372,6 +1372,7 @@ async def create_build(
         )
         backup_existing_catalog(
             settings.catalog_path,
+            retention=settings.catalog_backup_retention,
             progress_hook=_backup_progress(
                 settings,
                 progress,
@@ -1467,6 +1468,7 @@ async def resume_build(
         )
         backup_existing_catalog(
             path,
+            retention=settings.catalog_backup_retention,
             progress_hook=_backup_progress(
                 settings,
                 progress,

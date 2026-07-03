@@ -144,6 +144,26 @@ def _atomic_write_text(path: Path, value: str) -> None:
         raise
 
 
+def _prune_catalog_backups(backup_dir: Path, retention: int) -> None:
+    if retention < 0:
+        raise ValueError("backup retention must not be negative")
+    if not backup_dir.exists():
+        return
+    backup_files = sorted(
+        backup_dir.glob("catalog-*.db"),
+        key=lambda item: (item.stat().st_mtime_ns, item.name),
+        reverse=True,
+    )
+    keep = {path.resolve() for path in backup_files[:retention]}
+    for backup in backup_files[retention:]:
+        remove_sqlite_copy(backup)
+        backup.with_suffix(backup.suffix + ".sha256").unlink(missing_ok=True)
+    for checksum in backup_dir.glob("catalog-*.db.sha256"):
+        backup = checksum.with_suffix("")
+        if backup.resolve() not in keep and not backup.exists():
+            checksum.unlink(missing_ok=True)
+
+
 def ensure_free_space(
     directory: str | Path,
     required_bytes: int,
@@ -351,6 +371,7 @@ def backup_existing_catalog(
     catalog_path: str | Path,
     *,
     progress_hook: Callable[[int, int, int], None] | None = None,
+    retention: int | None = None,
 ) -> Path | None:
     path = Path(catalog_path).expanduser().resolve()
     if not path.is_file() or path.stat().st_size == 0:
@@ -372,6 +393,8 @@ def backup_existing_catalog(
         if file_sha256(destination) != digest:
             raise CatalogError("catalog backup changed during hash readback")
         _atomic_write_text(checksum_path, digest + "\n")
+        if retention is not None:
+            _prune_catalog_backups(destination.parent, retention)
     except BaseException:
         remove_sqlite_copy(destination)
         checksum_path.unlink(missing_ok=True)
