@@ -268,6 +268,32 @@ async def test_resume_rejects_incompatible_frozen_settings(tmp_path, monkeypatch
         await resume_build(result["build"]["id"], changed)
 
 
+async def test_resume_allows_topic_llm_base_url_change(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    _source_db(settings.source_data_dir / "test.db", count=1)
+    _patch_runtime(monkeypatch)
+    result = await create_build(["测试大学"], settings)
+    changed = settings.model_copy(
+        update={"topic_llm_base_url": "https://topic-llm.example.test"}
+    )
+
+    resumed = await resume_build(result["build"]["id"], changed)
+
+    assert resumed["build"]["status"] == "WRITING_VECTOR"
+
+
+async def test_resume_allows_topic_llm_model_change(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    _source_db(settings.source_data_dir / "test.db", count=1)
+    _patch_runtime(monkeypatch)
+    result = await create_build(["测试大学"], settings)
+    changed = settings.model_copy(update={"topic_llm_model": "topic-runtime-model"})
+
+    resumed = await resume_build(result["build"]["id"], changed)
+
+    assert resumed["build"]["status"] == "WRITING_VECTOR"
+
+
 async def test_resume_allows_embedding_max_concurrency_change(tmp_path, monkeypatch):
     settings = _settings(tmp_path)
     _source_db(settings.source_data_dir / "test.db", count=1)

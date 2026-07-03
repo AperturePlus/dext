@@ -49,6 +49,27 @@ def test_safe_settings_snapshot_excludes_key():
     assert settings.bm25_tokenizer_version == "bm25-simple-v1"
 
 
+def test_topic_llm_api_key_uses_dedicated_env(monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("DEXT_TOPIC_LLM_API_KEY", "topic-secret")
+
+    assert GraphSettings(_env_file=None).topic_llm_api_key == "topic-secret"
+
+
+def test_topic_llm_api_key_does_not_fallback_to_deepseek(monkeypatch):
+    monkeypatch.delenv("DEXT_TOPIC_LLM_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "core-secret")
+
+    assert GraphSettings(_env_file=None).topic_llm_api_key == ""
+
+
+def test_topic_llm_api_key_prefers_dedicated_env_when_both_set(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "core-secret")
+    monkeypatch.setenv("DEXT_TOPIC_LLM_API_KEY", "topic-secret")
+
+    assert GraphSettings(_env_file=None).topic_llm_api_key == "topic-secret"
+
+
 def test_topic_link_concurrency_default(monkeypatch):
     monkeypatch.delenv("DEXT_TOPIC_LINK_CONCURRENCY", raising=False)
     assert GraphSettings(_env_file=None).topic_link_concurrency == 8
@@ -152,3 +173,27 @@ def test_graph_build_no_progress_suppresses_stderr(monkeypatch):
     assert result.exit_code == 0
     assert json.loads(result.stdout) == {"build": {"id": "build-1", "status": "CURATING"}}
     assert result.stderr == ""
+
+
+def test_graph_build_failed_status_suppresses_full_stdout_json(monkeypatch):
+    async def fake_create_build(universities, settings, *, progress=None):
+        return {
+            "build": {
+                "id": "build-1",
+                "status": "FAILED",
+                "last_error": "neo4j boom",
+            },
+            "sources": [{"source_path": "large-source.json"}],
+        }
+
+    monkeypatch.setattr("dext_graph.catalog.workflow.create_build", fake_create_build)
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["graph", "build"])
+
+    assert result.exit_code != 0
+    assert result.stdout == ""
+    assert "build-1" in result.stderr
+    assert "neo4j boom" in result.stderr
+    assert "graph status build-1" in result.stderr
+    assert '"sources"' not in result.stderr

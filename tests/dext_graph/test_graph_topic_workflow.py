@@ -4,9 +4,12 @@ import sqlite3
 
 import pytest
 
+from dext_graph.catalog import topic_workflow as topic_workflow_module
 from dext_graph.catalog.db import CatalogWriter, initialize_catalog
 from dext_graph.catalog.topic_workflow import (
     TopicLinkDeferredRetryError,
+    _claim_statement_batch,
+    _ensure_topic_link_jobs,
     _link_statements,
     run_topic_stage,
 )
@@ -75,6 +78,26 @@ class EmptyCandidateSink(FakeTopicSink):
 class UnusedLLM:
     async def extract(self, _text):
         raise AssertionError("no statement should invoke the LLM")
+
+
+class FailingPreflightLLM:
+    def __init__(self):
+        self.preflight_calls = 0
+
+    async def preflight(self):
+        self.preflight_calls += 1
+        raise ValueValidationError("Topic LLM preflight failed: Invalid token")
+
+    async def extract_with_diagnostics(self, _raw_text):
+        raise AssertionError("statement linking should not invoke the LLM")
+
+    async def select(self, _concept, _candidates):
+        raise AssertionError("statement linking should not invoke selection")
+
+
+class PreflightForbiddenLLM(UnusedLLM):
+    async def preflight(self):
+        raise AssertionError("completed statement links should not preflight the LLM")
 
 
 class ConcurrentLLM:
@@ -234,6 +257,109 @@ async def _run_linking_with_sink(path, manifest, settings, llm, sink):
         )
 
 
+def test_topic_link_jobs_initialize_idempotently_without_overwriting_existing_jobs(
+    tmp_path,
+):
+    path, _manifest = _prepare_link_catalog(
+        tmp_path,
+        [
+            ("statement-01", "statement-01 使用机器学习"),
+            ("statement-02", "statement-02 使用机器学习"),
+            ("statement-03", "statement-03 使用机器学习"),
+            ("statement-04", "statement-04 使用机器学习"),
+        ],
+    )
+    with sqlite3.connect(path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO topic_link_jobs(
+              build_id,statement_id,status,candidate_ids_json,attempt_count,last_error,updated_at
+            ) VALUES ('build-1',?,?, ?, ?, ?, '2026-01-01T00:00:00+00:00')
+            """,
+            [
+                ("statement-01", "succeeded", '["kept"]', 7, None),
+                ("statement-02", "terminal-invalid-input", "[]", 3, "empty"),
+                ("statement-03", "retry", "[]", 2, "retry me"),
+            ],
+        )
+        first = _ensure_topic_link_jobs(connection, "build-1")
+        second = _ensure_topic_link_jobs(connection, "build-1")
+        rows = connection.execute(
+            """
+            SELECT statement_id,status,candidate_ids_json,attempt_count,last_error
+            FROM topic_link_jobs WHERE build_id='build-1' ORDER BY statement_id
+            """
+        ).fetchall()
+
+    assert first == 1
+    assert second == 0
+    assert rows == [
+        ("statement-01", "succeeded", '["kept"]', 7, None),
+        ("statement-02", "terminal-invalid-input", "[]", 3, "empty"),
+        ("statement-03", "retry", "[]", 2, "retry me"),
+        ("statement-04", "pending", "[]", 0, None),
+    ]
+
+
+def test_topic_claim_batch_uses_status_index_and_reclaims_retry(tmp_path):
+    path, _manifest = _prepare_link_catalog(
+        tmp_path,
+        [
+            ("statement-01", "statement-01 使用机器学习"),
+            ("statement-02", "statement-02 使用机器学习"),
+            ("statement-03", "statement-03 使用机器学习"),
+        ],
+    )
+    with sqlite3.connect(path) as connection:
+        _ensure_topic_link_jobs(connection, "build-1")
+        connection.execute(
+            """
+            UPDATE topic_link_jobs
+            SET status='succeeded',attempt_count=1
+            WHERE build_id='build-1' AND statement_id='statement-01'
+            """
+        )
+        connection.execute(
+            """
+            UPDATE topic_link_jobs
+            SET status='retry',attempt_count=2,last_error='try again'
+            WHERE build_id='build-1' AND statement_id='statement-02'
+            """
+        )
+        plan = connection.execute(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT j.statement_id AS id,s.raw_text
+            FROM topic_link_jobs j
+            JOIN research_statements s
+              ON s.build_id=j.build_id AND s.id=j.statement_id
+            WHERE j.build_id=? AND j.status=?
+            ORDER BY j.statement_id LIMIT ?
+            """,
+            ("build-1", "pending", 64),
+        ).fetchall()
+        claimed = _claim_statement_batch(connection, "build-1", limit=2)
+        rows = connection.execute(
+            """
+            SELECT statement_id,status,attempt_count,last_error
+            FROM topic_link_jobs WHERE build_id='build-1' ORDER BY statement_id
+            """
+        ).fetchall()
+
+    details = " ".join(str(row[3]) for row in plan)
+    assert "ix_topic_link_jobs_status" in details
+    assert "LEFT-JOIN" not in details
+    assert [statement["id"] for statement in claimed] == [
+        "statement-02",
+        "statement-03",
+    ]
+    assert rows == [
+        ("statement-01", "succeeded", 1, None),
+        ("statement-02", "running", 3, None),
+        ("statement-03", "running", 1, None),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_topic_stage_builds_active_collection_and_frozen_graph_manifest(tmp_path):
     path = initialize_catalog(tmp_path / "catalog.db")
@@ -310,6 +436,95 @@ async def test_topic_stage_builds_active_collection_and_frozen_graph_manifest(tm
 
 
 @pytest.mark.asyncio
+async def test_topic_stage_preflight_fails_before_embedding_or_qdrant(tmp_path):
+    path, _manifest = _prepare_link_catalog(
+        tmp_path, [("statement-01", "statement-01 使用机器学习")]
+    )
+    settings = _topic_settings(path, concurrency=1)
+    embedding = FakeEmbedding()
+    sink = FakeTopicSink()
+    llm = FailingPreflightLLM()
+
+    async def fake_neo4j(_writer, _build_id, _settings):
+        raise AssertionError("preflight failure should not reach Neo4j")
+
+    async with CatalogWriter(path, max_queue=2) as writer:
+        result = await run_topic_stage(
+            writer,
+            "build-1",
+            settings,
+            embedding_client=embedding,
+            topic_sink=sink,
+            llm_client=llm,
+            tokenizer=CharacterTokenizer(),
+            neo4j_writer=fake_neo4j,
+        )
+
+    assert result["build"]["status"] == "FAILED"
+    assert result["topics"]["status"] == "FAILED"
+    assert "Topic LLM preflight failed" in result["build"]["last_error"]
+    assert llm.preflight_calls == 1
+    assert embedding.calls == []
+    assert sink.created == []
+    assert sink.points == {}
+    with sqlite3.connect(path) as connection:
+        row = connection.execute(
+            "SELECT status,last_error FROM topic_runs WHERE build_id='build-1'"
+        ).fetchone()
+        assert row[0] == "FAILED"
+        assert "Topic LLM preflight failed" in row[1]
+        assert connection.execute(
+            "SELECT COUNT(*) FROM topic_candidate_collections"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM topic_link_jobs WHERE build_id='build-1'"
+        ).fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_topic_stage_skips_preflight_when_statement_links_are_terminal(tmp_path):
+    path, _manifest = _prepare_link_catalog(
+        tmp_path,
+        [
+            ("statement-01", "statement-01 使用机器学习"),
+            ("statement-02", "statement-02 使用机器学习"),
+        ],
+    )
+    with sqlite3.connect(path) as connection:
+        connection.executemany(
+            """
+            INSERT INTO topic_link_jobs(
+              build_id,statement_id,status,candidate_ids_json,attempt_count,updated_at
+            ) VALUES ('build-1',?,?, '[]', 1, '2026-01-01T00:00:00+00:00')
+            """,
+            [
+                ("statement-01", "succeeded"),
+                ("statement-02", "terminal-invalid-input"),
+            ],
+        )
+        connection.commit()
+    settings = _topic_settings(path, concurrency=1)
+
+    async def fake_neo4j(_writer, _build_id, _settings):
+        return {}
+
+    async with CatalogWriter(path, max_queue=2) as writer:
+        result = await run_topic_stage(
+            writer,
+            "build-1",
+            settings,
+            embedding_client=FakeEmbedding(),
+            topic_sink=FakeTopicSink(),
+            llm_client=PreflightForbiddenLLM(),
+            tokenizer=CharacterTokenizer(),
+            neo4j_writer=fake_neo4j,
+        )
+
+    assert result["build"]["status"] == "WRITING_VECTOR"
+    assert result["topics"]["status"] == "COMPLETED"
+
+
+@pytest.mark.asyncio
 async def test_topic_statement_linking_runs_external_calls_concurrently(tmp_path):
     statements = [
         (f"statement-{index:02d}", f"statement-{index:02d} 使用机器学习")
@@ -337,6 +552,39 @@ async def test_topic_statement_linking_runs_external_calls_concurrently(tmp_path
             "WHERE build_id='build-1' AND sink='topic_link'"
         ).fetchone()
         assert checkpoint == ("statement-06", 6)
+
+
+@pytest.mark.asyncio
+async def test_topic_statement_linking_claims_large_work_in_batches(
+    tmp_path, monkeypatch
+):
+    statements = [
+        (f"statement-{index:03d}", f"statement-{index:03d} 使用机器学习")
+        for index in range(1, 131)
+    ]
+    path, manifest = _prepare_link_catalog(tmp_path, statements)
+    settings = _topic_settings(path, concurrency=128)
+    claim_sizes = []
+    original = topic_workflow_module._claim_statement_batch
+
+    def tracking_claim_batch(*args, **kwargs):
+        batch = original(*args, **kwargs)
+        claim_sizes.append(len(batch))
+        return batch
+
+    monkeypatch.setattr(
+        topic_workflow_module, "_claim_statement_batch", tracking_claim_batch
+    )
+
+    completed = await _run_linking(path, manifest, settings, ConcurrentLLM())
+
+    assert completed == 130
+    assert [size for size in claim_sizes if size] == [130]
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM topic_link_jobs "
+            "WHERE build_id='build-1' AND status='succeeded'"
+        ).fetchone()[0] == 130
 
 
 @pytest.mark.asyncio

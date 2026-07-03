@@ -71,8 +71,6 @@ _RESUME_SETTING_KEYS = (
     "qdrant_upsert_batch",
     "bm25_tokenizer_version",
     "taxonomy_path",
-    "topic_llm_base_url",
-    "topic_llm_model",
     "topic_candidate_top_k",
     "topic_merge_min_score",
     "neo4j_uri",

@@ -35,11 +35,32 @@ def _guard_async(action: Callable[[], Any]) -> None:
         raise click.ClickException(str(exc)) from None
 
 
-def _guard_catalog(action: Callable[[], Any], *, asynchronous: bool = False) -> None:
+def _failed_build_message(result: Any) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    build = result.get("build")
+    if not isinstance(build, dict) or build.get("status") != "FAILED":
+        return None
+    build_id = str(build.get("id") or "unknown")
+    last_error = str(build.get("last_error") or "unknown error")
+    return (
+        f"build {build_id} failed: {last_error}\n"
+        f"Run 'dext graph status {build_id}' for full JSON details."
+    )
+
+
+def _guard_catalog(
+    action: Callable[[], Any],
+    *,
+    asynchronous: bool = False,
+    fail_on_failed_build: bool = False,
+) -> None:
     from dext_graph.catalog.db import CatalogError
 
     try:
         result = asyncio.run(action()) if asynchronous else action()
+        if fail_on_failed_build and (message := _failed_build_message(result)):
+            raise click.ClickException(message)
         _emit(result)
     except (CatalogError, ValueError) as exc:
         raise click.ClickException(str(exc)) from None
@@ -275,6 +296,7 @@ def build_command(universities: tuple[str, ...], show_progress: bool) -> None:
     _guard_catalog(
         lambda: create_build(list(universities), settings, progress=progress),
         asynchronous=True,
+        fail_on_failed_build=True,
     )
 
 
@@ -297,6 +319,7 @@ def resume_command(build_id: str, show_progress: bool) -> None:
     _guard_catalog(
         lambda: resume_build(build_id, settings, progress=progress),
         asynchronous=True,
+        fail_on_failed_build=True,
     )
 
 
@@ -319,6 +342,7 @@ def vector_command(build_id: str, show_progress: bool) -> None:
     _guard_catalog(
         lambda: vector_build(build_id, settings, progress=progress),
         asynchronous=True,
+        fail_on_failed_build=True,
     )
 
 
@@ -368,6 +392,7 @@ def topics_build_command(build_id: str, show_progress: bool) -> None:
     _guard_catalog(
         lambda: topic_build(build_id, settings, progress=progress),
         asynchronous=True,
+        fail_on_failed_build=True,
     )
 
 

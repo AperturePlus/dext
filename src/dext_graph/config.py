@@ -43,9 +43,7 @@ class GraphSettings(BaseSettings):
     embedding_query_prefix: str = ""
     bm25_tokenizer_version: str = "bm25-simple-v1"
 
-    topic_llm_api_key: str = Field(
-        default="", validation_alias="DEEPSEEK_API_KEY", repr=False
-    )
+    topic_llm_api_key: str = Field(default="", repr=False)
     topic_llm_base_url: str = "https://api.deepseek.com"
     topic_llm_model: str = "deepseek-v4-flash"
     topic_llm_timeout_seconds: float = 90.0

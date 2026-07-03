@@ -58,6 +58,34 @@ def _safe_error(exc: BaseException) -> str:
     return (value or type(exc).__name__)[:2000]
 
 
+def _has_pending_topic_link_work(connection: sqlite3.Connection, build_id: str) -> bool:
+    return (
+        connection.execute(
+            """
+            SELECT 1
+            FROM research_statements AS statement
+            WHERE statement.build_id=?
+              AND NOT EXISTS (
+                SELECT 1
+                FROM topic_link_jobs AS job
+                WHERE job.build_id=statement.build_id
+                  AND job.statement_id=statement.id
+                  AND job.status IN ('succeeded','terminal-invalid-input')
+              )
+            LIMIT 1
+            """,
+            (build_id,),
+        ).fetchone()
+        is not None
+    )
+
+
+async def _preflight_topic_llm(llm_client: Any) -> None:
+    preflight = getattr(llm_client, "preflight", None)
+    if preflight is not None:
+        await preflight()
+
+
 def _prepare_run(
     connection: sqlite3.Connection,
     build_id: str,
@@ -326,39 +354,77 @@ def _reset_running_jobs(connection: sqlite3.Connection, build_id: str) -> int:
     return int(cursor.rowcount)
 
 
-def _claim_statement(
+def _ensure_topic_link_jobs(connection: sqlite3.Connection, build_id: str) -> int:
+    cursor = connection.execute(
+        """
+        INSERT OR IGNORE INTO topic_link_jobs(
+          build_id,statement_id,status,candidate_ids_json,attempt_count,last_error,updated_at
+        )
+        SELECT s.build_id,s.id,'pending','[]',0,NULL,?
+        FROM research_statements s
+        WHERE s.build_id=?
+        """,
+        (utcnow_iso(), build_id),
+    )
+    return int(cursor.rowcount)
+
+
+def _load_topic_alias_keys(
+    connection: sqlite3.Connection, taxonomy_version: str
+) -> frozenset[str]:
+    return frozenset(
+        str(row[0])
+        for row in connection.execute(
+            "SELECT alias_key FROM topic_aliases WHERE taxonomy_version=?",
+            (taxonomy_version,),
+        )
+    )
+
+
+def _claim_statement_batch(
     connection: sqlite3.Connection,
     build_id: str,
     *,
+    limit: int,
     deferred_statement_ids: set[str] | None = None,
-) -> dict[str, Any] | None:
+) -> list[dict[str, Any]]:
+    if limit <= 0:
+        raise ValueError("claim batch limit must be positive")
     deferred = tuple(sorted(deferred_statement_ids or ()))
     exclusion_sql = ""
-    params: tuple[Any, ...] = (build_id,)
+    exclusion_params: tuple[Any, ...] = ()
     if deferred:
         placeholders = ",".join("?" for _ in deferred)
-        exclusion_sql = f" AND s.id NOT IN ({placeholders})"
-        params = (build_id, *deferred)
-    row = connection.execute(
-        f"""
-        SELECT s.id,s.raw_text FROM research_statements s
-        LEFT JOIN topic_link_jobs j ON j.build_id=s.build_id AND j.statement_id=s.id
-        WHERE s.build_id=? AND (j.status IS NULL OR j.status IN ('pending','retry'))
-        {exclusion_sql}
-        ORDER BY s.id LIMIT 1
-        """,
-        params,
-    ).fetchone()
-    if row is None:
-        return None
-    statement = dict(row)
-    _mark_job(
-        connection,
-        build_id=build_id,
-        statement_id=str(statement["id"]),
-        status="running",
-    )
-    return statement
+        exclusion_sql = f" AND j.statement_id NOT IN ({placeholders})"
+        exclusion_params = deferred
+    statements: list[dict[str, Any]] = []
+    for status in ("retry", "pending"):
+        remaining = limit - len(statements)
+        if remaining <= 0:
+            break
+        rows = connection.execute(
+            f"""
+            SELECT j.statement_id AS id,s.raw_text
+            FROM topic_link_jobs j
+            JOIN research_statements s
+              ON s.build_id=j.build_id AND s.id=j.statement_id
+            WHERE j.build_id=? AND j.status=?
+            {exclusion_sql}
+            ORDER BY j.statement_id LIMIT ?
+            """,
+            (build_id, status, *exclusion_params, remaining),
+        ).fetchall()
+        statements.extend(
+            {"id": str(row[0]), "raw_text": str(row[1])} for row in rows
+        )
+    for statement in statements:
+        _mark_job(
+            connection,
+            build_id=build_id,
+            statement_id=str(statement["id"]),
+            status="running",
+        )
+    return statements
 
 
 def _job_enters_terminal(
@@ -486,7 +552,7 @@ async def _semantic_choices(
     *,
     taxonomy_version: str,
     collection_name: str,
-    writer: CatalogWriter,
+    topic_alias_keys: frozenset[str],
     tokenizer: Any,
     settings: GraphSettings,
     embedding_client: Any,
@@ -495,15 +561,7 @@ async def _semantic_choices(
 ) -> tuple[dict[str, tuple[str, float] | str], list[dict[str, Any]]]:
     unresolved: list[TopicConcept] = []
     for concept in concepts:
-        exact = await writer.execute(
-            lambda connection, key=topic_alias_key(concept.canonical_name): connection.execute(
-                "SELECT 1 FROM topic_aliases WHERE taxonomy_version=? AND alias_key=?",
-                (taxonomy_version, key),
-            ).fetchone()
-            is not None,
-            transactional=False,
-        )
-        if not exact:
+        if topic_alias_key(concept.canonical_name) not in topic_alias_keys:
             unresolved.append(concept)
     if not unresolved:
         return {}, []
@@ -556,6 +614,7 @@ async def _link_statements(
     completed = 0
     deferred_statement_ids: set[str] = set()
     await writer.execute(lambda connection: _reset_running_jobs(connection, build_id))
+    await writer.execute(lambda connection: _ensure_topic_link_jobs(connection, build_id))
     total = await writer.execute(
         lambda connection: int(
             connection.execute(
@@ -585,6 +644,16 @@ async def _link_statements(
         current=already_terminal,
         total=total,
     )
+    topic_alias_keys = await writer.execute(
+        lambda connection: _load_topic_alias_keys(connection, taxonomy_version),
+        transactional=False,
+    )
+    claim_batch_size = max(settings.topic_link_concurrency * 2, 64)
+    statement_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
+        maxsize=claim_batch_size
+    )
+    claim_lock = asyncio.Lock()
+    claim_exhausted = False
 
     async def mark_retry(statement_id: str, error: str) -> None:
         await writer.execute(
@@ -597,17 +666,40 @@ async def _link_statements(
             )
         )
 
+    async def next_statement() -> dict[str, Any] | None:
+        nonlocal claim_exhausted
+        try:
+            return statement_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        async with claim_lock:
+            try:
+                return statement_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            if claim_exhausted:
+                return None
+            deferred = set(deferred_statement_ids)
+            batch = await writer.execute(
+                lambda connection, deferred=deferred: _claim_statement_batch(
+                    connection,
+                    build_id,
+                    limit=claim_batch_size,
+                    deferred_statement_ids=deferred,
+                )
+            )
+            if not batch:
+                claim_exhausted = True
+                return None
+            for statement in batch[1:]:
+                statement_queue.put_nowait(statement)
+            return batch[0]
+
     async def worker(_worker_id: int) -> None:
         nonlocal completed, processed
         current_statement_id: str | None = None
         while True:
-            statement = await writer.execute(
-                lambda connection: _claim_statement(
-                    connection,
-                    build_id,
-                    deferred_statement_ids=deferred_statement_ids,
-                )
-            )
+            statement = await next_statement()
             if statement is None:
                 return
             statement_id = str(statement["id"])
@@ -644,7 +736,7 @@ async def _link_statements(
                     concepts,
                     taxonomy_version=taxonomy_version,
                     collection_name=collection_name,
-                    writer=writer,
+                    topic_alias_keys=topic_alias_keys,
                     tokenizer=tokenizer,
                     settings=settings,
                     embedding_client=embedding_client,
@@ -845,12 +937,6 @@ async def run_topic_stage(
     owns_embedding = embedding_client is None
     owns_sink = topic_sink is None
     owns_llm = llm_client is None
-    if embedding_client is None:
-        embedding_client = EmbeddingClient(settings, lambda _metric: None)
-    if topic_sink is None:
-        topic_sink = TopicQdrant(settings.qdrant_url)
-    if llm_client is None:
-        llm_client = TopicLLMClient(settings)
     neo4j_writer = neo4j_writer or write_neo4j_exports
     try:
         emit_progress(
@@ -860,6 +946,18 @@ async def run_topic_stage(
             build_id=build_id,
             message="topic taxonomy/linking stage",
         )
+        needs_llm = await writer.execute(
+            lambda connection: _has_pending_topic_link_work(connection, build_id),
+            transactional=False,
+        )
+        if needs_llm:
+            if llm_client is None:
+                llm_client = TopicLLMClient(settings)
+            await _preflight_topic_llm(llm_client)
+        if embedding_client is None:
+            embedding_client = EmbeddingClient(settings, lambda _metric: None)
+        if topic_sink is None:
+            topic_sink = TopicQdrant(settings.qdrant_url)
         relation_count = await writer.execute(
             lambda connection: materialize_taxonomy_relations(
                 connection, build_id=build_id, manifest=manifest
@@ -948,11 +1046,11 @@ async def run_topic_stage(
             counters={"error": error},
         )
     finally:
-        if owns_embedding:
+        if owns_embedding and embedding_client is not None:
             await embedding_client.close()
-        if owns_sink:
+        if owns_sink and topic_sink is not None:
             await topic_sink.close()
-        if owns_llm:
+        if owns_llm and llm_client is not None:
             await llm_client.close()
 
     from dext_graph.catalog.workflow import build_status

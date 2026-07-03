@@ -15,7 +15,9 @@ from dext_graph.models import ValueValidationError
 class TopicLLMClient:
     def __init__(self, settings: GraphSettings, *, client: Any | None = None) -> None:
         if client is None and not settings.topic_llm_api_key:
-            raise ValueValidationError("DEEPSEEK_API_KEY is not set for Topic linking")
+            raise ValueValidationError(
+                "DEXT_TOPIC_LLM_API_KEY is not set for Topic linking"
+            )
         self.settings = settings
         self._client = client or AsyncOpenAI(
             api_key=settings.topic_llm_api_key,
@@ -25,6 +27,29 @@ class TopicLLMClient:
         )
         self._owns_client = client is None
         self.last_rejected_count = 0
+
+    async def preflight(self) -> None:
+        try:
+            await self._client.chat.completions.create(
+                model=self.settings.topic_llm_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Return one JSON object for a Topic LLM health check."
+                        ),
+                    },
+                    {"role": "user", "content": "Return {\"ok\": true}."},
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=8,
+                stream=False,
+            )
+        except Exception as exc:
+            error = str(exc).replace("\r", " ").replace("\n", " ").strip()
+            raise ValueValidationError(
+                f"Topic LLM preflight failed: {error or type(exc).__name__}"
+            ) from exc
 
     async def close(self) -> None:
         if self._owns_client:
