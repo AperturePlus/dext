@@ -247,6 +247,17 @@ class MonitorService:
         with self.reader.connect() as connection:
             self.reader.require_supported_schema(connection)
             self._get_build(connection, build_id)
+            if self._export_pruned(connection, build_id):
+                return {
+                    "build_id": build_id,
+                    "limit": effective_limit,
+                    "nodes": [],
+                    "links": [],
+                    "total_nodes": 0,
+                    "total_relationships": 0,
+                    "truncated": False,
+                    "export_pruned": True,
+                }
             node_rows = [
                 serialize_row(row)
                 for row in connection.execute(
@@ -391,6 +402,14 @@ class MonitorService:
         with self.reader.connect() as connection:
             self.reader.require_supported_schema(connection)
             self._get_build(connection, build_id)
+            if self._export_pruned(connection, build_id):
+                return {
+                    "build_id": build_id,
+                    "universities": [],
+                    "nodes": [],
+                    "links": [],
+                    "export_pruned": True,
+                }
             university_rows = list(
                 connection.execute(
                     "SELECT payload_json FROM graph_export_rows "
@@ -722,6 +741,16 @@ class MonitorService:
         if row is None:
             raise MonitorCatalogError(f"unknown build ID: {build_id}")
         return serialize_row(row)
+
+    def _export_pruned(self, connection, build_id: str) -> bool:
+        if not self.reader.table_exists(connection, "graph_runs"):
+            return False
+        row = connection.execute(
+            "SELECT summary_json FROM graph_runs WHERE build_id=?", (build_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        return bool(json_loads(row["summary_json"], {}).get("export_pruned"))
 
     def _summarize_build(self, connection, build: dict[str, Any]) -> dict[str, Any]:
         """Summarize a single build with ONE aggregate query (P3-9)."""

@@ -131,6 +131,18 @@ watch(
     resetProfessorDrilldown()
   }
 )
+
+watch(
+  () => props.topology?.export_pruned,
+  (exportPruned) => {
+    if (!exportPruned) return
+    selectedUniversity.value = null
+    selectedCollege.value = null
+    subgraph.value = null
+    subgraphError.value = null
+    resetProfessorDrilldown()
+  }
+)
 </script>
 
 <template>
@@ -152,7 +164,7 @@ watch(
       <div class="panel-body">
         <div class="controls">
           <select
-            v-if="topology && topology.universities.length"
+            v-if="topology && !topology.export_pruned && topology.universities.length"
             class="uni-select"
             :value="selectedUniversity ?? '__all__'"
             @change="onUniversityChange"
@@ -168,7 +180,7 @@ watch(
           </select>
 
           <select
-            v-if="topology && topology.universities.length"
+            v-if="topology && !topology.export_pruned && topology.universities.length"
             class="uni-select"
             :disabled="!selectedUniversity"
             :value="selectedCollege ?? '__none__'"
@@ -208,6 +220,11 @@ watch(
         <OrgUnitProfessorChart
           v-else-if="selectedCollege"
           :subgraph="subgraph"
+        />
+        <EmptyState
+          v-else-if="topology?.export_pruned"
+          title="Graph exports compacted"
+          message="Resume this build to rebuild its cached topology exports."
         />
         <EmptyState
           v-else-if="!topology || !topology.nodes.length"

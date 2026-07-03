@@ -261,4 +261,28 @@ describe('TopologyPage', () => {
     expect(wrapper.findComponent(stubs.EmptyState).exists()).toBe(true)
     expect(wrapper.findComponent(stubs.ChartFrame).exists()).toBe(false)
   })
+
+  it('shows compacted export empty state and clears stale drilldown', async () => {
+    apiMocks.orgUnitProfessors.mockResolvedValue(buildSubgraph())
+    const wrapper = mount(TopologyPage, {
+      props: { ...baseProps, topology: buildTopology() },
+      global: { stubs: { ChartFrame: stubs.ChartFrame, EmptyState: stubs.EmptyState } }
+    })
+    const [uniSelect, collegeSelect] = wrapper.findAll('select')
+    await uniSelect.setValue('u')
+    await nextTick()
+    await collegeSelect.setValue('org')
+    await flushPromises()
+    expect(wrapper.findComponent(OrgUnitProfessorChart).exists()).toBe(true)
+
+    await wrapper.setProps({
+      topology: { build_id: 'b1', universities: [], nodes: [], links: [], export_pruned: true }
+    })
+    await nextTick()
+
+    expect(wrapper.findComponent(OrgUnitProfessorChart).exists()).toBe(false)
+    expect(wrapper.findAll('select')).toHaveLength(0)
+    expect(wrapper.findComponent(stubs.ChartFrame).exists()).toBe(false)
+    expect(wrapper.findComponent(stubs.EmptyState).text()).toBe('Graph exports compacted')
+  })
 })

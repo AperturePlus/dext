@@ -149,6 +149,7 @@ export interface GraphPreviewResponse {
   total_nodes: number
   total_relationships: number
   truncated: boolean
+  export_pruned?: boolean
 }
 
 export interface Finding {
@@ -196,6 +197,7 @@ export interface UniversityTopologyResponse {
   universities: UniversitySummary[]
   nodes: UniversityTopologyNode[]
   links: UniversityTopologyLink[]
+  export_pruned?: boolean
 }
 
 export interface ProfessorNode {

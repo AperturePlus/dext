@@ -778,6 +778,76 @@ def test_graph_tree_returns_complete_university_orgunit_tree(tmp_path: Path) -> 
     assert targets == {"u", "u2"}
 
 
+def _mark_export_pruned(path: Path, build_id: str) -> None:
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("DELETE FROM graph_export_rows WHERE build_id=?", (build_id,))
+        connection.execute("DELETE FROM graph_export_partitions WHERE build_id=?", (build_id,))
+        connection.execute(
+            "DELETE FROM sink_checkpoints WHERE build_id=? AND sink IN ('graph_export','neo4j')",
+            (build_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO graph_runs(
+              id,build_id,status,evidence_version,export_version,summary_json,started_at,finished_at,last_error
+            ) VALUES (
+              'graph-pruned', ?, 'COMPLETED', 'evidence-v1', 'export-v1',
+              '{"export_pruned":true,"partitions":{}}', 'now', NULL, NULL
+            )
+            ON CONFLICT(id) DO UPDATE SET summary_json=excluded.summary_json
+            """,
+            (build_id,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def test_pruned_graph_preview_and_tree_return_empty_graph(tmp_path: Path) -> None:
+    catalog = tmp_path / "catalog.db"
+    build_id = _write_tree_catalog(catalog)
+    _mark_export_pruned(catalog, build_id)
+    service = MonitorService(_settings(catalog))
+
+    preview = service.graph_preview(build_id, limit=10)
+    tree = service.graph_tree(build_id)
+
+    assert preview == {
+        "build_id": build_id,
+        "limit": 10,
+        "nodes": [],
+        "links": [],
+        "total_nodes": 0,
+        "total_relationships": 0,
+        "truncated": False,
+        "export_pruned": True,
+    }
+    assert tree == {
+        "build_id": build_id,
+        "universities": [],
+        "nodes": [],
+        "links": [],
+        "export_pruned": True,
+    }
+
+
+def test_pruned_build_summary_and_metrics_report_zero_export_rows(tmp_path: Path) -> None:
+    catalog = tmp_path / "catalog.db"
+    build_id = _write_tree_catalog(catalog)
+    _mark_export_pruned(catalog, build_id)
+    service = MonitorService(_settings(catalog))
+
+    listing = service.list_builds()
+    detail = service.build_detail(build_id)
+    metrics = service.metrics(build_id)
+
+    assert listing["builds"][0]["summary"]["graph_export_rows"] == 0
+    assert detail["build"]["summary"]["graph_export_rows"] == 0
+    assert detail["export_partitions"] == []
+    assert metrics["export_partitions"] == []
+
+
 def _write_professor_catalog(path: Path) -> str:
     """Like ``_write_tree_catalog`` but also seeds ``node:Professor`` rows so
     ``orgunit_professors`` has real professor payloads to return. Professors
