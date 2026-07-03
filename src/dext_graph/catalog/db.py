@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import os
+import shutil
 import sqlite3
+import tempfile
 import time
 from collections.abc import Callable
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +29,8 @@ from dext_graph.catalog.models import (
 )
 
 T = TypeVar("T")
+
+_BACKUP_FREE_SPACE_RESERVE = 64 * 1024 * 1024
 
 
 class CatalogError(RuntimeError):
@@ -95,10 +100,73 @@ def file_sha256(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
+def sqlite_sidecar_paths(path: str | Path) -> tuple[Path, ...]:
+    database = Path(path)
+    return tuple(
+        database.with_name(database.name + suffix)
+        for suffix in ("-wal", "-shm", "-journal")
+    )
+
+
+def remove_sqlite_copy(path: str | Path) -> None:
+    """Remove an owned, closed SQLite copy and all of its private sidecars."""
+    database = Path(path)
+    database.unlink(missing_ok=True)
+    for sidecar in sqlite_sidecar_paths(database):
+        sidecar.unlink(missing_ok=True)
+
+
+def _remove_sqlite_sidecars(path: str | Path) -> None:
+    for sidecar in sqlite_sidecar_paths(path):
+        sidecar.unlink(missing_ok=True)
+
+
+def _fsync_file(path: Path) -> None:
+    # Windows' CRT rejects fsync on some read-only descriptors.
+    with path.open("r+b") as stream:
+        os.fsync(stream.fileno())
+
+
+def _atomic_write_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as stream:
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def ensure_free_space(
+    directory: str | Path,
+    required_bytes: int,
+    *,
+    operation: str,
+) -> None:
+    if required_bytes < 0:
+        raise ValueError("required_bytes must not be negative")
+    resolved = Path(directory).expanduser().resolve()
+    resolved.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(resolved).free
+    if free < required_bytes:
+        raise CatalogError(
+            f"insufficient disk space for {operation}: need {required_bytes} bytes, "
+            f"available {free} bytes at {resolved}"
+        )
+
+
 def _configure(connection: sqlite3.Connection, *, query_only: bool = False) -> None:
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA busy_timeout=15000")
     connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute("PRAGMA trusted_schema=OFF")
     if query_only:
         connection.execute("PRAGMA query_only=ON")
     else:
@@ -189,6 +257,12 @@ def initialize_catalog(path: str | Path) -> Path:
         result = connection.execute("PRAGMA quick_check").fetchone()[0]
         if result != "ok":
             raise CatalogError(f"catalog quick_check failed: {result}")
+        foreign_key_error = connection.execute("PRAGMA foreign_key_check").fetchone()
+        if foreign_key_error is not None:
+            raise CatalogError(
+                "catalog foreign_key_check failed: "
+                f"table={foreign_key_error[0]!r}, rowid={foreign_key_error[1]!r}"
+            )
     finally:
         connection.close()
     return catalog_path
@@ -204,14 +278,22 @@ def online_backup(
     """Create one WAL-consistent backup without writing to the source database."""
     source = Path(source_path).expanduser().resolve()
     destination = Path(destination_path).expanduser().resolve()
+    if not source.is_file():
+        raise CatalogError(f"SQLite backup source does not exist: {source}")
+    if source == destination:
+        raise CatalogError("SQLite backup source and destination must differ")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists():
-        destination.unlink()
-    src = sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True)
-    dst = sqlite3.connect(destination)
+    remove_sqlite_copy(destination)
+    src: sqlite3.Connection | None = None
+    dst: sqlite3.Connection | None = None
+    completed = False
     try:
+        src = sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True)
+        dst = sqlite3.connect(destination)
         src.execute("PRAGMA query_only=ON")
+        src.execute("PRAGMA trusted_schema=OFF")
         src.execute("PRAGMA busy_timeout=15000")
+        dst.execute("PRAGMA synchronous=FULL")
 
         def progress(status: int, remaining: int, total: int) -> None:
             if progress_hook is not None:
@@ -220,17 +302,47 @@ def online_backup(
 
         src.backup(dst, pages=pages, progress=progress, sleep=0.05)
         dst.commit()
+        journal_mode = str(dst.execute("PRAGMA journal_mode=DELETE").fetchone()[0])
+        if journal_mode.lower() != "delete":
+            raise CatalogError(
+                f"failed to make SQLite backup self-contained: journal_mode={journal_mode}"
+            )
+        dst.commit()
+        completed = True
     finally:
-        dst.close()
-        src.close()
+        if dst is not None:
+            dst.close()
+        if src is not None:
+            src.close()
+        if not completed:
+            remove_sqlite_copy(destination)
+    try:
+        _remove_sqlite_sidecars(destination)
+        _fsync_file(destination)
+    except BaseException:
+        remove_sqlite_copy(destination)
+        raise
 
 
 def verify_sqlite(path: str | Path) -> None:
-    connection = sqlite3.connect(Path(path))
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.is_file():
+        raise CatalogError(f"SQLite database does not exist: {resolved}")
+    connection = sqlite3.connect(
+        f"{resolved.as_uri()}?mode=ro&immutable=1", uri=True
+    )
     try:
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA trusted_schema=OFF")
         result = connection.execute("PRAGMA quick_check").fetchone()[0]
         if result != "ok":
             raise CatalogError(f"SQLite quick_check failed for {path}: {result}")
+        foreign_key_error = connection.execute("PRAGMA foreign_key_check").fetchone()
+        if foreign_key_error is not None:
+            raise CatalogError(
+                f"SQLite foreign_key_check failed for {path}: "
+                f"table={foreign_key_error[0]!r}, rowid={foreign_key_error[1]!r}"
+            )
     finally:
         connection.close()
 
@@ -243,18 +355,27 @@ def backup_existing_catalog(
     path = Path(catalog_path).expanduser().resolve()
     if not path.is_file() or path.stat().st_size == 0:
         return None
+    ensure_free_space(
+        path.parent,
+        path.stat().st_size + _BACKUP_FREE_SPACE_RESERVE,
+        operation="catalog backup",
+    )
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     destination = path.parent / "backups" / f"catalog-{stamp}.db"
-    online_backup(path, destination, progress_hook=progress_hook)
-    verify_sqlite(destination)
-    digest = file_sha256(destination)
-    if digest == hashlib.sha256(b"").hexdigest():
-        raise CatalogError("catalog backup unexpectedly produced an empty file")
-    if file_sha256(destination) != digest:
-        raise CatalogError("catalog backup changed during hash readback")
-    destination.with_suffix(destination.suffix + ".sha256").write_text(
-        digest + "\n", encoding="ascii"
-    )
+    checksum_path = destination.with_suffix(destination.suffix + ".sha256")
+    try:
+        online_backup(path, destination, progress_hook=progress_hook)
+        verify_sqlite(destination)
+        digest = file_sha256(destination)
+        if digest == hashlib.sha256(b"").hexdigest():
+            raise CatalogError("catalog backup unexpectedly produced an empty file")
+        if file_sha256(destination) != digest:
+            raise CatalogError("catalog backup changed during hash readback")
+        _atomic_write_text(checksum_path, digest + "\n")
+    except BaseException:
+        remove_sqlite_copy(destination)
+        checksum_path.unlink(missing_ok=True)
+        raise
     return destination
 
 
@@ -323,13 +444,44 @@ class CatalogWriter:
         self.path = Path(path).expanduser().resolve()
         self.queue: asyncio.Queue[_WriteCommand] = asyncio.Queue(maxsize=max_queue)
         self._task: asyncio.Task[None] | None = None
+        self._failure: BaseException | None = None
 
     async def __aenter__(self) -> "CatalogWriter":
+        if self._task is not None:
+            raise RuntimeError("CatalogWriter has already been started")
+        self._failure = None
         self._task = asyncio.create_task(self._run())
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
-        await self.close()
+        try:
+            await self.close()
+        except BaseException:
+            if exc is None:
+                raise
+
+    async def _await_while_running(self, awaitable):  # noqa: ANN001, ANN202
+        task = self._task
+        if task is None:
+            raise RuntimeError("CatalogWriter has not been started")
+        if isinstance(awaitable, asyncio.Future) and awaitable.done():
+            return await awaitable
+        if task.done():
+            if inspect.iscoroutine(awaitable):
+                awaitable.close()
+            await task
+            raise RuntimeError("CatalogWriter stopped unexpectedly")
+        operation = asyncio.ensure_future(awaitable)
+        _done, _pending = await asyncio.wait(
+            {operation, task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if operation.done():
+            return await operation
+        operation.cancel()
+        with suppress(asyncio.CancelledError):
+            await operation
+        await task
+        raise RuntimeError("CatalogWriter stopped unexpectedly")
 
     async def execute(
         self,
@@ -340,21 +492,48 @@ class CatalogWriter:
         if self._task is None:
             raise RuntimeError("CatalogWriter has not been started")
         future: asyncio.Future[T] = asyncio.get_running_loop().create_future()
-        await self.queue.put(_WriteCommand(action, future, transactional))
-        return await future
+        await self._await_while_running(
+            self.queue.put(_WriteCommand(action, future, transactional))
+        )
+        return await self._await_while_running(future)
 
     async def close(self) -> None:
         if self._task is None:
             return
-        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        await self.queue.put(_WriteCommand(None, future, False))
-        await future
-        await self._task
-        self._task = None
+        task = self._task
+        try:
+            if task.done():
+                await task
+                return
+            future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            await self._await_while_running(
+                self.queue.put(_WriteCommand(None, future, False))
+            )
+            await self._await_while_running(future)
+            await task
+        finally:
+            self._task = None
+
+    @staticmethod
+    def _set_exception(future: asyncio.Future[Any], exc: BaseException) -> None:
+        if not future.done():
+            future.set_exception(exc)
+
+    def _fail_pending(self, exc: BaseException) -> None:
+        while True:
+            try:
+                command = self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            try:
+                self._set_exception(command.future, exc)
+            finally:
+                self.queue.task_done()
 
     async def _run(self) -> None:
-        connection = connect_catalog(self.path)
+        connection: sqlite3.Connection | None = None
         try:
+            connection = connect_catalog(self.path)
             while True:
                 command = await self.queue.get()
                 try:
@@ -363,23 +542,42 @@ class CatalogWriter:
                             command.future.set_result(None)
                         return
                     if command.transactional:
-                        connection.execute("BEGIN IMMEDIATE")
+                        try:
+                            connection.execute("BEGIN IMMEDIATE")
+                        except BaseException as exc:
+                            self._set_exception(command.future, exc)
+                            raise
                     try:
                         result = command.action(connection)
                     except BaseException as exc:
-                        if command.transactional and connection.in_transaction:
-                            connection.rollback()
-                        if not command.future.done():
-                            command.future.set_exception(exc)
-                    else:
-                        if command.transactional and connection.in_transaction:
+                        try:
+                            if command.transactional and connection.in_transaction:
+                                connection.rollback()
+                        except BaseException as rollback_exc:
+                            self._set_exception(command.future, rollback_exc)
+                            raise
+                        self._set_exception(command.future, exc)
+                        continue
+                    if command.transactional and connection.in_transaction:
+                        try:
                             connection.commit()
-                        if not command.future.done():
-                            command.future.set_result(result)
+                        except BaseException as exc:
+                            with suppress(BaseException):
+                                if connection.in_transaction:
+                                    connection.rollback()
+                            self._set_exception(command.future, exc)
+                            raise
+                    if not command.future.done():
+                        command.future.set_result(result)
                 finally:
                     self.queue.task_done()
+        except BaseException as exc:
+            self._failure = exc
+            self._fail_pending(exc)
+            raise
         finally:
-            connection.close()
+            if connection is not None:
+                connection.close()
 
 
 __all__ = [
@@ -388,11 +586,14 @@ __all__ = [
     "backup_existing_catalog",
     "catalog_write_lock",
     "connect_catalog_read_only",
+    "ensure_free_space",
     "file_sha256",
     "initialize_catalog",
     "json_dumps",
     "json_loads",
     "online_backup",
+    "remove_sqlite_copy",
+    "sqlite_sidecar_paths",
     "snapshot_protection_reasons",
     "utcnow_iso",
     "verify_sqlite",
