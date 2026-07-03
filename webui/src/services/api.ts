@@ -6,6 +6,7 @@ import type {
   HealthResponse,
   MetricsResponse,
   OrgUnitProfessorResponse,
+  ProfessorTopicResponse,
   UniversityTopologyResponse
 } from '../types/monitor'
 
@@ -67,6 +68,12 @@ export const monitorApi = {
     const params = new URLSearchParams({ org_graph_key: orgGraphKey })
     return request<OrgUnitProfessorResponse>(
       `/api/monitor/builds/${encodeURIComponent(buildId)}/orgunit-professors?${params.toString()}`
+    )
+  },
+  professorTopics: (buildId: string, professorGraphKey: string) => {
+    const params = new URLSearchParams({ professor_graph_key: professorGraphKey })
+    return request<ProfessorTopicResponse>(
+      `/api/monitor/builds/${encodeURIComponent(buildId)}/professor-topics?${params.toString()}`
     )
   },
   findings: (buildId?: string, severity?: string) => {

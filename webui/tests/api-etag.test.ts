@@ -66,4 +66,30 @@ describe('api ETag client (P1-5)', () => {
     await expect(monitorApi.orgUnitProfessors('b1', 'build:org')).resolves.toEqual(payload)
     expect(requested).toBe('/api/monitor/builds/b1/orgunit-professors?org_graph_key=build%3Aorg')
   })
+
+  it('requests professor-topic subgraphs through the query endpoint', async () => {
+    let requested = ''
+    const payload = {
+      build_id: 'b1',
+      professor: {
+        graph_key: 'build:prof',
+        name: '张三',
+        title: '教授',
+        title_family: 'professor',
+        role_status: 'included'
+      },
+      topics: [],
+      links: []
+    }
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      requested = String(input)
+      return new Response(JSON.stringify({ data: payload }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    }) as unknown as typeof fetch
+
+    await expect(monitorApi.professorTopics('b1', 'build:prof')).resolves.toEqual(payload)
+    expect(requested).toBe('/api/monitor/builds/b1/professor-topics?professor_graph_key=build%3Aprof')
+  })
 })

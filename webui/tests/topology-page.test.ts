@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
@@ -11,13 +11,19 @@ vi.mock('../src/components/charts/ChartFrame.vue', () => ({ default: stubs.Chart
 vi.mock('../src/components/primitives/EmptyState.vue', () => ({ default: stubs.EmptyState }))
 
 const apiMocks = vi.hoisted(() => ({
-  orgUnitProfessors: vi.fn()
+  orgUnitProfessors: vi.fn(),
+  professorTopics: vi.fn()
 }))
 vi.mock('../src/services/api', () => ({ monitorApi: apiMocks }))
 
 import TopologyPage from '../src/pages/TopologyPage.vue'
 import OrgUnitProfessorChart from '../src/components/charts/OrgUnitProfessorChart.vue'
-import type { UniversityTopologyResponse, OrgUnitProfessorResponse } from '../src/types/monitor'
+import ProfessorTopicChart from '../src/components/charts/ProfessorTopicChart.vue'
+import type {
+  UniversityTopologyResponse,
+  OrgUnitProfessorResponse,
+  ProfessorTopicResponse
+} from '../src/types/monitor'
 
 function buildTopology(): UniversityTopologyResponse {
   return {
@@ -50,6 +56,39 @@ function buildSubgraph(): OrgUnitProfessorResponse {
   }
 }
 
+function buildTopicSubgraph(): ProfessorTopicResponse {
+  return {
+    build_id: 'b1',
+    professor: {
+      graph_key: 'p1',
+      name: '张三',
+      title: '教授',
+      title_family: 'professor',
+      role_status: 'included'
+    },
+    topics: [
+      {
+        graph_key: 't1',
+        logical_id: 'topic-1',
+        canonical_name: '机器学习',
+        normalized_name: '机器学习',
+        kind: 'method',
+        status: 'active',
+        taxonomy_version: 'tax-v1'
+      }
+    ],
+    links: [
+      {
+        source: 'p1',
+        target: 't1',
+        label: 'PRIMARY_TOPIC',
+        evidence_count: 2,
+        confidence: 0.8
+      }
+    ]
+  }
+}
+
 const baseProps = {
   health: null, builds: null, detail: null, metrics: null, topology: null,
   findings: [], selectedBuildId: 'b1', error: null, paused: false, lastUpdated: null, history: []
@@ -62,6 +101,11 @@ function chartNodeIds(wrapper: ReturnType<typeof mount>): string[] {
 }
 
 describe('TopologyPage', () => {
+  beforeEach(() => {
+    apiMocks.orgUnitProfessors.mockReset()
+    apiMocks.professorTopics.mockReset()
+  })
+
   it('renders the university chart before a college is selected', () => {
     const wrapper = mount(TopologyPage, {
       props: { ...baseProps, topology: buildTopology() },
@@ -109,6 +153,35 @@ describe('TopologyPage', () => {
     expect(wrapper.findComponent(OrgUnitProfessorChart).exists()).toBe(true)
   })
 
+  it('shows a professor dropdown after college load and drills into professor topics', async () => {
+    apiMocks.orgUnitProfessors.mockResolvedValue(buildSubgraph())
+    apiMocks.professorTopics.mockResolvedValue(buildTopicSubgraph())
+    const wrapper = mount(TopologyPage, {
+      props: { ...baseProps, topology: buildTopology() },
+      global: { stubs: { ChartFrame: stubs.ChartFrame, EmptyState: stubs.EmptyState } }
+    })
+    let selects = wrapper.findAll('select')
+
+    await selects[0].setValue('u')
+    await nextTick()
+    await selects[1].setValue('org')
+    await flushPromises()
+
+    selects = wrapper.findAll('select')
+    expect(selects).toHaveLength(3)
+    const professorSelect = selects[2]
+    expect(professorSelect.find('option[value="p1"]').exists()).toBe(true)
+    expect(wrapper.findComponent(OrgUnitProfessorChart).exists()).toBe(true)
+
+    await professorSelect.setValue('p1')
+    await flushPromises()
+
+    expect(apiMocks.professorTopics).toHaveBeenCalledWith('b1', 'p1')
+    expect(wrapper.findComponent(ProfessorTopicChart).exists()).toBe(true)
+    expect(wrapper.findComponent(OrgUnitProfessorChart).exists()).toBe(false)
+    expect(chartNodeIds(wrapper)).toEqual(['p1', 't1'])
+  })
+
   it('selecting all universities clears the college drill-down and restores the full graph', async () => {
     apiMocks.orgUnitProfessors.mockResolvedValue(buildSubgraph())
     const wrapper = mount(TopologyPage, {
@@ -151,6 +224,32 @@ describe('TopologyPage', () => {
     expect(collegeSelect.element.value).toBe('__none__')
     expect(collegeSelect.attributes('disabled')).toBeDefined()
     expect(wrapper.findComponent(OrgUnitProfessorChart).exists()).toBe(false)
+    expect(chartNodeIds(wrapper)).toEqual(['org', 'org2', 'u', 'u2'])
+  })
+
+  it('changing builds clears stale professor and topic state', async () => {
+    apiMocks.orgUnitProfessors.mockResolvedValue(buildSubgraph())
+    apiMocks.professorTopics.mockResolvedValue(buildTopicSubgraph())
+    const wrapper = mount(TopologyPage, {
+      props: { ...baseProps, topology: buildTopology() },
+      global: { stubs: { ChartFrame: stubs.ChartFrame, EmptyState: stubs.EmptyState } }
+    })
+    let selects = wrapper.findAll('select')
+
+    await selects[0].setValue('u')
+    await nextTick()
+    await selects[1].setValue('org')
+    await flushPromises()
+    selects = wrapper.findAll('select')
+    await selects[2].setValue('p1')
+    await flushPromises()
+    expect(wrapper.findComponent(ProfessorTopicChart).exists()).toBe(true)
+
+    await wrapper.setProps({ selectedBuildId: 'b2' })
+    await nextTick()
+
+    expect(wrapper.findComponent(ProfessorTopicChart).exists()).toBe(false)
+    expect(wrapper.findAll('select')).toHaveLength(2)
     expect(chartNodeIds(wrapper)).toEqual(['org', 'org2', 'u', 'u2'])
   })
 

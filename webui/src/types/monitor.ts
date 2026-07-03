@@ -223,3 +223,35 @@ export interface OrgUnitProfessorResponse {
   professors: ProfessorNode[]
   links: ProfessorLink[]
 }
+
+export type TopicRelationLabel =
+  | 'PRIMARY_TOPIC'
+  | 'USES_METHOD'
+  | 'APPLIED_TO'
+  | 'TARGETS_TASK'
+  | 'STUDIES'
+
+export interface TopicNode {
+  graph_key: string
+  logical_id: string
+  canonical_name: string
+  normalized_name: string
+  kind: string
+  status: string
+  taxonomy_version: string
+}
+
+export interface ProfessorTopicLink {
+  source: string
+  target: string
+  label: TopicRelationLabel
+  evidence_count: number
+  confidence: number | null
+}
+
+export interface ProfessorTopicResponse {
+  build_id: string
+  professor: ProfessorNode
+  topics: TopicNode[]
+  links: ProfessorTopicLink[]
+}

@@ -7,12 +7,14 @@ import type {
   HealthResponse,
   MetricsResponse,
   OrgUnitProfessorResponse,
+  ProfessorTopicResponse,
   UniversityTopologyResponse
 } from '../types/monitor'
 import type { ThroughputSample } from '../composables/useMonitorData'
 import { monitorApi } from '../services/api'
 import UniversityTopologyChart from '../components/charts/UniversityTopologyChart.vue'
 import OrgUnitProfessorChart from '../components/charts/OrgUnitProfessorChart.vue'
+import ProfessorTopicChart from '../components/charts/ProfessorTopicChart.vue'
 import PanelCard from '../components/features/PanelCard.vue'
 import EmptyState from '../components/primitives/EmptyState.vue'
 import ErrorPanel from '../components/primitives/ErrorPanel.vue'
@@ -39,8 +41,11 @@ defineEmits<{
 
 const selectedUniversity = ref<string | null>(null)
 const selectedCollege = ref<string | null>(null)
+const selectedProfessor = ref<string | null>(null)
 const subgraph = ref<OrgUnitProfessorResponse | null>(null)
 const subgraphError = ref<string | null>(null)
+const topicSubgraph = ref<ProfessorTopicResponse | null>(null)
+const topicSubgraphError = ref<string | null>(null)
 
 // Colleges belonging to the selected university (from graph_tree nodes).
 const colleges = computed(() => {
@@ -51,6 +56,26 @@ const colleges = computed(() => {
   )
 })
 
+const professors = computed(() => subgraph.value?.professors ?? [])
+
+const panelTitle = computed(() => {
+  if (selectedProfessor.value) return 'Professor topics'
+  if (selectedCollege.value) return 'College subgraph'
+  return 'University topology'
+})
+
+const panelSubtitle = computed(() => {
+  if (selectedProfessor.value) return '教师 → Topic with approved research-topic edges'
+  if (selectedCollege.value) return '学院 → 教师 with AFFILIATED_WITH edges'
+  return '大学 → 学院 with professor counts'
+})
+
+function resetProfessorDrilldown() {
+  selectedProfessor.value = null
+  topicSubgraph.value = null
+  topicSubgraphError.value = null
+}
+
 function onUniversityChange(event: Event) {
   const value = (event.target as HTMLSelectElement).value
   selectedUniversity.value = value === '__all__' ? null : value
@@ -58,6 +83,7 @@ function onUniversityChange(event: Event) {
   selectedCollege.value = null
   subgraph.value = null
   subgraphError.value = null
+  resetProfessorDrilldown()
 }
 
 async function onCollegeChange(event: Event) {
@@ -65,6 +91,7 @@ async function onCollegeChange(event: Event) {
   selectedCollege.value = value === '__none__' ? null : value
   subgraph.value = null
   subgraphError.value = null
+  resetProfessorDrilldown()
   if (!selectedCollege.value || !props.selectedBuildId) return
   try {
     subgraph.value = await monitorApi.orgUnitProfessors(props.selectedBuildId, selectedCollege.value)
@@ -73,10 +100,24 @@ async function onCollegeChange(event: Event) {
   }
 }
 
+async function onProfessorChange(event: Event) {
+  const value = (event.target as HTMLSelectElement).value
+  selectedProfessor.value = value === '__none__' ? null : value
+  topicSubgraph.value = null
+  topicSubgraphError.value = null
+  if (!selectedProfessor.value || !props.selectedBuildId) return
+  try {
+    topicSubgraph.value = await monitorApi.professorTopics(props.selectedBuildId, selectedProfessor.value)
+  } catch (e) {
+    topicSubgraphError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
 function backToUniversityView() {
   selectedCollege.value = null
   subgraph.value = null
   subgraphError.value = null
+  resetProfessorDrilldown()
 }
 
 // If the build changes out from under us, drop a stale drill-down.
@@ -87,6 +128,7 @@ watch(
     selectedCollege.value = null
     subgraph.value = null
     subgraphError.value = null
+    resetProfessorDrilldown()
   }
 )
 </script>
@@ -104,8 +146,8 @@ watch(
     <ErrorPanel v-if="error" :message="error" />
 
     <PanelCard
-      :title="selectedCollege ? 'College subgraph' : 'University topology'"
-      :subtitle="selectedCollege ? '学院 → 教师 with AFFILIATED_WITH edges' : '大学 → 学院 with professor counts'"
+      :title="panelTitle"
+      :subtitle="panelSubtitle"
     >
       <div class="panel-body">
         <div class="controls">
@@ -138,15 +180,33 @@ watch(
             </option>
           </select>
 
+          <select
+            v-if="selectedCollege && subgraph"
+            class="uni-select"
+            :disabled="!professors.length"
+            :value="selectedProfessor ?? '__none__'"
+            @change="onProfessorChange"
+          >
+            <option value="__none__">选择老师</option>
+            <option v-for="professor in professors" :key="professor.graph_key" :value="professor.graph_key">
+              {{ professor.name }}{{ professor.title ? ' · ' + professor.title : '' }}
+            </option>
+          </select>
+
           <button v-if="selectedCollege" class="back-btn" @click="backToUniversityView">
             返回大学视图
           </button>
         </div>
 
         <ErrorPanel v-if="subgraphError" :message="subgraphError" />
+        <ErrorPanel v-if="topicSubgraphError" :message="topicSubgraphError" />
 
+        <ProfessorTopicChart
+          v-if="selectedProfessor"
+          :subgraph="topicSubgraph"
+        />
         <OrgUnitProfessorChart
-          v-if="selectedCollege"
+          v-else-if="selectedCollege"
           :subgraph="subgraph"
         />
         <EmptyState
