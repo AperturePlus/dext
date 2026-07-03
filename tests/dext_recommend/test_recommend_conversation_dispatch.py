@@ -64,6 +64,11 @@ def _profile():
                 "system_prompt": "compare prompt",
                 "json_schema": {"type": "object"}, "timeout": 20.0, "token_budget": 3072,
             },
+            "quick_actions": {
+                "system_prompt_id": "dext_recommend.quick_actions.v1",
+                "system_prompt": "quick actions prompt",
+                "json_schema": {"type": "object"}, "timeout": 8.0, "token_budget": 256,
+            },
         },
     })
 

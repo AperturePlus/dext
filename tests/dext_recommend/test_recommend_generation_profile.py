@@ -77,6 +77,18 @@ def _valid_payload() -> dict:
                 "timeout": 20.0,
                 "token_budget": 3072,
             },
+            "quick_actions": {
+                "system_prompt_id": "dext_recommend.quick_actions.v1",
+                "system_prompt": "quick actions prompt",
+                "json_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["quick_actions"],
+                    "properties": {},
+                },
+                "timeout": 8.0,
+                "token_budget": 256,
+            },
         },
     }
 
@@ -91,6 +103,7 @@ def test_profile_round_trips_through_json(tmp_path: Path) -> None:
     assert set(prof.operations) == {
         "query_understanding", "implicit_intent", "detail_followup",
         "match_analysis", "outreach_email", "professor_comparison",
+        "quick_actions",
     }
     impl = prof.operations["implicit_intent"]
     assert impl.confidence_threshold == 0.6
@@ -102,7 +115,7 @@ def test_checked_in_profile_matches_grounded_manifest_and_is_deeply_immutable() 
         Path("data/recommend/generation-profile.json")
     )
     assert profile.grounded_rules_manifest_hash == load_grounded_rules().manifest_hash
-    assert {"match_analysis", "outreach_email", "professor_comparison"} <= set(profile.operations)
+    assert {"match_analysis", "outreach_email", "professor_comparison", "quick_actions"} <= set(profile.operations)
     assert set(profile.operations["match_analysis"].json_schema["required"]) == {
         "summary", "dimension_scores", "next_steps", "claims",
     }
@@ -111,6 +124,9 @@ def test_checked_in_profile_matches_grounded_manifest_and_is_deeply_immutable() 
     }
     assert set(profile.operations["professor_comparison"].json_schema["required"]) == {
         "summary", "professor_notes", "evidence_gaps", "claims",
+    }
+    assert set(profile.operations["quick_actions"].json_schema["required"]) == {
+        "quick_actions",
     }
     with pytest.raises(TypeError):
         profile.operations["implicit_intent"].json_schema["type"] = "array"
