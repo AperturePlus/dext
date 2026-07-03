@@ -434,6 +434,43 @@ def status_command(build_id: str | None) -> None:
     _guard_catalog(lambda: get_status(build_id, settings))
 
 
+@graph.group("catalog")
+def catalog_group() -> None:
+    """Inspect and compact catalog staging/cache tables."""
+
+
+@catalog_group.command("size")
+def catalog_size_command() -> None:
+    """Show catalog file, backup, snapshot, and export-row size diagnostics."""
+    from dext_graph.catalog.maintenance import catalog_size
+    from dext_graph.config import GraphSettings
+
+    settings = GraphSettings()
+    _guard_catalog(lambda: catalog_size(settings))
+
+
+@catalog_group.command("compact")
+@click.option("--keep-build", required=True, metavar="BUILD_ID")
+@click.option("--prune-build", "prune_builds", multiple=True, metavar="BUILD_ID")
+@click.option("--yes", is_flag=True, help="Execute deletion and VACUUM. Defaults to dry-run.")
+def catalog_compact_command(
+    keep_build: str, prune_builds: tuple[str, ...], yes: bool
+) -> None:
+    """Prune rebuildable graph export staging rows from obsolete builds."""
+    from dext_graph.catalog.maintenance import compact_catalog
+    from dext_graph.config import GraphSettings
+
+    settings = GraphSettings()
+    _guard_catalog(
+        lambda: compact_catalog(
+            settings,
+            keep_build=keep_build,
+            prune_builds=prune_builds,
+            yes=yes,
+        )
+    )
+
+
 @graph.group("curation-gold")
 def curation_gold_group() -> None:
     """Evaluate human-labelled identity and role decisions."""

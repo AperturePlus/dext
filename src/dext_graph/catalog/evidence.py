@@ -904,6 +904,10 @@ async def freeze_graph_exports(
             total=counts[partition],
             counters={"partition": partition, "rows": counts[partition]},
         )
+    if partitions is None:
+        await writer.execute(
+            lambda connection: set_graph_export_pruned(connection, build_id, False)
+        )
     return counts
 
 
@@ -927,6 +931,88 @@ def _reset_graph_partitions(
         f"AND partition_key IN ({placeholders})",
         params,
     )
+
+
+def reset_graph_exports(connection: sqlite3.Connection, build_id: str) -> None:
+    connection.execute("DELETE FROM graph_export_rows WHERE build_id=?", (build_id,))
+    connection.execute("DELETE FROM graph_export_partitions WHERE build_id=?", (build_id,))
+    connection.execute(
+        "DELETE FROM sink_checkpoints WHERE build_id=? AND sink IN ('graph_export','neo4j')",
+        (build_id,),
+    )
+
+
+def graph_export_pruned(connection: sqlite3.Connection, build_id: str) -> bool:
+    row = connection.execute(
+        "SELECT summary_json FROM graph_runs WHERE build_id=?", (build_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    return bool(json_loads(row["summary_json"], {}).get("export_pruned"))
+
+
+def _partition_summary(connection: sqlite3.Connection, build_id: str) -> dict[str, Any]:
+    return {
+        row["partition_key"]: {
+            "row_count": int(row["row_count"]),
+            "checksum": row["checksum"],
+            "min_key": row["min_key"],
+            "max_key": row["max_key"],
+        }
+        for row in connection.execute(
+            "SELECT * FROM graph_export_partitions WHERE build_id=? ORDER BY partition_key",
+            (build_id,),
+        )
+    }
+
+
+def set_graph_export_pruned(
+    connection: sqlite3.Connection, build_id: str, pruned: bool
+) -> None:
+    row = connection.execute(
+        "SELECT summary_json FROM graph_runs WHERE build_id=?", (build_id,)
+    ).fetchone()
+    if row is None:
+        return
+    graph_summary = json_loads(row["summary_json"], {})
+    if pruned:
+        graph_summary["export_pruned"] = True
+        graph_summary["partitions"] = {}
+    else:
+        graph_summary.pop("export_pruned", None)
+        graph_summary["partitions"] = _partition_summary(connection, build_id)
+    connection.execute(
+        "UPDATE graph_runs SET summary_json=? WHERE build_id=?",
+        (json_dumps(graph_summary), build_id),
+    )
+    build_row = connection.execute(
+        "SELECT summary_json FROM graph_builds WHERE id=?", (build_id,)
+    ).fetchone()
+    if build_row is not None:
+        build_summary = json_loads(build_row["summary_json"], {})
+        build_summary["graph"] = graph_summary
+        connection.execute(
+            "UPDATE graph_builds SET summary_json=? WHERE id=?",
+            (json_dumps(build_summary), build_id),
+        )
+
+
+async def ensure_graph_exports_available(
+    writer: CatalogWriter,
+    build_id: str,
+    settings: GraphSettings,
+    *,
+    progress: ProgressCallback | None = None,
+) -> bool:
+    pruned = await writer.execute(
+        lambda connection: graph_export_pruned(connection, build_id),
+        transactional=False,
+    )
+    if not pruned:
+        return False
+    await writer.execute(lambda connection: reset_graph_exports(connection, build_id))
+    await freeze_graph_exports(writer, build_id, settings, progress=progress)
+    return True
 
 
 async def rebuild_graph_partitions(
@@ -953,9 +1039,13 @@ __all__ = [
     "EXPORT_VERSION",
     "PARTITIONS",
     "detect_language",
+    "ensure_graph_exports_available",
     "freeze_graph_exports",
+    "graph_export_pruned",
     "materialize_evidence",
     "rebuild_graph_partitions",
+    "reset_graph_exports",
+    "set_graph_export_pruned",
     "split_publication_mentions",
     "split_research_statements",
 ]

@@ -5,6 +5,7 @@ import pytest
 
 from dext_graph.catalog import workflow
 from dext_graph.catalog.db import CatalogError, snapshot_protection_reasons
+from dext_graph.catalog.evidence import set_graph_export_pruned
 from dext_graph.catalog.workflow import (
     create_build,
     get_status,
@@ -116,6 +117,52 @@ def _counts(catalog: Path) -> dict[str, int]:
                 "SELECT COUNT(*) FROM professor_observations WHERE active=1"
             ).fetchone()[0],
         }
+
+
+def _prune_exports_for_resume_test(
+    catalog: Path,
+    build_id: str,
+    *,
+    build_status: str | None = None,
+    graph_status: str = "COMPLETED",
+    stale_checkpoint: bool = False,
+) -> None:
+    with sqlite3.connect(catalog) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("DELETE FROM graph_export_rows WHERE build_id=?", (build_id,))
+        connection.execute("DELETE FROM graph_export_partitions WHERE build_id=?", (build_id,))
+        connection.execute(
+            "DELETE FROM sink_checkpoints WHERE build_id=? AND sink IN ('graph_export','neo4j')",
+            (build_id,),
+        )
+        if stale_checkpoint:
+            connection.execute(
+                """
+                INSERT INTO sink_checkpoints(
+                  build_id,sink,partition_key,last_key,last_batch_id,rows_written,updated_at
+                ) VALUES (?, 'graph_export', 'node:Professor', 'zzzz', NULL, 999, 'now')
+                """,
+                (build_id,),
+            )
+            connection.execute(
+                """
+                INSERT INTO sink_checkpoints(
+                  build_id,sink,partition_key,last_key,last_batch_id,rows_written,updated_at
+                ) VALUES (?, 'neo4j', 'node:Professor', 'zzzz', NULL, 999, 'now')
+                """,
+                (build_id,),
+            )
+        connection.execute(
+            "UPDATE graph_runs SET status=?, last_error=NULL WHERE build_id=?",
+            (graph_status, build_id),
+        )
+        if build_status is not None:
+            connection.execute(
+                "UPDATE graph_builds SET status=?, last_error=NULL WHERE id=?",
+                (build_status, build_id),
+            )
+        set_graph_export_pruned(connection, build_id, True)
+        connection.commit()
 
 
 def test_default_source_selection_uses_only_manifest_canonical_db(tmp_path):
@@ -287,6 +334,112 @@ async def test_resume_after_snapshot_failure(tmp_path, monkeypatch):
     resumed = await resume_build(failed["build"]["id"], settings)
     assert resumed["build"]["status"] == "WRITING_VECTOR"
     assert _counts(settings.catalog_path)["observations"] == 2
+
+
+async def test_resume_rebuilds_pruned_exports_before_vector_skip(tmp_path, monkeypatch):
+    settings = _settings(tmp_path, batch=1)
+    _source_db(settings.source_data_dir / "test.db", count=2)
+    _patch_runtime(monkeypatch)
+    result = await create_build(["测试大学"], settings)
+    build_id = result["build"]["id"]
+    with sqlite3.connect(settings.catalog_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM graph_export_rows WHERE build_id=?", (build_id,)
+        ).fetchone()[0] > 0
+
+    _prune_exports_for_resume_test(
+        settings.catalog_path, build_id, stale_checkpoint=True
+    )
+    resumed = await resume_build(build_id, settings)
+
+    assert resumed["build"]["status"] == "WRITING_VECTOR"
+    with sqlite3.connect(settings.catalog_path) as connection:
+        connection.row_factory = sqlite3.Row
+        assert connection.execute(
+            "SELECT COUNT(*) FROM graph_export_rows WHERE build_id=?", (build_id,)
+        ).fetchone()[0] > 0
+        stale = connection.execute(
+            "SELECT COUNT(*) FROM sink_checkpoints WHERE build_id=? AND last_key='zzzz'",
+            (build_id,),
+        ).fetchone()[0]
+        assert stale == 0
+        graph_export_rows = connection.execute(
+            "SELECT COALESCE(SUM(rows_written), 0) FROM sink_checkpoints "
+            "WHERE build_id=? AND sink='graph_export'",
+            (build_id,),
+        ).fetchone()[0]
+        assert graph_export_rows > 0
+        summary = connection.execute(
+            "SELECT summary_json FROM graph_runs WHERE build_id=?", (build_id,)
+        ).fetchone()["summary_json"]
+        assert "export_pruned" not in summary
+
+
+async def test_resume_pruned_failed_graph_stage_rebuilds_exports(tmp_path, monkeypatch):
+    settings = _settings(tmp_path, batch=1)
+    _source_db(settings.source_data_dir / "test.db", count=2)
+    _patch_runtime(monkeypatch)
+    result = await create_build(["测试大学"], settings)
+    build_id = result["build"]["id"]
+    _prune_exports_for_resume_test(
+        settings.catalog_path,
+        build_id,
+        build_status="FAILED",
+        graph_status="FAILED",
+    )
+
+    resumed = await resume_build(build_id, settings)
+
+    assert resumed["build"]["status"] == "WRITING_VECTOR"
+    with sqlite3.connect(settings.catalog_path) as connection:
+        connection.row_factory = sqlite3.Row
+        assert connection.execute(
+            "SELECT COUNT(*) FROM graph_export_rows WHERE build_id=?", (build_id,)
+        ).fetchone()[0] > 0
+        graph = connection.execute(
+            "SELECT status,summary_json FROM graph_runs WHERE build_id=?", (build_id,)
+        ).fetchone()
+        assert graph["status"] == "COMPLETED"
+        assert "export_pruned" not in graph["summary_json"]
+
+
+async def test_resume_pruned_failed_late_stage_rebuilds_exports_before_return(
+    tmp_path, monkeypatch
+):
+    settings = _settings(tmp_path, batch=1)
+    _source_db(settings.source_data_dir / "test.db", count=2)
+    _patch_runtime(monkeypatch)
+    result = await create_build(["测试大学"], settings)
+    build_id = result["build"]["id"]
+    _prune_exports_for_resume_test(
+        settings.catalog_path,
+        build_id,
+        build_status="FAILED",
+        graph_status="COMPLETED",
+        stale_checkpoint=True,
+    )
+    with sqlite3.connect(settings.catalog_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO vector_runs(
+              id,build_id,status,profile_template_version,tokenizer_identity,
+              sparse_tokenizer_version,collection_name,summary_json
+            ) VALUES ('vector-failed', ?, 'FAILED', 'template', 'tokenizer', 'bm25', 'collection', '{}')
+            """,
+            (build_id,),
+        )
+
+    resumed = await resume_build(build_id, settings)
+
+    assert resumed["build"]["status"] == "FAILED"
+    with sqlite3.connect(settings.catalog_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM graph_export_rows WHERE build_id=?", (build_id,)
+        ).fetchone()[0] > 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sink_checkpoints WHERE build_id=? AND last_key='zzzz'",
+            (build_id,),
+        ).fetchone()[0] == 0
 
 
 @pytest.mark.parametrize(

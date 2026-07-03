@@ -1453,37 +1453,55 @@ async def resume_build(
     path = Path(settings.catalog_path).expanduser().resolve()
     with closing(connect_catalog_read_only(path)) as connection:
         build = _load_build(connection, build_id)
+        catalog_user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        export_pruned = False
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='graph_runs'"
+        ).fetchone() is not None:
+            row = connection.execute(
+                "SELECT summary_json FROM graph_runs WHERE build_id=?", (build_id,)
+            ).fetchone()
+            export_pruned = bool(
+                row is not None
+                and json_loads(row["summary_json"], {}).get("export_pruned")
+            )
+    needs_catalog_backup = catalog_user_version != CATALOG_SCHEMA_VERSION
     _assert_resume_compatible(build, settings)
     if build["status"] in {"VALIDATING", "FAILED_VALIDATION", "READY", "ACTIVE"}:
         return build_status(path, build_id)
-    if build["status"] == "WRITING_VECTOR" and os.getenv("DEXT_TEST_SKIP_VECTOR") == "1":
+    if (
+        build["status"] == "WRITING_VECTOR"
+        and os.getenv("DEXT_TEST_SKIP_VECTOR") == "1"
+        and not export_pruned
+    ):
         return build_status(path, build_id)
     with catalog_write_lock(path):
-        emit_progress(
-            progress,
-            "catalog_backup",
-            "started",
-            build_id=build_id,
-            message="catalog backup",
-        )
-        backup_existing_catalog(
-            path,
-            retention=settings.catalog_backup_retention,
-            progress_hook=_backup_progress(
-                settings,
+        if needs_catalog_backup:
+            emit_progress(
                 progress,
+                "catalog_backup",
+                "started",
                 build_id=build_id,
-                stage="catalog_backup",
                 message="catalog backup",
-            ),
-        )
-        emit_progress(
-            progress,
-            "catalog_backup",
-            "completed",
-            build_id=build_id,
-            message="catalog backup",
-        )
+            )
+            backup_existing_catalog(
+                path,
+                retention=settings.catalog_backup_retention,
+                progress_hook=_backup_progress(
+                    settings,
+                    progress,
+                    build_id=build_id,
+                    stage="catalog_backup",
+                    message="catalog backup",
+                ),
+            )
+            emit_progress(
+                progress,
+                "catalog_backup",
+                "completed",
+                build_id=build_id,
+                message="catalog backup",
+            )
         initialize_catalog(path)
         async with CatalogWriter(path, max_queue=settings.build_write_queue) as writer:
             has_curation_run = await writer.execute(
@@ -1507,16 +1525,22 @@ async def resume_build(
                 is not None,
                 transactional=False,
             )
+            has_vector_run = await writer.execute(
+                lambda connection: connection.execute(
+                    "SELECT 1 FROM vector_runs WHERE build_id=?", (build_id,)
+                ).fetchone()
+                is not None,
+                transactional=False,
+            )
             if build["status"] == "WRITING_VECTOR" or (
-                build["status"] == "FAILED"
-                and (has_topic_run or await writer.execute(
-                    lambda connection: connection.execute(
-                        "SELECT 1 FROM vector_runs WHERE build_id=?", (build_id,)
-                    ).fetchone()
-                    is not None,
-                    transactional=False,
-                ))
+                build["status"] == "FAILED" and (has_topic_run or has_vector_run)
             ):
+                if export_pruned:
+                    from dext_graph.catalog.evidence import ensure_graph_exports_available
+
+                    await ensure_graph_exports_available(
+                        writer, build_id, settings, progress=progress
+                    )
                 if os.getenv("DEXT_TEST_SKIP_VECTOR") == "1":
                     return build_status(path, build_id)
                 return await _run_topic_and_vector(
