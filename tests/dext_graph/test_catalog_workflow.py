@@ -119,6 +119,10 @@ def _counts(catalog: Path) -> dict[str, int]:
         }
 
 
+def _backup_paths(settings: GraphSettings) -> set[Path]:
+    return set((settings.catalog_path.parent / "backups").glob("catalog-*.db"))
+
+
 def _prune_exports_for_resume_test(
     catalog: Path,
     build_id: str,
@@ -307,9 +311,11 @@ async def test_resume_after_batch_failure_uses_checkpoint(tmp_path, monkeypatch)
     failed = await create_build(["测试大学"], settings)
     assert failed["build"]["status"] == "FAILED"
     assert failed["checkpoints"][0]["last_key"] == "1"
+    backups_before = _backup_paths(settings)
     monkeypatch.setattr(workflow, "_commit_batch", original)
     resumed = await resume_build(failed["build"]["id"], settings)
     assert resumed["build"]["status"] == "WRITING_VECTOR"
+    assert _backup_paths(settings) == backups_before
     assert _counts(settings.catalog_path)["observations"] == 3
     observation_checkpoint = next(
         item for item in resumed["checkpoints"] if item["sink"] == "observations"

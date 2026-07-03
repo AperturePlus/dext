@@ -197,9 +197,15 @@ async def test_existing_v1_curating_build_resumes_through_stage2(tmp_path, monke
         )
         connection.execute("UPDATE catalog_meta SET value='1' WHERE key='schema_version'")
         connection.execute("PRAGMA user_version=1")
+    backups_before = set((settings.catalog_path.parent / "backups").glob("catalog-*.db"))
     resumed = await resume_build(build_id, settings)
     assert resumed["build"]["status"] == "WRITING_VECTOR"
     assert resumed["curation"]["status"] == "COMPLETED"
+    backups_after = set((settings.catalog_path.parent / "backups").glob("catalog-*.db"))
+    new_backups = backups_after - backups_before
+    assert len(new_backups) == 1
+    backup = new_backups.pop()
+    assert backup.with_suffix(backup.suffix + ".sha256").is_file()
     with sqlite3.connect(settings.catalog_path) as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM canonical_professors WHERE build_id=? AND active=1",
