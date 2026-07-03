@@ -1453,7 +1453,9 @@ async def resume_build(
     path = Path(settings.catalog_path).expanduser().resolve()
     with closing(connect_catalog_read_only(path)) as connection:
         build = _load_build(connection, build_id)
-        catalog_user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        catalog_user_version = int(
+            connection.execute("PRAGMA user_version").fetchone()[0]
+        )
         export_pruned = False
         if connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='graph_runs'"
