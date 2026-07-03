@@ -9,13 +9,19 @@
 
 ## 环境变量
 
-复制 `.env.example` 为 `.env` 并按需填写。配置项定义见 `src/dext/config.py`，`DEXT_` 前缀的变量会自动映射到 `Settings` 字段。
+复制 `.env.example` 为 `.env` 并按需填写。抓取配置项定义见 `src/dext/config.py`，建图配置项定义见 `src/dext_graph/config.py`；`DEXT_` 前缀的变量会自动映射到对应 settings 字段。
 
 ### 必填
 
 | 变量 | 说明 |
 |------|------|
-| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 (无 `DEXT_` 前缀) |
+| `DEEPSEEK_API_KEY` | 抓取/核心 LLM 的 DeepSeek API 密钥 (无 `DEXT_` 前缀)，Graph Topic LLM 不使用该变量 |
+
+### 按功能必填
+
+| 变量 | 说明 |
+|------|------|
+| `DEXT_TOPIC_LLM_API_KEY` | Graph Topic extraction/linking 专用 LLM API 密钥；不从 `DEEPSEEK_API_KEY` fallback |
 
 ### 可选 (均有默认值)
 

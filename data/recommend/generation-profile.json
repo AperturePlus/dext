@@ -158,6 +158,25 @@
       },
       "timeout": 20.0,
       "token_budget": 3072
+    },
+    "quick_actions": {
+      "system_prompt_id": "dext_recommend.quick_actions.v1",
+      "system_prompt": "Generate short Chinese quick-action chip labels for a mentor-recommendation chat composer. Use only the supplied follow_up and last_recommendations context. Return JSON only. Labels must be operation phrases, not full questions; each label must be no more than 8 Chinese/ASCII characters. Produce 1-4 useful next actions, or [] if no useful action exists. Few-shots: follow_up='' with no recommendations -> {\"quick_actions\":[\"找导师\",\"筛方向\",\"看城市\"]}; follow_up='只看上海的导师' -> {\"quick_actions\":[\"换城市\",\"只看985\",\"偏应用\",\"招生要求\"]}; follow_up='想读博士' -> {\"quick_actions\":[\"适合硕士\",\"论文方向\",\"招生要求\",\"联系建议\"]}.",
+      "json_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["quick_actions"],
+        "properties": {
+          "quick_actions": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 4,
+            "items": {"type": "string", "maxLength": 8}
+          }
+        }
+      },
+      "timeout": 8.0,
+      "token_budget": 256
     }
   }
 }
