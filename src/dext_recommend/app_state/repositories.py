@@ -98,6 +98,7 @@ def _turn_dict(row: ConversationTurn) -> dict[str, Any]:
 
 
 def _message_dict(row: ConversationMessage) -> dict[str, Any]:
+    kind = row.kind if row.kind in {"conversation", "recommendation", "forkReroute"} else "conversation"
     return {
         "id": row.id,
         "turn_id": row.turn_id,
@@ -105,10 +106,34 @@ def _message_dict(row: ConversationMessage) -> dict[str, Any]:
         "content": row.content,
         "created_at": dt_to_iso(row.created_at),
         "status": row.status,
-        "kind": row.kind,
+        "kind": kind,
         "feedback": row.feedback,
         "related_recommendations": row.related_recommendations_json or [],
     }
+
+
+def _favorite_item(row: AppFavorite) -> dict[str, Any]:
+    snapshot = dict(row.snapshot_json or {})
+    return {
+        "professor_id": row.professor_id,
+        "name": str(snapshot.get("name") or snapshot.get("display_name") or row.professor_id),
+        "university": str(snapshot.get("university") or ""),
+        "college": str(snapshot.get("college") or ""),
+        "title": str(snapshot.get("title") or ""),
+        "research_fields": list(snapshot.get("research_fields") or []),
+        "homepage_url": snapshot.get("homepage_url"),
+        "favorited_at": snapshot.get("favorited_at") or dt_to_iso(row.favorited_at),
+    }
+
+
+def _split_turns_messages(turns: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    flat_turns: list[dict[str, Any]] = []
+    messages: list[dict[str, Any]] = []
+    for turn in turns:
+        item = dict(turn)
+        messages.extend(item.pop("messages", []))
+        flat_turns.append(item)
+    return flat_turns, messages
 
 
 @dataclass(slots=True)
@@ -171,11 +196,7 @@ class AppStateRepository:
                 .order_by(AppFavorite.favorited_at.desc(), AppFavorite.professor_id)
             )).scalars().all()
             return [
-                {
-                    "professor_id": row.professor_id,
-                    "snapshot": row.snapshot_json or {},
-                    "favorited_at": dt_to_iso(row.favorited_at),
-                }
+                _favorite_item(row)
                 for row in rows
             ]
 
@@ -197,7 +218,7 @@ class AppStateRepository:
                 row.snapshot_json = snapshot or row.snapshot_json or {}
                 row.favorited_at = row.favorited_at or now
             await session.flush()
-            return {"professor_id": professor_id, "favorited": True}
+            return {"favorited": True, "item": _favorite_item(row)}
 
     async def delete_favorite(self, owner_id: str, professor_id: str) -> dict[str, Any]:
         async with self.sessionmaker() as session, session.begin():
@@ -205,7 +226,7 @@ class AppStateRepository:
                 AppFavorite.owner_id == owner_id,
                 AppFavorite.professor_id == professor_id,
             ))
-            return {"professor_id": professor_id, "favorited": False}
+            return {"favorited": False}
 
     async def list_history(self, owner_id: str) -> list[dict[str, Any]]:
         async with self.sessionmaker() as session:
@@ -350,7 +371,8 @@ class AppStateRepository:
     async def get_session_projection(self, owner_id: str, session_id: str) -> dict[str, Any]:
         session_obj = await self.get_session(owner_id, session_id)
         turns = await self.list_turns(owner_id, session_id)
-        return {"session": session_obj, "turns": turns}
+        flat_turns, messages = _split_turns_messages(turns)
+        return {"session": session_obj, "turns": flat_turns, "messages": messages}
 
     async def list_turns(self, owner_id: str, session_id: str) -> list[dict[str, Any]]:
         async with self.sessionmaker() as session:

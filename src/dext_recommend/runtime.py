@@ -29,6 +29,7 @@ from dext_recommend.core.generation_profile import RecommendGenerationProfile
 from dext_recommend.core.service import RecommendDeps, RecommendationCore
 from dext_recommend.errors import RecommendationRuntimeError
 from dext_recommend.generation.auxiliary import AuxiliaryGenerationService
+from dext_recommend.generation.quick_actions import QuickActionGenerationService
 from dext_recommend.readiness import ReadinessDeps, ReadinessService
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,7 @@ class LiveRecommendationRuntime:
     core: RecommendationCore
     conversation: ConversationDispatcher
     auxiliary_generation: AuxiliaryGenerationService
+    quick_actions: QuickActionGenerationService
     readiness: LiveActiveSnapshotProvider
     generation_profile: RecommendGenerationProfile
     _embedding: LiveQueryEmbeddingAdapter | None = field(default=None, repr=False)
@@ -322,10 +324,15 @@ async def build_live_recommendation_runtime(
             pipeline=ConstrainedGenerationPipeline(aux_llm),
             settings=settings,
         )
+        quick_actions = QuickActionGenerationService(
+            pipeline=ConstrainedGenerationPipeline(aux_llm),
+            generation_profile=profile,
+        )
         runtime = LiveRecommendationRuntime(
             core=core,
             conversation=conversation,
             auxiliary_generation=auxiliary,
+            quick_actions=quick_actions,
             readiness=provider,
             generation_profile=profile,
             _embedding=embedding,

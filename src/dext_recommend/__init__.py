@@ -14,7 +14,7 @@ from dext_grounded import SourceRef, StudentContext
 
 from dext_recommend.config import RecommendSettings
 from dext_recommend.core import ConversationDispatcher, RecommendDeps, RecommendationCore
-from dext_recommend.generation import AuxiliaryGenerationService
+from dext_recommend.generation import AuxiliaryGenerationService, QuickActionGenerationService
 from dext_recommend.errors import (
     ErrorSeverity, RecommendationError, RecommendationErrorCode,
     RecommendationRuntimeError,
@@ -109,6 +109,7 @@ __all__: list[str] = [
     "QueryDiagnostics",
     "QueryEmbeddingPort",
     "QueryUnderstanding",
+    "QuickActionGenerationService",
     "RankingProfile",
     "RankingProfilePort",
     "ReadinessReport",

@@ -20,6 +20,7 @@ _REQUIRED_OPERATIONS = frozenset({
     "match_analysis",
     "outreach_email",
     "professor_comparison",
+    "quick_actions",
 })
 _REQUIRED_SCHEMA_FIELDS = {
     "query_understanding": frozenset({
@@ -34,6 +35,7 @@ _REQUIRED_SCHEMA_FIELDS = {
     "professor_comparison": frozenset({
         "summary", "professor_notes", "evidence_gaps", "claims",
     }),
+    "quick_actions": frozenset({"quick_actions"}),
 }
 
 

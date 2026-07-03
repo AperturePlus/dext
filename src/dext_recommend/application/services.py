@@ -157,13 +157,14 @@ class ApplicationServices:
             )
         answer, related, snapshot = conversation_dispatch_to_answer(result)
         status = "completed" if result.kind not in {"error"} else "failed"
+        route = _conversation_route(result.kind)
         completed = await self.repository.complete_attempt(
             owner_id,
             session_id=session_id,
             turn_id=turn_id,
             attempt_id=attempt_id,
             status=status,
-            route=result.kind,
+            route=route,
             assistant_content=answer,
             related_recommendations=related,
             context_json={
@@ -179,7 +180,22 @@ class ApplicationServices:
             },
             snapshot_json=snapshot,
         )
-        return completed
+        session_obj = await self.repository.get_session(owner_id, session_id)
+        return {
+            **completed,
+            "session": session_obj,
+            "attempt_id": attempt_id,
+            "revision": session_obj.get("revision", 0),
+            "quick_actions": [],
+        }
 
 
 __all__ = ["ApplicationServices", "AttemptRegistry"]
+
+
+def _conversation_route(kind: str) -> str:
+    if kind == "recommendation":
+        return "recommendation"
+    if kind == "fork_reroute":
+        return "forkReroute"
+    return "conversation"
