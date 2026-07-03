@@ -187,6 +187,7 @@ async def build_live_recommendation_runtime(
     settings: RecommendSettings | None = None,
     *,
     clients: LiveClients | None = None,
+    conversation_store: object | None = None,
 ) -> LiveRecommendationRuntime:
     """Build the complete live runtime or fail without leaving open resources."""
     settings = settings or RecommendSettings()
@@ -310,6 +311,7 @@ async def build_live_recommendation_runtime(
             ranking_port=ranking_port,
             generation_profile_port=generation_profile_port,
             coverage_flags_by_build_id=coverage_flags,
+            conversation_store=conversation_store,
         )
         core = assemble_core(deps, settings)
         conversation = ConversationDispatcher(
