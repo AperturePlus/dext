@@ -38,10 +38,19 @@ from dext_graph.catalog.topics import (
 from dext_graph.catalog.vector_workflow import _embedding_fingerprint
 from dext_graph.config import GraphSettings
 from dext_graph.embeddings import EmbeddingClient
+from dext_graph.models import ValueValidationError
 from dext_graph.profiles import TransformersTokenizer, prefixed_input
 
 TOPIC_RUN_VERSION = "topic-dag-v1"
 _TERMINAL_TOPIC_LINK_STATUSES = frozenset({"succeeded", "terminal-invalid-input"})
+
+
+class TopicLinkDeferredRetryError(RuntimeError):
+    """Raised after draining work when some statements were deferred to retry."""
+
+
+class _TopicLLMOutputError(RuntimeError):
+    """A row-scoped malformed LLM response that should not stop peer workers."""
 
 
 def _safe_error(exc: BaseException) -> str:
@@ -318,16 +327,27 @@ def _reset_running_jobs(connection: sqlite3.Connection, build_id: str) -> int:
 
 
 def _claim_statement(
-    connection: sqlite3.Connection, build_id: str
+    connection: sqlite3.Connection,
+    build_id: str,
+    *,
+    deferred_statement_ids: set[str] | None = None,
 ) -> dict[str, Any] | None:
+    deferred = tuple(sorted(deferred_statement_ids or ()))
+    exclusion_sql = ""
+    params: tuple[Any, ...] = (build_id,)
+    if deferred:
+        placeholders = ",".join("?" for _ in deferred)
+        exclusion_sql = f" AND s.id NOT IN ({placeholders})"
+        params = (build_id, *deferred)
     row = connection.execute(
-        """
+        f"""
         SELECT s.id,s.raw_text FROM research_statements s
         LEFT JOIN topic_link_jobs j ON j.build_id=s.build_id AND j.statement_id=s.id
         WHERE s.build_id=? AND (j.status IS NULL OR j.status IN ('pending','retry'))
+        {exclusion_sql}
         ORDER BY s.id LIMIT 1
         """,
-        (build_id,),
+        params,
     ).fetchone()
     if row is None:
         return None
@@ -451,11 +471,14 @@ async def _extract_statement_concepts(
     llm_client: Any, raw_text: str
 ) -> tuple[list[TopicConcept], int]:
     extractor = getattr(llm_client, "extract_with_diagnostics", None)
-    if extractor is not None:
-        concepts, rejected_count = await extractor(raw_text)
-        return list(concepts), int(rejected_count)
-    concepts = await llm_client.extract(raw_text)
-    return list(concepts), int(getattr(llm_client, "last_rejected_count", 0) or 0)
+    try:
+        if extractor is not None:
+            concepts, rejected_count = await extractor(raw_text)
+            return list(concepts), int(rejected_count)
+        concepts = await llm_client.extract(raw_text)
+        return list(concepts), int(getattr(llm_client, "last_rejected_count", 0) or 0)
+    except ValueValidationError as exc:
+        raise _TopicLLMOutputError(_safe_error(exc)) from exc
 
 
 async def _semantic_choices(
@@ -510,7 +533,10 @@ async def _semantic_choices(
         if not candidates:
             choices[concept.evidence_span] = "new_topic"
             continue
-        choices[concept.evidence_span] = await llm_client.select(concept, candidates)
+        try:
+            choices[concept.evidence_span] = await llm_client.select(concept, candidates)
+        except ValueValidationError as exc:
+            raise _TopicLLMOutputError(_safe_error(exc)) from exc
     return choices, diagnostics
 
 
@@ -528,6 +554,7 @@ async def _link_statements(
     progress: ProgressCallback | None = None,
 ) -> int:
     completed = 0
+    deferred_statement_ids: set[str] = set()
     await writer.execute(lambda connection: _reset_running_jobs(connection, build_id))
     total = await writer.execute(
         lambda connection: int(
@@ -575,7 +602,11 @@ async def _link_statements(
         current_statement_id: str | None = None
         while True:
             statement = await writer.execute(
-                lambda connection: _claim_statement(connection, build_id)
+                lambda connection: _claim_statement(
+                    connection,
+                    build_id,
+                    deferred_statement_ids=deferred_statement_ids,
+                )
             )
             if statement is None:
                 return
@@ -660,6 +691,26 @@ async def _link_statements(
                             mark_retry(current_statement_id, "cancelled")
                         )
                 raise
+            except _TopicLLMOutputError as exc:
+                error = _safe_error(exc)
+                deferred_statement_ids.add(statement_id)
+                await mark_retry(statement_id, error)
+                current_statement_id = None
+                emit_progress(
+                    progress,
+                    "topics",
+                    "progress",
+                    build_id=build_id,
+                    message="statement linking",
+                    current=min(processed, total),
+                    total=total,
+                    counters={
+                        "statement_id": statement_id,
+                        "status": "retry",
+                        "error": error,
+                    },
+                )
+                continue
             except Exception as exc:
                 if current_statement_id is not None:
                     await mark_retry(current_statement_id, _safe_error(exc))
@@ -683,6 +734,11 @@ async def _link_statements(
                         pending_task.cancel()
                     await asyncio.gather(*pending, return_exceptions=True)
                     raise exc
+        if deferred_statement_ids:
+            raise TopicLinkDeferredRetryError(
+                "topic linking deferred "
+                f"{len(deferred_statement_ids)} retryable statement(s)"
+            )
         return completed
     except asyncio.CancelledError:
         for task in pending:

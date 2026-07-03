@@ -5,9 +5,14 @@ import sqlite3
 import pytest
 
 from dext_graph.catalog.db import CatalogWriter, initialize_catalog
-from dext_graph.catalog.topic_workflow import _link_statements, run_topic_stage
+from dext_graph.catalog.topic_workflow import (
+    TopicLinkDeferredRetryError,
+    _link_statements,
+    run_topic_stage,
+)
 from dext_graph.catalog.topics import TopicConcept, import_taxonomy, load_taxonomy
 from dext_graph.config import GraphSettings
+from dext_graph.models import ValueValidationError
 
 
 class CharacterTokenizer:
@@ -102,6 +107,34 @@ class ConcurrentLLM:
 
     async def select(self, _concept, _candidates):
         raise AssertionError("exact alias concepts should not invoke selection")
+
+
+class InvalidOutputLLM(ConcurrentLLM):
+    def __init__(self, *, invalid_on=None, delays=None):
+        super().__init__(delays=delays)
+        self.invalid_on = set(invalid_on or ())
+
+    async def extract_with_diagnostics(self, raw_text):
+        statement_id = raw_text.split(" ", 1)[0]
+        self.calls.append(statement_id)
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(self.delays.get(statement_id, 0.01))
+            if statement_id in self.invalid_on:
+                raise ValueValidationError(
+                    "Topic extractor response lacks concepts array"
+                )
+            return [
+                TopicConcept(
+                    evidence_span="机器学习",
+                    canonical_name="机器学习",
+                    kind="method",
+                    relation_type="USES_METHOD",
+                )
+            ], 0
+        finally:
+            self.active -= 1
 
 
 class UnmatchedConceptLLM:
@@ -367,6 +400,63 @@ async def test_topic_statement_linking_resets_running_and_skips_terminal_jobs(tm
             ("statement-03", "terminal-invalid-input", 1),
             ("statement-04", "succeeded", 1),
         ]
+
+
+@pytest.mark.asyncio
+async def test_topic_statement_linking_defers_llm_validation_failure_without_cancelling_peers(
+    tmp_path,
+):
+    statements = [
+        (f"statement-{index:02d}", f"statement-{index:02d} 使用机器学习")
+        for index in range(1, 6)
+    ]
+    path, manifest = _prepare_link_catalog(tmp_path, statements)
+    settings = _topic_settings(path, concurrency=3)
+    llm = InvalidOutputLLM(invalid_on={"statement-02"})
+
+    with pytest.raises(TopicLinkDeferredRetryError, match="deferred 1"):
+        await _run_linking(path, manifest, settings, llm)
+
+    assert llm.calls.count("statement-02") == 1
+    with sqlite3.connect(path) as connection:
+        rows = connection.execute(
+            "SELECT statement_id,status,last_error FROM topic_link_jobs "
+            "WHERE build_id='build-1' ORDER BY statement_id"
+        ).fetchall()
+        assert rows == [
+            ("statement-01", "succeeded", None),
+            (
+                "statement-02",
+                "retry",
+                "Topic extractor response lacks concepts array",
+            ),
+            ("statement-03", "succeeded", None),
+            ("statement-04", "succeeded", None),
+            ("statement-05", "succeeded", None),
+        ]
+        assert connection.execute(
+            "SELECT COUNT(*) FROM topic_link_jobs "
+            "WHERE build_id='build-1' AND last_error='cancelled'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM statement_topic_links WHERE build_id='build-1'"
+        ).fetchone()[0] == 4
+
+    resume_llm = ConcurrentLLM()
+    completed = await _run_linking(path, manifest, settings, resume_llm)
+
+    assert completed == 1
+    assert resume_llm.calls == ["statement-02"]
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM topic_link_jobs "
+            "WHERE build_id='build-1' AND status='succeeded'"
+        ).fetchone()[0] == 5
+        checkpoint = connection.execute(
+            "SELECT rows_written FROM sink_checkpoints "
+            "WHERE build_id='build-1' AND sink='topic_link'"
+        ).fetchone()
+        assert checkpoint == (5,)
 
 
 @pytest.mark.asyncio
