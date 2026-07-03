@@ -10,7 +10,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-from dext_graph.catalog.db import CatalogError, file_sha256, online_backup, verify_sqlite
+from dext_graph.catalog.db import (
+    CatalogError,
+    file_sha256,
+    online_backup,
+    remove_sqlite_copy,
+    sqlite_sidecar_paths,
+    verify_sqlite,
+)
 from dext_graph.catalog.ids import snapshot_id
 
 _KEY_TABLES = (
@@ -30,11 +37,26 @@ def _quoted(identifier: str) -> str:
 
 def _connect_read_only(path: str | Path) -> sqlite3.Connection:
     resolved = Path(path).expanduser().resolve()
-    connection = sqlite3.connect(f"{resolved.as_uri()}?mode=ro", uri=True)
+    _assert_snapshot_self_contained(resolved)
+    connection = sqlite3.connect(
+        f"{resolved.as_uri()}?mode=ro&immutable=1", uri=True
+    )
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA query_only=ON")
+    connection.execute("PRAGMA trusted_schema=OFF")
     connection.execute("PRAGMA busy_timeout=15000")
     return connection
+
+
+def _assert_snapshot_self_contained(path: Path) -> None:
+    if not path.is_file():
+        raise CatalogError(f"source snapshot does not exist: {path}")
+    for sidecar in sqlite_sidecar_paths(path):
+        if sidecar.name.endswith(("-wal", "-journal")) and sidecar.is_file():
+            if sidecar.stat().st_size:
+                raise CatalogError(
+                    f"immutable source snapshot has a non-empty sidecar: {sidecar}"
+                )
 
 
 def _table_columns(connection: sqlite3.Connection, table: str) -> tuple[str, ...]:
@@ -205,33 +227,44 @@ async def create_source_snapshot(
     root = Path(snapshot_root).expanduser().resolve() / abbr
     root.mkdir(parents=True, exist_ok=True)
     temporary = root / f".{build_id}.tmp.db"
-    await asyncio.to_thread(
-        online_backup,
-        source_path,
-        temporary,
-        pages=256,
-        progress_hook=progress_hook,
-    )
-    verify_sqlite(temporary)
-    digest = file_sha256(temporary)
-    final_path = root / f"{digest}.db"
-    reused = final_path.exists()
-    if reused:
+    remove_sqlite_copy(temporary)
+    try:
+        await asyncio.to_thread(
+            online_backup,
+            source_path,
+            temporary,
+            pages=256,
+            progress_hook=progress_hook,
+        )
+        verify_sqlite(temporary)
+        digest = file_sha256(temporary)
+        final_path = root / f"{digest}.db"
+        reused = final_path.exists()
+        if reused:
+            _assert_snapshot_self_contained(final_path)
+            if file_sha256(final_path) != digest:
+                raise CatalogError(f"existing source snapshot hash mismatch: {final_path}")
+        else:
+            for sidecar in sqlite_sidecar_paths(final_path):
+                if sidecar.is_file() and sidecar.stat().st_size:
+                    raise CatalogError(
+                        f"refusing to publish over a non-empty orphan sidecar: {sidecar}"
+                    )
+                sidecar.unlink(missing_ok=True)
+            os.replace(temporary, final_path)
+        _assert_snapshot_self_contained(final_path)
         if file_sha256(final_path) != digest:
-            raise CatalogError(f"existing source snapshot hash mismatch: {final_path}")
-        temporary.unlink()
-    else:
-        os.replace(temporary, final_path)
-    if file_sha256(final_path) != digest:
-        raise CatalogError(f"published source snapshot hash mismatch: {final_path}")
-    inspection = inspect_snapshot(final_path)
-    return SnapshotResult(
-        id=snapshot_id(university_id, digest),
-        file_hash=digest,
-        path=final_path,
-        inspection=inspection,
-        reused_file=reused,
-    )
+            raise CatalogError(f"published source snapshot hash mismatch: {final_path}")
+        inspection = inspect_snapshot(final_path)
+        return SnapshotResult(
+            id=snapshot_id(university_id, digest),
+            file_hash=digest,
+            path=final_path,
+            inspection=inspection,
+            reused_file=reused,
+        )
+    finally:
+        remove_sqlite_copy(temporary)
 
 
 def iter_legacy_batches(

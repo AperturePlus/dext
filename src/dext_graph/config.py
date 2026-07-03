@@ -61,6 +61,7 @@ class GraphSettings(BaseSettings):
     build_read_batch: int = 100
     build_write_queue: int = 2
     build_max_rss_mb: int = 1024
+    build_min_free_disk_mb: int = 512
     build_min_source_retention_ratio: float = 0.80
     curation_queue: int = 16
     build_neo4j_batch: int = 200
@@ -88,6 +89,7 @@ class GraphSettings(BaseSettings):
         "build_read_batch",
         "build_write_queue",
         "build_max_rss_mb",
+        "build_min_free_disk_mb",
         "curation_queue",
         "build_neo4j_batch",
     )

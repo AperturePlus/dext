@@ -19,6 +19,7 @@ from dext_graph.catalog.db import (
     backup_existing_catalog,
     catalog_write_lock,
     connect_catalog_read_only,
+    ensure_free_space,
     initialize_catalog,
     json_dumps,
     json_loads,
@@ -53,6 +54,7 @@ _RESUME_SETTING_KEYS = (
     "build_read_batch",
     "build_write_queue",
     "build_max_rss_mb",
+    "build_min_free_disk_mb",
     "build_min_source_retention_ratio",
     "curation_queue",
     "embedding_base_url",
@@ -1141,6 +1143,27 @@ def _backup_progress(settings: GraphSettings):
     return progress
 
 
+def _preflight_build_storage(
+    sources: list[BuildSource], settings: GraphSettings
+) -> None:
+    catalog_path = Path(settings.catalog_path).expanduser().resolve()
+    catalog_bytes = catalog_path.stat().st_size if catalog_path.is_file() else 0
+    try:
+        source_bytes = sum(Path(source.source_path).stat().st_size for source in sources)
+    except OSError as exc:
+        raise CatalogError(f"failed to inspect source database size: {exc}") from exc
+    reserve_bytes = settings.build_min_free_disk_mb * 1024 * 1024
+    # One source-sized allowance is for immutable snapshots; the second bounds
+    # catalog growth while ingesting them. The existing catalog allowance covers
+    # the mandatory pre-mutation backup.
+    required_bytes = catalog_bytes + (2 * source_bytes) + reserve_bytes
+    ensure_free_space(
+        catalog_path.parent,
+        required_bytes,
+        operation="graph build",
+    )
+
+
 async def _run_topic_and_vector(
     writer: CatalogWriter, build_id: str, settings: GraphSettings
 ) -> dict[str, Any]:
@@ -1164,6 +1187,7 @@ async def create_build(
     sources = resolve_build_sources(university_names, settings)
     build_id = uuid7()
     with catalog_write_lock(settings.catalog_path):
+        _preflight_build_storage(sources, settings)
         backup_existing_catalog(
             settings.catalog_path, progress_hook=_backup_progress(settings)
         )

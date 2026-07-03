@@ -1,13 +1,16 @@
 import asyncio
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
+from dext_graph.catalog import db
 from dext_graph.catalog.db import (
     CatalogError,
     CatalogWriter,
     catalog_write_lock,
     connect_catalog_read_only,
+    ensure_free_space,
     initialize_catalog,
 )
 from dext_graph.catalog.models import CATALOG_SCHEMA_VERSION
@@ -100,3 +103,33 @@ def test_catalog_write_lock_rejects_a_second_writer(tmp_path):
         with pytest.raises(CatalogError, match="another process"):
             with catalog_write_lock(path):
                 raise AssertionError("second writer unexpectedly acquired the lock")
+
+
+async def test_catalog_writer_connection_failure_is_propagated_without_hanging(
+    tmp_path, monkeypatch
+):
+    failure = OSError("cannot open catalog")
+
+    def fail_connect(_path):
+        raise failure
+
+    monkeypatch.setattr(db, "connect_catalog", fail_connect)
+    writer = CatalogWriter(tmp_path / "catalog.db", max_queue=1)
+    await writer.__aenter__()
+    with pytest.raises(OSError, match="cannot open catalog"):
+        await asyncio.wait_for(
+            writer.execute(lambda connection: connection.execute("SELECT 1")),
+            timeout=1,
+        )
+    with pytest.raises(OSError, match="cannot open catalog"):
+        await writer.close()
+
+
+def test_ensure_free_space_rejects_before_writing(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        db.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(total=100, used=95, free=5),
+    )
+    with pytest.raises(CatalogError, match="insufficient disk space"):
+        ensure_free_space(tmp_path, 6, operation="test backup")
