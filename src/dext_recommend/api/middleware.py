@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any
 
@@ -12,6 +13,9 @@ from dext_recommend.api.keys import REQUEST_ID_KEY, SETTINGS_KEY
 from dext_recommend.app_state.db import SchemaNotReadyError
 from dext_recommend.app_state.repositories import AppStateError
 from dext_recommend.errors import RecommendationRuntimeError
+
+
+logger = logging.getLogger(__name__)
 
 
 class ApiError(RuntimeError):
@@ -155,6 +159,12 @@ async def request_middleware(request: web.Request, handler):
             request_id=request_id,
         )
     except Exception:
+        logger.exception(
+            "unhandled recommend api request error request_id=%s method=%s path=%s",
+            request_id,
+            request.method,
+            request.path_qs,
+        )
         response = error_response(
             status=500,
             error_code="internal_error",

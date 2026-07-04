@@ -2,11 +2,45 @@
 from __future__ import annotations
 
 import argparse
+import logging
 
 from aiohttp import web
 
+from dext_recommend.api.access_log import RecommendAccessLogger
 from dext_recommend.api.app import create_recommendation_app
 from dext_recommend.api.settings import AppSettings
+from dext_recommend.app_state.db import SchemaNotReadyError
+
+
+logger = logging.getLogger("dext_recommend.api")
+access_logger = logging.getLogger("dext_recommend.api.access")
+
+_SCHEMA_MISSING_PREFIX = "recommendation app-state schema is missing tables: "
+_SCHEMA_MISSING_SUFFIX = "; enable dev schema bootstrap or run the migration follow-up"
+
+
+def _format_schema_not_ready_error(exc: SchemaNotReadyError) -> str:
+    detail = str(exc)
+    if detail.startswith(_SCHEMA_MISSING_PREFIX):
+        missing = detail[len(_SCHEMA_MISSING_PREFIX):]
+        if missing.endswith(_SCHEMA_MISSING_SUFFIX):
+            missing = missing[: -len(_SCHEMA_MISSING_SUFFIX)]
+        detail = f"missing tables: {missing}"
+    return (
+        f"Error: recommendation app-state schema is not ready: {detail}\n"
+        "Hint: run with --dev-bootstrap-schema for local dev, or run the app-state migration.\n"
+    )
+
+
+def _configure_logging(log_level: str) -> None:
+    level = getattr(logging, log_level.upper())
+    logging.basicConfig(level=level, format="%(levelname)s: %(message)s", force=True)
+    logging.getLogger().setLevel(level)
+
+
+def _log_startup_banner(message: str) -> None:
+    for line in str(message).splitlines():
+        logger.info(line)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -16,6 +50,12 @@ def main(argv: list[str] | None = None) -> None:
     serve.add_argument("--host")
     serve.add_argument("--port", type=int)
     serve.add_argument("--dev-bootstrap-schema", action="store_true")
+    serve.add_argument(
+        "--log-level",
+        choices=("debug", "info", "warning", "error", "critical"),
+        help="Console log level for the recommendation API server.",
+    )
+    serve.add_argument("--no-access-log", action="store_true", help="Disable per-request access logs.")
     args = parser.parse_args(argv)
     if args.command == "serve":
         settings = AppSettings()
@@ -26,14 +66,24 @@ def main(argv: list[str] | None = None) -> None:
             update["http_port"] = args.port
         if args.dev_bootstrap_schema:
             update["schema_bootstrap"] = True
+        if args.log_level:
+            update["log_level"] = args.log_level.upper()
+        if args.no_access_log:
+            update["access_log_enabled"] = False
         if update:
             settings = settings.model_copy(update=update)
-        web.run_app(
-            create_recommendation_app(settings),
-            host=settings.http_host,
-            port=settings.http_port,
-            print=lambda message: print(message),  # noqa: T201
-        )
+        _configure_logging(settings.log_level)
+        try:
+            web.run_app(
+                create_recommendation_app(settings),
+                host=settings.http_host,
+                port=settings.http_port,
+                print=_log_startup_banner,
+                access_log=access_logger if settings.access_log_enabled else None,
+                access_log_class=RecommendAccessLogger,
+            )
+        except SchemaNotReadyError as exc:
+            parser.exit(1, _format_schema_not_ready_error(exc))
 
 
 if __name__ == "__main__":

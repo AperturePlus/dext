@@ -32,6 +32,8 @@ class AppSettings(BaseSettings):
     cors_allowed_origins: tuple[str, ...] = ()
     csrf_allowed_origins: tuple[str, ...] = ()
     diagnostics_enabled: bool = False
+    log_level: str = "INFO"
+    access_log_enabled: bool = True
     sse_heartbeat_seconds: float = Field(default=15.0, gt=0.0)
     idempotency_ttl_seconds: int = Field(default=60 * 60 * 24, ge=60)
     schema_bootstrap: bool = False
@@ -44,6 +46,14 @@ class AppSettings(BaseSettings):
         if isinstance(value, str):
             return tuple(part.strip() for part in value.split(",") if part.strip())
         return tuple(value)
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _normalize_log_level(cls, value: str) -> str:
+        level = str(value).upper()
+        if level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+            raise ValueError("log_level must be DEBUG, INFO, WARNING, ERROR, or CRITICAL")
+        return level
 
     @field_validator("cookie_samesite")
     @classmethod
