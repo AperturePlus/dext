@@ -5,7 +5,7 @@ from click.testing import CliRunner
 
 from dext_graph.assets import load_queries, load_sentinels
 from dext_graph.catalog.progress import ProgressEvent
-from dext_graph.cli import main
+from dext_graph.cli import _CatalogProgressReporter, main
 from dext_graph.config import GraphSettings
 from dext_graph.catalog.rules import load_curation_rules
 
@@ -120,7 +120,37 @@ def test_cli_exposes_catalog_build_commands():
         assert command in topics_help.output
 
 
-def test_graph_build_progress_uses_stderr_and_keeps_stdout_json(monkeypatch):
+def test_progress_bar_key_reuses_line_for_same_build_with_different_messages():
+    first = ProgressEvent(
+        stage="vector",
+        action="progress",
+        build_id="build-1",
+        message="dext_professors__build-1",
+        current=1,
+        total=10,
+    )
+    second = ProgressEvent(
+        stage="vector",
+        action="progress",
+        build_id="build-1",
+        message="embedding batch ready",
+        current=2,
+        total=10,
+    )
+    other_build = ProgressEvent(
+        stage="vector",
+        action="progress",
+        build_id="build-2",
+        message="embedding batch ready",
+        current=2,
+        total=10,
+    )
+
+    assert _CatalogProgressReporter._event_key(first) == _CatalogProgressReporter._event_key(second)
+    assert _CatalogProgressReporter._event_key(first) != _CatalogProgressReporter._event_key(other_build)
+
+
+def test_graph_build_progress_uses_stderr_and_keeps_stdout_summary(monkeypatch):
     long_statement_id = (
         "0ee55d931865a5562fe90d4e6085899d"
         "288c6a1baa0ae87ea888250143bf8d70"
@@ -152,7 +182,10 @@ def test_graph_build_progress_uses_stderr_and_keeps_stdout_json(monkeypatch):
     result = runner.invoke(main, ["graph", "build"])
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout) == {"build": {"id": "build-1", "status": "CURATING"}}
+    assert result.stdout == (
+        "Build build-1: CURATING\n"
+        "Full details: uv run dext graph status build-1\n"
+    )
     assert "[ingest] 测试大学 [" in result.stderr
     assert "###############---------------" in result.stderr
     assert "50.0% 1/2" in result.stderr
@@ -171,7 +204,81 @@ def test_graph_build_no_progress_suppresses_stderr(monkeypatch):
     result = runner.invoke(main, ["graph", "build", "--no-progress"])
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout) == {"build": {"id": "build-1", "status": "CURATING"}}
+    assert result.stdout == (
+        "Build build-1: CURATING\n"
+        "Full details: uv run dext graph status build-1\n"
+    )
+    assert result.stderr == ""
+
+
+def test_graph_build_summary_omits_large_json_details(monkeypatch):
+    payload = {
+        "build": {"id": "build-1", "status": "VALIDATING"},
+        "sources": [
+            {
+                "status": "completed",
+                "source_path": "large-source.json",
+            }
+        ],
+        "checkpoints": [
+            {
+                "sink": "qdrant",
+                "partition_key": "professors",
+                "rows_written": 19642,
+                "last_batch_id": "5933431-heavy-detail",
+            }
+        ],
+        "vector": {
+            "status": "COMPLETED",
+            "summary_json": {
+                "collection_name": "dext_professors__build-1",
+                "eligible_professors": 19642,
+                "qdrant_count": 19642,
+            },
+        },
+    }
+
+    async def fake_create_build(universities, settings, *, progress=None):
+        assert progress is None
+        return payload
+
+    monkeypatch.setattr("dext_graph.catalog.workflow.create_build", fake_create_build)
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["graph", "build", "--no-progress"])
+
+    assert result.exit_code == 0
+    assert "Build build-1: VALIDATING" in result.stdout
+    assert "Sources: 1 total completed=1" in result.stdout
+    assert "Stages: vector=COMPLETED" in result.stdout
+    assert (
+        "Vector: eligible=19642 qdrant=19642 uploaded=19642 "
+        "collection=dext_professors__build-1"
+    ) in result.stdout
+    assert "Full details: uv run dext graph status build-1" in result.stdout
+    assert "source_path" not in result.stdout
+    assert "large-source.json" not in result.stdout
+    assert "last_batch_id" not in result.stdout
+    assert "5933431-heavy-detail" not in result.stdout
+
+
+def test_graph_build_json_flag_preserves_full_stdout_json(monkeypatch):
+    payload = {
+        "build": {"id": "build-1", "status": "CURATING"},
+        "sources": [{"status": "completed", "source_path": "large-source.json"}],
+    }
+
+    async def fake_create_build(universities, settings, *, progress=None):
+        assert progress is None
+        return payload
+
+    monkeypatch.setattr("dext_graph.catalog.workflow.create_build", fake_create_build)
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["graph", "build", "--no-progress", "--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == payload
     assert result.stderr == ""
 
 

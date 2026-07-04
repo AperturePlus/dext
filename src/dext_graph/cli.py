@@ -17,6 +17,198 @@ def _emit(value: dict[str, Any]) -> None:
     click.echo(json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2))
 
 
+def _as_dict(value: Any) -> dict[str, Any] | None:
+    return value if isinstance(value, dict) else None
+
+
+def _short(value: Any, *, limit: int = 300) -> str:
+    text = str(value).replace("\r", " ").replace("\n", " ").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _run_summary(result: dict[str, Any], key: str) -> dict[str, Any]:
+    run = _as_dict(result.get(key)) or {}
+    summary = _as_dict(run.get("summary_json"))
+    if summary is not None:
+        return summary
+    build = _as_dict(result.get("build")) or {}
+    build_summary = _as_dict(build.get("summary_json")) or {}
+    return _as_dict(build_summary.get(key)) or {}
+
+
+def _checkpoint_rows(
+    result: dict[str, Any],
+    *,
+    sink: str,
+    partition_key: str | None = None,
+) -> int | None:
+    rows = result.get("checkpoints")
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        checkpoint = _as_dict(row)
+        if checkpoint is None or checkpoint.get("sink") != sink:
+            continue
+        if partition_key is not None and checkpoint.get("partition_key") != partition_key:
+            continue
+        value = checkpoint.get("rows_written")
+        return int(value) if isinstance(value, int | str) and str(value).isdigit() else None
+    return None
+
+
+def _emit_catalog_summary(result: Any) -> None:
+    if not isinstance(result, dict):
+        _emit(result)
+        return
+    build = _as_dict(result.get("build"))
+    if build is None:
+        _emit(result)
+        return
+    build_id = str(build.get("id") or "unknown")
+    status = str(build.get("status") or "unknown")
+    lines = [f"Build {build_id}: {status}"]
+
+    if build.get("last_error"):
+        lines.append(f"Last error: {_short(build['last_error'])}")
+
+    sources = result.get("sources")
+    if isinstance(sources, list) and sources:
+        counts: dict[str, int] = {}
+        for source in sources:
+            task = _as_dict(source)
+            source_status = str((task or {}).get("status") or "unknown")
+            counts[source_status] = counts.get(source_status, 0) + 1
+        parts = [f"{len(sources)} total"]
+        parts.extend(f"{key}={counts[key]}" for key in sorted(counts))
+        lines.append("Sources: " + " ".join(parts))
+
+    stage_parts: list[str] = []
+    for key in ("curation", "graph", "topics", "vector", "validation", "promotion"):
+        run = _as_dict(result.get(key))
+        if run is not None and run.get("status"):
+            stage_parts.append(f"{key}={run['status']}")
+    if stage_parts:
+        lines.append("Stages: " + " ".join(stage_parts))
+
+    graph_summary = _run_summary(result, "graph")
+    graph_parts: list[str] = []
+    evidence = _as_dict(graph_summary.get("evidence")) or {}
+    if evidence.get("research_statements") is not None:
+        graph_parts.append(f"research_statements={evidence['research_statements']}")
+    partitions = _as_dict(graph_summary.get("partitions")) or {}
+    if partitions:
+        graph_parts.append(f"partitions={len(partitions)}")
+    if graph_summary.get("export_pruned"):
+        graph_parts.append("export_pruned=true")
+    if graph_parts:
+        lines.append("Graph: " + " ".join(graph_parts))
+
+    topic_summary = _run_summary(result, "topics")
+    topic_labels = (
+        ("active", "active_topics"),
+        ("linked", "linked_statements"),
+        ("approved", "approved_links"),
+        ("review", "review_links"),
+    )
+    topic_parts = [
+        f"{label}={topic_summary[key]}"
+        for label, key in topic_labels
+        if topic_summary.get(key) is not None
+    ]
+    if topic_parts:
+        lines.append("Topics: " + " ".join(topic_parts))
+
+    vector_summary = _run_summary(result, "vector")
+    vector_labels = (
+        ("eligible", "eligible_professors"),
+        ("qdrant", "qdrant_count"),
+    )
+    vector_parts = [
+        f"{label}={vector_summary[key]}"
+        for label, key in vector_labels
+        if vector_summary.get(key) is not None
+    ]
+    uploaded = _checkpoint_rows(result, sink="qdrant", partition_key="professors")
+    if uploaded is not None:
+        vector_parts.append(f"uploaded={uploaded}")
+    if vector_summary.get("collection_name"):
+        vector_parts.append(f"collection={vector_summary['collection_name']}")
+    if vector_parts:
+        lines.append("Vector: " + " ".join(vector_parts))
+
+    validation = _as_dict(result.get("validation")) or {}
+    validation_summary = _run_summary(result, "validation")
+    manifest = _as_dict(validation.get("manifest_json")) or {}
+    validation_parts: list[str] = []
+    if validation.get("status"):
+        validation_parts.append(f"status={validation['status']}")
+    if manifest.get("passed") is not None:
+        validation_parts.append(f"passed={manifest['passed']}")
+    elif validation_summary.get("passed") is not None:
+        validation_parts.append(f"passed={validation_summary['passed']}")
+    checks = manifest.get("checks")
+    if isinstance(checks, list) and checks:
+        passed = sum(
+            1 for check in checks if isinstance(check, dict) and bool(check.get("passed"))
+        )
+        validation_parts.append(f"checks={passed}/{len(checks)}")
+        failed = [
+            str(check.get("name"))
+            for check in checks
+            if isinstance(check, dict) and not bool(check.get("passed"))
+        ]
+        if failed:
+            suffix = "" if len(failed) <= 5 else f",+{len(failed) - 5}"
+            validation_parts.append(f"failed={','.join(failed[:5])}{suffix}")
+    release_mode = manifest.get("release_mode")
+    if release_mode and release_mode != "standard":
+        validation_parts.append(f"mode={release_mode}")
+    skipped = manifest.get("skipped_checks")
+    if isinstance(skipped, list) and skipped:
+        skipped_names = [str(name) for name in skipped]
+        suffix = "" if len(skipped_names) <= 5 else f",+{len(skipped_names) - 5}"
+        validation_parts.append(f"skipped={','.join(skipped_names[:5])}{suffix}")
+    if validation_parts:
+        lines.append("Validation: " + " ".join(validation_parts))
+
+    repair = _as_dict(result.get("topic_link_repair")) or {}
+    if repair:
+        repair_parts = [f"downgraded={int(repair.get('downgraded_links') or 0)}"]
+        partitions = repair.get("rebuilt_partitions")
+        if isinstance(partitions, list) and partitions:
+            repair_parts.append("rebuilt=" + ",".join(str(item) for item in partitions))
+        if repair.get("vector_reset"):
+            repair_parts.append("vector_reset=true")
+        lines.append("Topic repair: " + " ".join(repair_parts))
+
+    promotion = _as_dict(result.get("promotion")) or {}
+    promotion_parts: list[str] = []
+    if promotion.get("status"):
+        promotion_parts.append(f"status={promotion['status']}")
+    if promotion.get("previous_active_build_id"):
+        promotion_parts.append(f"previous={promotion['previous_active_build_id']}")
+    for key in ("neo4j_done", "qdrant_done", "readback_done"):
+        if promotion.get(key) is not None:
+            promotion_parts.append(f"{key}={promotion[key]}")
+    if promotion_parts:
+        lines.append("Promotion: " + " ".join(promotion_parts))
+
+    findings = _as_dict(result.get("unresolved_findings")) or {}
+    finding_parts = [
+        f"{key}={findings[key]}"
+        for key in sorted(findings)
+        if findings.get(key)
+    ]
+    if finding_parts:
+        lines.append("Unresolved findings: " + " ".join(finding_parts))
+
+    if build_id != "unknown":
+        lines.append(f"Full details: uv run dext graph status {build_id}")
+    click.echo("\n".join(lines))
+
+
 def _guard(action: Callable[[], dict[str, Any]]) -> None:
     from dext_graph.models import ValueValidationError
 
@@ -54,6 +246,7 @@ def _guard_catalog(
     *,
     asynchronous: bool = False,
     fail_on_failed_build: bool = False,
+    json_output: bool = True,
 ) -> None:
     from dext_graph.catalog.db import CatalogError
 
@@ -61,7 +254,10 @@ def _guard_catalog(
         result = asyncio.run(action()) if asynchronous else action()
         if fail_on_failed_build and (message := _failed_build_message(result)):
             raise click.ClickException(message)
-        _emit(result)
+        if json_output:
+            _emit(result)
+        else:
+            _emit_catalog_summary(result)
     except (CatalogError, ValueError) as exc:
         raise click.ClickException(str(exc)) from None
 
@@ -126,7 +322,7 @@ class _CatalogProgressReporter:
 
     @staticmethod
     def _event_key(event: ProgressEvent) -> tuple[str, str, str]:
-        return (event.stage, event.action, event.message)
+        return (event.stage, event.action, event.build_id or "")
 
     @staticmethod
     def _is_interactive() -> bool:
@@ -286,7 +482,15 @@ def value_validation() -> None:
     show_default=True,
     help="Emit human-readable progress to stderr.",
 )
-def build_command(universities: tuple[str, ...], show_progress: bool) -> None:
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Emit full JSON details instead of the concise summary.",
+)
+def build_command(
+    universities: tuple[str, ...], show_progress: bool, json_output: bool
+) -> None:
     """Create a build, snapshot sources, and ingest legacy observations."""
     from dext_graph.catalog.workflow import create_build
     from dext_graph.config import GraphSettings
@@ -297,6 +501,7 @@ def build_command(universities: tuple[str, ...], show_progress: bool) -> None:
         lambda: create_build(list(universities), settings, progress=progress),
         asynchronous=True,
         fail_on_failed_build=True,
+        json_output=json_output,
     )
 
 
@@ -309,7 +514,13 @@ def build_command(universities: tuple[str, ...], show_progress: bool) -> None:
     show_default=True,
     help="Emit human-readable progress to stderr.",
 )
-def resume_command(build_id: str, show_progress: bool) -> None:
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Emit full JSON details instead of the concise summary.",
+)
+def resume_command(build_id: str, show_progress: bool, json_output: bool) -> None:
     """Resume a failed or interrupted catalog build."""
     from dext_graph.catalog.workflow import resume_build
     from dext_graph.config import GraphSettings
@@ -320,6 +531,7 @@ def resume_command(build_id: str, show_progress: bool) -> None:
         lambda: resume_build(build_id, settings, progress=progress),
         asynchronous=True,
         fail_on_failed_build=True,
+        json_output=json_output,
     )
 
 
@@ -332,7 +544,13 @@ def resume_command(build_id: str, show_progress: bool) -> None:
     show_default=True,
     help="Emit human-readable progress to stderr.",
 )
-def vector_command(build_id: str, show_progress: bool) -> None:
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Emit full JSON details instead of the concise summary.",
+)
+def vector_command(build_id: str, show_progress: bool, json_output: bool) -> None:
     """Run or resume the stage-4 Qdrant semantic projection."""
     from dext_graph.catalog.vector_workflow import vector_build
     from dext_graph.config import GraphSettings
@@ -343,29 +561,57 @@ def vector_command(build_id: str, show_progress: bool) -> None:
         lambda: vector_build(build_id, settings, progress=progress),
         asynchronous=True,
         fail_on_failed_build=True,
+        json_output=json_output,
     )
 
 
 @graph.command("validate")
 @click.argument("build_id")
-def validate_command(build_id: str) -> None:
+@click.option(
+    "--skip-gold-gates",
+    is_flag=True,
+    help="Allow release validation to pass without curation/graph/topic gold datasets.",
+)
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Emit full JSON details instead of the concise summary.",
+)
+def validate_command(build_id: str, skip_gold_gates: bool, json_output: bool) -> None:
     """Run deterministic release gates and mark a passing build READY."""
     from dext_graph.catalog.lifecycle import validate_build
     from dext_graph.config import GraphSettings
 
     settings = GraphSettings()
-    _guard_catalog(lambda: validate_build(build_id, settings), asynchronous=True)
+    _guard_catalog(
+        lambda: validate_build(
+            build_id, settings, skip_gold_gates=skip_gold_gates
+        ),
+        asynchronous=True,
+        json_output=json_output,
+    )
 
 
 @graph.command("promote")
 @click.argument("build_id")
-def promote_command(build_id: str) -> None:
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Emit full JSON details instead of the concise summary.",
+)
+def promote_command(build_id: str, json_output: bool) -> None:
     """Publish one validated READY build to Neo4j and Qdrant."""
     from dext_graph.catalog.lifecycle import promote_build
     from dext_graph.config import GraphSettings
 
     settings = GraphSettings()
-    _guard_catalog(lambda: promote_build(build_id, settings), asynchronous=True)
+    _guard_catalog(
+        lambda: promote_build(build_id, settings),
+        asynchronous=True,
+        json_output=json_output,
+    )
 
 
 @graph.group("topics")
@@ -382,7 +628,15 @@ def topics_group() -> None:
     show_default=True,
     help="Emit human-readable progress to stderr.",
 )
-def topics_build_command(build_id: str, show_progress: bool) -> None:
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Emit full JSON details instead of the concise summary.",
+)
+def topics_build_command(
+    build_id: str, show_progress: bool, json_output: bool
+) -> None:
     """Run or resume stage-5 Topic linking and graph projection."""
     from dext_graph.catalog.topic_workflow import topic_build
     from dext_graph.config import GraphSettings
@@ -393,6 +647,7 @@ def topics_build_command(build_id: str, show_progress: bool) -> None:
         lambda: topic_build(build_id, settings, progress=progress),
         asynchronous=True,
         fail_on_failed_build=True,
+        json_output=json_output,
     )
 
 
@@ -405,6 +660,27 @@ def topics_suggest_merges_command(build_id: str) -> None:
 
     settings = GraphSettings()
     _guard_catalog(lambda: suggest_topic_merges(build_id, settings), asynchronous=True)
+
+
+@topics_group.command("repair-links")
+@click.argument("build_id")
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Emit full JSON details instead of the concise summary.",
+)
+def topics_repair_links_command(build_id: str, json_output: bool) -> None:
+    """Downgrade incompatible approved Topic links and reset derived stages."""
+    from dext_graph.catalog.topic_repair import repair_incompatible_topic_links
+    from dext_graph.config import GraphSettings
+
+    settings = GraphSettings()
+    _guard_catalog(
+        lambda: repair_incompatible_topic_links(build_id, settings),
+        asynchronous=True,
+        json_output=json_output,
+    )
 
 
 @topics_group.command("gold-generate")
