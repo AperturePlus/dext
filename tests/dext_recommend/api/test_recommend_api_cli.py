@@ -137,6 +137,37 @@ def test_serve_cli_summarizes_schema_not_ready(monkeypatch, capsys) -> None:
     assert "Traceback" not in captured.err
 
 
+def test_serve_cli_summarizes_database_unavailable(monkeypatch, capsys) -> None:
+    monkeypatch.setenv(
+        "DEXT_APP_DATABASE_URL",
+        "postgresql://dext:secret@127.0.0.1:5432/dext_app",
+    )
+    app = object()
+
+    def fake_create(settings):
+        return app
+
+    def fake_run_app(created_app, *, host, port, print, access_log, access_log_class):
+        raise ConnectionRefusedError(1225, "connection refused")
+
+    monkeypatch.setattr(cli, "create_recommendation_app", fake_create)
+    monkeypatch.setattr(cli.web, "run_app", fake_run_app)
+    monkeypatch.setattr(cli, "_configure_logging", lambda log_level: None)
+
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["serve"])
+
+    captured = capsys.readouterr()
+    assert raised.value.code == 1
+    assert captured.out == ""
+    assert "Error: recommendation app-state database is unavailable at 127.0.0.1:5432." in captured.err
+    assert "docker compose -f docker/compose.yaml up -d" in captured.err
+    assert "DEXT_APP_DATABASE_URL" in captured.err
+    assert "connection refused" in captured.err
+    assert "secret" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_serve_cli_propagates_unexpected_startup_error(monkeypatch) -> None:
     app = object()
 

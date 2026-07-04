@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
@@ -17,6 +18,26 @@ access_logger = logging.getLogger("dext_recommend.api.access")
 
 _SCHEMA_MISSING_PREFIX = "recommendation app-state schema is missing tables: "
 _SCHEMA_MISSING_SUFFIX = "; enable dev schema bootstrap or run the migration follow-up"
+
+
+def _format_database_endpoint(database_url: str) -> str:
+    parsed = urlsplit(database_url)
+    host = parsed.hostname or "configured host"
+    port = parsed.port
+    if port is None and parsed.scheme in {"postgresql", "postgresql+asyncpg"}:
+        port = 5432
+    return f"{host}:{port}" if port is not None else host
+
+
+def _format_database_unavailable_error(settings: AppSettings, exc: ConnectionRefusedError) -> str:
+    endpoint = _format_database_endpoint(settings.database_url)
+    cause = str(exc) or exc.__class__.__name__
+    return (
+        f"Error: recommendation app-state database is unavailable at {endpoint}.\n"
+        "Hint: start local data services with `docker compose -f docker/compose.yaml up -d`, "
+        "or point DEXT_APP_DATABASE_URL at a reachable database.\n"
+        f"Cause: {cause}\n"
+    )
 
 
 def _format_schema_not_ready_error(exc: SchemaNotReadyError) -> str:
@@ -84,6 +105,8 @@ def main(argv: list[str] | None = None) -> None:
             )
         except SchemaNotReadyError as exc:
             parser.exit(1, _format_schema_not_ready_error(exc))
+        except ConnectionRefusedError as exc:
+            parser.exit(1, _format_database_unavailable_error(settings, exc))
 
 
 if __name__ == "__main__":
