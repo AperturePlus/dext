@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sqlite3
 
@@ -27,6 +28,33 @@ class FakeEmbeddingClient:
                 "usage": {"prompt_tokens": len(texts), "total_tokens": len(texts)},
             },
         )()
+
+
+class ConcurrentEmbeddingClient:
+    def __init__(self):
+        self.calls = []
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def embed(self, texts, *, purpose):
+        self.calls.append((purpose, list(texts)))
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await asyncio.sleep(0)
+            return type(
+                "EmbeddingResult",
+                (),
+                {
+                    "vectors": [
+                        [float(index + 1), 0.0, 0.0]
+                        for index, _text in enumerate(texts)
+                    ],
+                    "usage": {"prompt_tokens": len(texts), "total_tokens": len(texts)},
+                },
+            )()
+        finally:
+            self.in_flight -= 1
 
 
 class FakeProfessorSink:
@@ -214,3 +242,96 @@ async def test_vector_stage_resume_uses_embedding_cache_without_provider_call(
         )
     assert second_embedding.calls == []
     assert len(second_sink.points) == 2
+
+
+@pytest.mark.asyncio
+async def test_vector_stage_resume_progress_starts_at_checkpoint(tmp_path, monkeypatch):
+    _patch_runtime(monkeypatch)
+    monkeypatch.setenv("DEXT_TEST_SKIP_VECTOR", "1")
+    settings = _settings(tmp_path, batch=1).model_copy(
+        update={
+            "embedding_dimension": 3,
+            "embedding_request_batch": 2,
+            "qdrant_upsert_batch": 2,
+            "embedding_api_key": "test-key",
+        }
+    )
+    _source_db(settings.source_data_dir / "test.db", count=2)
+    result = await create_build(["测试大学"], settings)
+    build_id = result["build"]["id"]
+    async with CatalogWriter(settings.catalog_path, max_queue=2) as writer:
+        await run_vector_stage(
+            writer,
+            build_id,
+            settings,
+            embedding_client=FakeEmbeddingClient(),
+            qdrant_sink=FakeProfessorSink(),
+            tokenizer=CharacterTokenizer(),
+        )
+
+    with sqlite3.connect(settings.catalog_path) as connection:
+        connection.execute("UPDATE graph_builds SET status='WRITING_VECTOR' WHERE id=?", (build_id,))
+        connection.execute("UPDATE vector_runs SET status='RUNNING' WHERE build_id=?", (build_id,))
+
+    events = []
+    async with CatalogWriter(settings.catalog_path, max_queue=2) as writer:
+        await run_vector_stage(
+            writer,
+            build_id,
+            settings,
+            progress=events.append,
+            embedding_client=FakeEmbeddingClient(),
+            qdrant_sink=FakeProfessorSink(),
+            tokenizer=CharacterTokenizer(),
+        )
+
+    initial = next(
+        event
+        for event in events
+        if event.stage == "vector"
+        and event.action == "progress"
+        and event.message == f"dext_professors__{build_id}"
+    )
+    assert initial.current == 2
+    assert initial.total == 2
+    assert initial.counters["last_entity_id"]
+
+
+@pytest.mark.asyncio
+async def test_vector_stage_embeds_request_batches_concurrently(tmp_path, monkeypatch):
+    _patch_runtime(monkeypatch)
+    monkeypatch.setenv("DEXT_TEST_SKIP_VECTOR", "1")
+    settings = _settings(tmp_path, batch=1).model_copy(
+        update={
+            "embedding_dimension": 3,
+            "embedding_request_batch": 2,
+            "embedding_max_concurrency": 2,
+            "qdrant_upsert_batch": 4,
+            "embedding_api_key": "test-key",
+        }
+    )
+    _source_db(settings.source_data_dir / "test.db", count=4)
+    result = await create_build(["测试大学"], settings)
+    build_id = result["build"]["id"]
+    embedding = ConcurrentEmbeddingClient()
+    sink = FakeProfessorSink()
+
+    async with CatalogWriter(settings.catalog_path, max_queue=2) as writer:
+        output = await run_vector_stage(
+            writer,
+            build_id,
+            settings,
+            embedding_client=embedding,
+            qdrant_sink=sink,
+            tokenizer=CharacterTokenizer(),
+        )
+
+    assert output["vector"]["status"] == "COMPLETED"
+    assert len(sink.points) == 4
+    assert [len(_texts) for _purpose, _texts in embedding.calls] == [2, 2]
+    assert embedding.max_in_flight == 2
+    with sqlite3.connect(settings.catalog_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM embedding_jobs WHERE build_id=? AND status='succeeded'",
+            (build_id,),
+        ).fetchone()[0] == 4

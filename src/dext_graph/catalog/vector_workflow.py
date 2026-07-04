@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 from pathlib import Path
@@ -23,6 +24,7 @@ from dext_graph.catalog.neo4j_sink import write_neo4j_exports
 from dext_graph.catalog.org_units import entity_org_unit_map
 from dext_graph.catalog.progress import ProgressCallback, emit_progress
 from dext_graph.catalog.semantic import (
+    CachedVector,
     build_semantic_profile,
     load_embedding_cache,
     mark_embedding_job,
@@ -165,13 +167,15 @@ def _source_context(connection: sqlite3.Connection, build_id: str) -> dict[str, 
     return result
 
 
-def _last_uploaded_key(connection: sqlite3.Connection, build_id: str) -> str:
+def _upload_checkpoint(connection: sqlite3.Connection, build_id: str) -> tuple[str, int]:
     row = connection.execute(
-        "SELECT last_key FROM sink_checkpoints "
+        "SELECT last_key, rows_written FROM sink_checkpoints "
         "WHERE build_id=? AND sink='qdrant' AND partition_key='professors'",
         (build_id,),
     ).fetchone()
-    return str(row[0]) if row and row[0] is not None else ""
+    if row is None:
+        return "", 0
+    return str(row["last_key"] or ""), int(row["rows_written"] or 0)
 
 
 def _checkpoint(
@@ -252,6 +256,12 @@ def _entity_topics(
         grouped.setdefault(str(row["kind"]), []).append(
             (str(row["id"]), str(row["canonical_name"]))
         )
+    return _format_topics(grouped)
+
+
+def _format_topics(
+    grouped: dict[str, list[tuple[str, str]]]
+) -> tuple[list[str], dict[str, list[str]]]:
     labels = {
         "discipline": "学科",
         "method": "方法",
@@ -271,6 +281,180 @@ def _entity_topics(
     return profile_topics, ids
 
 
+def _placeholders(values: list[str]) -> str:
+    return ",".join("?" for _ in values)
+
+
+def _batch_entity_evidence(
+    connection: sqlite3.Connection, build_id: str, entity_ids: list[str]
+) -> dict[str, tuple[list[str], list[str]]]:
+    result = {entity_id: ([], []) for entity_id in entity_ids}
+    if not entity_ids:
+        return result
+    placeholders = _placeholders(entity_ids)
+    for row in connection.execute(
+        f"""
+        SELECT entity_id, normalized_text
+        FROM research_statements
+        WHERE build_id=? AND entity_id IN ({placeholders})
+        ORDER BY entity_id, id
+        """,
+        (build_id, *entity_ids),
+    ):
+        result[str(row["entity_id"])][0].append(str(row["normalized_text"]))
+    for row in connection.execute(
+        f"""
+        SELECT entity_id, normalized_text
+        FROM publication_mentions
+        WHERE build_id=? AND entity_id IN ({placeholders})
+        ORDER BY entity_id, id, observation_id
+        """,
+        (build_id, *entity_ids),
+    ):
+        result[str(row["entity_id"])][1].append(str(row["normalized_text"]))
+    return result
+
+
+def _batch_entity_topics(
+    connection: sqlite3.Connection, build_id: str, entity_ids: list[str]
+) -> dict[str, tuple[list[str], dict[str, list[str]]]]:
+    grouped_by_entity: dict[str, dict[str, list[tuple[str, str]]]] = {
+        entity_id: {} for entity_id in entity_ids
+    }
+    if not entity_ids:
+        return {entity_id: ([], {}) for entity_id in entity_ids}
+    placeholders = _placeholders(entity_ids)
+    for row in connection.execute(
+        f"""
+        SELECT DISTINCT s.entity_id, t.id, t.canonical_name, t.kind
+        FROM research_statements s
+        JOIN statement_topic_links l ON l.build_id=s.build_id AND l.statement_id=s.id
+        JOIN topics t ON t.taxonomy_version=l.taxonomy_version AND t.id=l.topic_id
+        WHERE s.build_id=? AND s.entity_id IN ({placeholders})
+          AND l.review_status='approved' AND t.status='active'
+        ORDER BY s.entity_id, t.kind, t.canonical_name, t.id
+        """,
+        (build_id, *entity_ids),
+    ):
+        entity_id = str(row["entity_id"])
+        grouped_by_entity.setdefault(entity_id, {}).setdefault(
+            str(row["kind"]), []
+        ).append((str(row["id"]), str(row["canonical_name"])))
+    return {
+        entity_id: _format_topics(grouped_by_entity.get(entity_id, {}))
+        for entity_id in entity_ids
+    }
+
+
+def _store_professor_profiles(
+    connection: sqlite3.Connection,
+    build_id: str,
+    profiles: list[tuple[Any, dict[str, Any]]],
+) -> None:
+    if not profiles:
+        return
+    now = utcnow_iso()
+    connection.executemany(
+        """
+        INSERT INTO professor_profiles(
+          build_id, entity_id, profile_hash, template_version,
+          tokenizer_identity, normalized_profile, token_count,
+          payload_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(build_id, entity_id) DO UPDATE SET
+          profile_hash=excluded.profile_hash,
+          template_version=excluded.template_version,
+          tokenizer_identity=excluded.tokenizer_identity,
+          normalized_profile=excluded.normalized_profile,
+          token_count=excluded.token_count,
+          payload_json=excluded.payload_json
+        """,
+        [
+            (
+                build_id,
+                profile.entity_id,
+                profile.profile_hash,
+                profile.template_version,
+                profile.tokenizer_identity,
+                profile.normalized_profile,
+                profile.token_count,
+                json_dumps(point_payload),
+                now,
+            )
+            for profile, point_payload in profiles
+        ],
+    )
+
+
+def _load_embedding_cache_batch(
+    connection: sqlite3.Connection,
+    profile_hashes: list[str],
+    *,
+    embedding_fingerprint: str,
+    dimension: int,
+) -> dict[str, CachedVector]:
+    cached_by_hash: dict[str, CachedVector] = {}
+    for profile_hash in dict.fromkeys(profile_hashes):
+        cached = load_embedding_cache(
+            connection,
+            profile_hash=profile_hash,
+            embedding_fingerprint=embedding_fingerprint,
+            dimension=dimension,
+        )
+        if cached is not None:
+            cached_by_hash[profile_hash] = cached
+    return cached_by_hash
+
+
+def _mark_pending_embedding_jobs(
+    connection: sqlite3.Connection,
+    build_id: str,
+    items: list[tuple[dict[str, Any], Any, dict[str, Any]]],
+) -> None:
+    for row, profile, _payload in items:
+        mark_embedding_job(
+            connection,
+            build_id=build_id,
+            entity_id=str(row["entity_id"]),
+            profile_hash=profile.profile_hash,
+            status="pending",
+        )
+
+
+def _store_embedding_results(
+    connection: sqlite3.Connection,
+    build_id: str,
+    *,
+    embedding_fingerprint: str,
+    items: list[tuple[dict[str, Any], Any, list[float], dict[str, Any]]],
+) -> dict[str, CachedVector]:
+    cached_by_hash: dict[str, CachedVector] = {}
+    for row, profile, dense, sparse in items:
+        dense_values = [float(value) for value in dense]
+        sparse_values = dict(sparse)
+        checksum = store_embedding_cache(
+            connection,
+            profile_hash=profile.profile_hash,
+            embedding_fingerprint=embedding_fingerprint,
+            dense_vector=dense_values,
+            sparse_vector=sparse_values,
+        )
+        mark_embedding_job(
+            connection,
+            build_id=build_id,
+            entity_id=str(row["entity_id"]),
+            profile_hash=profile.profile_hash,
+            status="succeeded",
+            vector_checksum=checksum,
+        )
+        cached_by_hash[profile.profile_hash] = CachedVector(
+            dense=dense_values,
+            sparse=sparse_values,
+            vector_checksum=checksum,
+        )
+    return cached_by_hash
+
+
 def _org_units(payload: dict[str, Any]) -> list[str]:
     affiliations = payload.get("affiliations") or []
     values = [
@@ -282,6 +466,10 @@ def _org_units(payload: dict[str, Any]) -> list[str]:
         return list(dict.fromkeys(values))
     value = payload.get("org_unit_name")
     return [str(value)] if value else []
+
+
+def _chunks(items: list[Any], size: int) -> list[list[Any]]:
+    return [items[offset : offset + size] for offset in range(0, len(items), size)]
 
 
 async def _build_points(
@@ -297,27 +485,31 @@ async def _build_points(
     fingerprint: str,
 ) -> list[ProfessorVectorPoint]:
     profiles: list[tuple[dict[str, Any], Any, dict[str, Any]]] = []
+    entity_ids = [str(row["entity_id"]) for row in rows]
+    evidence_by_entity = await writer.execute(
+        lambda connection, ids=entity_ids: _batch_entity_evidence(
+            connection, build_id, ids
+        ),
+        transactional=False,
+    )
+    topics_by_entity = await writer.execute(
+        lambda connection, ids=entity_ids: _batch_entity_topics(
+            connection, build_id, ids
+        ),
+        transactional=False,
+    )
     for row in rows:
+        entity_id = str(row["entity_id"])
         payload = json_loads(row.get("payload_json"), {})
         university_id = str(row["university_id"])
         context = contexts.get(university_id, {"university": university_id, "city": None})
-        statements, mentions = await writer.execute(
-            lambda connection, entity=str(row["entity_id"]): _entity_evidence(
-                connection, build_id, entity
-            ),
-            transactional=False,
-        )
-        approved_topic_names, approved_topic_ids = await writer.execute(
-            lambda connection, entity=str(row["entity_id"]): _entity_topics(
-                connection, build_id, entity
-            ),
-            transactional=False,
-        )
-        org_unit_ids = org_unit_ids_by_entity.get(str(row["entity_id"]), [])
+        statements, mentions = evidence_by_entity.get(entity_id, ([], []))
+        approved_topic_names, approved_topic_ids = topics_by_entity.get(entity_id, ([], {}))
+        org_unit_ids = org_unit_ids_by_entity.get(entity_id, [])
         role_reason_codes = json_loads(row["role_reason_codes"], [])
         profile = build_semantic_profile(
             {
-                "entity_id": str(row["entity_id"]),
+                "entity_id": entity_id,
                 "university": context["university"],
                 "org_units": _org_units(payload),
                 "title": row["title_raw"],
@@ -357,107 +549,74 @@ async def _build_points(
             "embedding_fingerprint": fingerprint,
             "provenance_ref": f"catalog:entity:{row['entity_id']}:build:{build_id}",
         }
-        await writer.execute(
-            lambda connection, p=profile, payload_json=json_dumps(point_payload): connection.execute(
-                """
-                INSERT INTO professor_profiles(
-                  build_id, entity_id, profile_hash, template_version,
-                  tokenizer_identity, normalized_profile, token_count,
-                  payload_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(build_id, entity_id) DO UPDATE SET
-                  profile_hash=excluded.profile_hash,
-                  template_version=excluded.template_version,
-                  tokenizer_identity=excluded.tokenizer_identity,
-                  normalized_profile=excluded.normalized_profile,
-                  token_count=excluded.token_count,
-                  payload_json=excluded.payload_json
-                """,
-                (
-                    build_id,
-                    p.entity_id,
-                    p.profile_hash,
-                    p.template_version,
-                    p.tokenizer_identity,
-                    p.normalized_profile,
-                    p.token_count,
-                    payload_json,
-                    utcnow_iso(),
-                ),
-            )
-        )
         profiles.append((row, profile, point_payload))
+    await writer.execute(
+        lambda connection, items=[
+            (profile, point_payload) for _row, profile, point_payload in profiles
+        ]: _store_professor_profiles(connection, build_id, items)
+    )
 
     missing: list[tuple[dict[str, Any], Any, dict[str, Any]]] = []
-    cached_by_hash: dict[str, Any] = {}
+    cached_by_hash = await writer.execute(
+        lambda connection, hashes=[
+            profile.profile_hash for _row, profile, _payload in profiles
+        ]: _load_embedding_cache_batch(
+            connection,
+            hashes,
+            embedding_fingerprint=fingerprint,
+            dimension=settings.embedding_dimension,
+        ),
+        transactional=False,
+    )
     for row, profile, payload in profiles:
-        cached = await writer.execute(
-            lambda connection, h=profile.profile_hash: load_embedding_cache(
-                connection,
-                profile_hash=h,
-                embedding_fingerprint=fingerprint,
-                dimension=settings.embedding_dimension,
-            ),
-            transactional=False,
-        )
-        if cached is None:
+        if profile.profile_hash not in cached_by_hash:
             missing.append((row, profile, payload))
-            await writer.execute(
-                lambda connection, r=row, p=profile: mark_embedding_job(
-                    connection,
-                    build_id=build_id,
-                    entity_id=str(r["entity_id"]),
-                    profile_hash=p.profile_hash,
-                    status="pending",
-                )
-            )
-        else:
-            cached_by_hash[profile.profile_hash] = cached
+    await writer.execute(
+        lambda connection, items=missing: _mark_pending_embedding_jobs(
+            connection, build_id, items
+        )
+    )
 
-    if missing:
-        inputs = [
-            prefixed_input(
-                profile.normalized_profile,
-                settings.embedding_passage_prefix,
-                tokenizer,
-                max_tokens=settings.embedding_max_input_tokens,
-            )
-            for _, profile, _ in missing
-        ]
-        result = await embedding_client.embed(inputs, purpose="professor_profiles")
-        for (row, profile, _payload), dense in zip(missing, result.vectors, strict=True):
-            sparse = sparse_bm25_vector(
-                profile.normalized_profile,
-                tokenizer_version=settings.bm25_tokenizer_version,
-            )
-            checksum = await writer.execute(
-                lambda connection, p=profile, d=dense, s=sparse: store_embedding_cache(
-                    connection,
-                    profile_hash=p.profile_hash,
-                    embedding_fingerprint=fingerprint,
-                    dense_vector=d,
-                    sparse_vector=s,
+    missing_chunks = _chunks(missing, settings.embedding_request_batch)
+    for window in _chunks(missing_chunks, settings.embedding_max_concurrency):
+        tasks = []
+        for chunk in window:
+            inputs = [
+                prefixed_input(
+                    profile.normalized_profile,
+                    settings.embedding_passage_prefix,
+                    tokenizer,
+                    max_tokens=settings.embedding_max_input_tokens,
+                )
+                for _, profile, _ in chunk
+            ]
+            tasks.append(embedding_client.embed(inputs, purpose="professor_profiles"))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        first_error: BaseException | None = None
+        successful: list[tuple[dict[str, Any], Any, list[float], dict[str, Any]]] = []
+        for chunk, result in zip(window, results, strict=True):
+            if isinstance(result, BaseException):
+                first_error = first_error or result
+                continue
+            for (row, profile, _payload), dense in zip(chunk, result.vectors, strict=True):
+                sparse = sparse_bm25_vector(
+                    profile.normalized_profile,
+                    tokenizer_version=settings.bm25_tokenizer_version,
+                )
+                successful.append((row, profile, list(dense), sparse))
+        if successful:
+            cached_by_hash.update(
+                await writer.execute(
+                    lambda connection, items=successful: _store_embedding_results(
+                        connection,
+                        build_id,
+                        embedding_fingerprint=fingerprint,
+                        items=items,
+                    )
                 )
             )
-            await writer.execute(
-                lambda connection, r=row, p=profile, c=checksum: mark_embedding_job(
-                    connection,
-                    build_id=build_id,
-                    entity_id=str(r["entity_id"]),
-                    profile_hash=p.profile_hash,
-                    status="succeeded",
-                    vector_checksum=c,
-                )
-            )
-            cached_by_hash[profile.profile_hash] = await writer.execute(
-                lambda connection, p=profile: load_embedding_cache(
-                    connection,
-                    profile_hash=p.profile_hash,
-                    embedding_fingerprint=fingerprint,
-                    dimension=settings.embedding_dimension,
-                ),
-                transactional=False,
-            )
+        if first_error is not None:
+            raise first_error
 
     points: list[ProfessorVectorPoint] = []
     for row, profile, payload in profiles:
@@ -595,25 +754,32 @@ async def run_vector_stage(
             ).fetchone()[0],
             transactional=False,
         )
+        last_uploaded_key, uploaded = await writer.execute(
+            lambda connection: _upload_checkpoint(connection, build_id),
+            transactional=False,
+        )
         emit_progress(
             progress,
             "vector",
             "progress",
             build_id=build_id,
             message=collection_name,
-            current=0,
+            current=uploaded,
             total=int(expected),
-            counters={"collection": collection_name, "eligible_professors": int(expected)},
+            counters={
+                "collection": collection_name,
+                "eligible_professors": int(expected),
+                "last_entity_id": last_uploaded_key,
+            },
         )
-        uploaded = 0
         batches = 0
         while True:
-            last = await writer.execute(
-                lambda connection: _last_uploaded_key(connection, build_id),
+            last_uploaded_key, uploaded = await writer.execute(
+                lambda connection: _upload_checkpoint(connection, build_id),
                 transactional=False,
             )
             rows = await writer.execute(
-                lambda connection, after=last: _eligible_rows(
+                lambda connection, after=last_uploaded_key: _eligible_rows(
                     connection,
                     build_id,
                     after_entity_id=after,
@@ -651,6 +817,7 @@ async def run_vector_stage(
                 )
             )
             uploaded += len(rows)
+            last_uploaded_key = str(rows[-1]["entity_id"])
             batches += 1
             emit_progress(
                 progress,
@@ -665,7 +832,7 @@ async def run_vector_stage(
                     "batch_rows": len(rows),
                     "batches": batches,
                     "uploaded": uploaded,
-                    "last_entity_id": rows[-1]["entity_id"],
+                    "last_entity_id": last_uploaded_key,
                 },
             )
             limit = os.getenv("DEXT_TEST_KILL_AFTER_QDRANT_BATCHES")

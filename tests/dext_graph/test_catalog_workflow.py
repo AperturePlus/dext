@@ -308,6 +308,34 @@ async def test_resume_allows_embedding_max_concurrency_change(tmp_path, monkeypa
     assert resumed["build"]["status"] == "WRITING_VECTOR"
 
 
+async def test_resume_allows_embedding_request_batch_change(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    _source_db(settings.source_data_dir / "test.db", count=1)
+    _patch_runtime(monkeypatch)
+    result = await create_build(["测试大学"], settings)
+    changed = settings.model_copy(
+        update={"embedding_request_batch": settings.embedding_request_batch + 1}
+    )
+
+    resumed = await resume_build(result["build"]["id"], changed)
+
+    assert resumed["build"]["status"] == "WRITING_VECTOR"
+
+
+async def test_resume_allows_qdrant_upsert_batch_change(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    _source_db(settings.source_data_dir / "test.db", count=1)
+    _patch_runtime(monkeypatch)
+    result = await create_build(["测试大学"], settings)
+    changed = settings.model_copy(
+        update={"qdrant_upsert_batch": settings.qdrant_upsert_batch + 1}
+    )
+
+    resumed = await resume_build(result["build"]["id"], changed)
+
+    assert resumed["build"]["status"] == "WRITING_VECTOR"
+
+
 async def test_catalog_never_persists_embedding_api_key(tmp_path, monkeypatch):
     settings = _settings(tmp_path).model_copy(
         update={"embedding_api_key": "stage-one-secret-must-not-persist"}
