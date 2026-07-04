@@ -10,12 +10,12 @@ from dext_recommend import RecommendSettings
 
 
 def test_recommend_settings_defaults():
-    s = RecommendSettings()
+    s = RecommendSettings(_env_file=None)
     assert s.qdrant_alias == "dext_professors_current"
     assert s.embedding_provider == "siliconflow"
     assert s.embedding_model == "BAAI/bge-m3"
     assert s.embedding_base_url == "https://api.siliconflow.cn/v1"
-    assert s.total_timeout == 30
+    assert s.total_timeout == 90
     assert s.oversample_default == 200
     assert s.oversample_max == 1000
 

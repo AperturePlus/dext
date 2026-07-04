@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -13,65 +14,89 @@ from dext_recommend.models import (
     QueryUnderstanding,
     RecommendResponse,
     RecommendedProfessor,
+    RecommendationWarning,
 )
+
+
+def _recommended_professor() -> RecommendedProfessor:
+    return RecommendedProfessor(
+        entity_id="p1",
+        display_name="张老师",
+        university="测试大学",
+        org_units=("计算机学院",),
+        title="教授",
+        title_family="professor",
+        master_eligibility="confirmed",
+        phd_eligibility="confirmed",
+        role_status="included",
+        profile_url="https://example.test/p1",
+        research_summary="机器学习",
+        match_level="strong",
+        short_reasons=("方向匹配",),
+        score=0.86,
+        score_components={},
+        matched_topics=("机器学习",),
+        matched_statements=(),
+        matched_publications=(),
+        evidence_refs=(),
+        risk_flags=(),
+        available_actions=("detail",),
+    )
+
+
+def _recommend_response(
+    *,
+    query_length: int = 4,
+    results: tuple[RecommendedProfessor, ...] | None = None,
+    warnings: tuple[RecommendationWarning, ...] = (),
+    recall_count: int = 1,
+    post_filter_count: int = 1,
+    returned_count: int | None = None,
+) -> RecommendResponse:
+    resolved_results = (_recommended_professor(),) if results is None else results
+    return RecommendResponse(
+        build_id="build-1",
+        ranking_profile_version="rank-v1",
+        embedding_fingerprint="fp",
+        taxonomy_version="tax-v1",
+        generation_profile_version="gen-v1",
+        query_understanding=QueryUnderstanding(
+            research_interests=("机器学习",),
+            preferred_universities=(),
+            preferred_cities=(),
+            preferred_org_units=(),
+            degree_goal="master",
+            mentor_eligibility_requirement=None,
+            missing_information=(),
+            needs_clarification=False,
+            confidence=0.9,
+        ),
+        query=QueryDiagnostics(
+            query_length=query_length,
+            language_summary="zh",
+            filter_summary=None,
+            recall_count=recall_count,
+            post_filter_count=post_filter_count,
+            returned_count=len(resolved_results) if returned_count is None else returned_count,
+            steps_used=1,
+        ),
+        results=resolved_results,
+        suggested_followups=("了解招生要求",),
+        warnings=warnings,
+    )
 
 
 class FakeCore:
     async def recommend(self, request, *, viewer_permissions=None):
-        return RecommendResponse(
-            build_id="build-1",
-            ranking_profile_version="rank-v1",
-            embedding_fingerprint="fp",
-            taxonomy_version="tax-v1",
-            generation_profile_version="gen-v1",
-            query_understanding=QueryUnderstanding(
-                research_interests=("机器学习",),
-                preferred_universities=(),
-                preferred_cities=(),
-                preferred_org_units=(),
-                degree_goal="master",
-                mentor_eligibility_requirement=None,
-                missing_information=(),
-                needs_clarification=False,
-                confidence=0.9,
-            ),
-            query=QueryDiagnostics(
-                query_length=len(request.query_text),
-                language_summary="zh",
-                filter_summary=None,
-            ),
-            results=(
-                RecommendedProfessor(
-                    entity_id="p1",
-                    display_name="张老师",
-                    university="测试大学",
-                    org_units=("计算机学院",),
-                    title="教授",
-                    title_family="professor",
-                    master_eligibility="confirmed",
-                    phd_eligibility="confirmed",
-                    role_status="included",
-                    profile_url="https://example.test/p1",
-                    research_summary="机器学习",
-                    match_level="strong",
-                    short_reasons=("方向匹配",),
-                    score=0.86,
-                    score_components={},
-                    matched_topics=("机器学习",),
-                    matched_statements=(),
-                    matched_publications=(),
-                    evidence_refs=(),
-                    risk_flags=(),
-                    available_actions=("detail",),
-                ),
-            ),
-            suggested_followups=("了解招生要求",),
-            warnings=(),
-        )
+        return _recommend_response(query_length=len(request.query_text))
 
 
 class FakeConversation:
+    def __init__(self):
+        self.calls = 0
+
     async def dispatch(self, request, *, viewer_permissions=None):
+        self.calls += 1
         response = await FakeCore().recommend(request, viewer_permissions=viewer_permissions)
         return ConversationDispatchResult(
             kind="recommendation",
@@ -85,6 +110,75 @@ class FakeConversation:
 class ExplodingConversation:
     async def dispatch(self, request, *, viewer_permissions=None):
         raise RuntimeError("dispatch exploded")
+
+
+class SlowConversation(FakeConversation):
+    async def dispatch(self, request, *, viewer_permissions=None):
+        await asyncio.sleep(0.05)
+        return await super().dispatch(request, viewer_permissions=viewer_permissions)
+
+
+class EmptyRecommendationConversation:
+    async def dispatch(self, request, *, viewer_permissions=None):
+        response = _recommend_response(
+            query_length=len(request.query_text),
+            results=(),
+            warnings=(
+                RecommendationWarning(
+                    code="no_candidates_after_filters",
+                    message="no candidates after filters",
+                ),
+            ),
+            recall_count=8,
+            post_filter_count=0,
+            returned_count=0,
+        )
+        return ConversationDispatchResult(
+            kind="recommendation",
+            context=request.conversation_context,
+            recommendation=response,
+            detail_followup=None,
+            issues=(),
+        )
+
+
+class ErrorWarningRecommendationConversation:
+    async def dispatch(self, request, *, viewer_permissions=None):
+        response = _recommend_response(
+            query_length=len(request.query_text),
+            results=(),
+            warnings=(
+                RecommendationWarning(
+                    code="llm_unavailable",
+                    message="LLM failed",
+                    severity="error",
+                ),
+            ),
+            recall_count=0,
+            post_filter_count=0,
+            returned_count=0,
+        )
+        return ConversationDispatchResult(
+            kind="recommendation",
+            context=request.conversation_context,
+            recommendation=response,
+            detail_followup=None,
+            issues=(),
+        )
+
+
+class HangingConversation:
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def dispatch(self, request, *, viewer_permissions=None):
+        self.started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
 
 
 class FakeQuickActions:
@@ -139,11 +233,28 @@ def _parse_sse(text: str) -> list[tuple[str, dict]]:
     return events
 
 
+async def _read_raw_sse_event(response) -> str:
+    lines: list[str] = []
+    while True:
+        line = await response.content.readline()
+        assert line
+        decoded = line.decode("utf-8")
+        lines.append(decoded)
+        if decoded in {"\n", "\r\n"}:
+            return "".join(lines)
+
+
+def _assert_sse_sequence(events: list[tuple[str, dict]]) -> None:
+    for seq, (_, data) in enumerate(events):
+        assert data["seq"] == seq
+
+
 def _assert_sse_context(data: dict, *, session_id: str, turn_id: str, attempt_id: str) -> None:
     assert data["session_id"] == session_id
     assert data["turn_id"] == turn_id
     assert data["attempt_id"] == attempt_id
     assert isinstance(data["revision"], int)
+    assert isinstance(data["seq"], int)
 
 
 @pytest.mark.asyncio
@@ -295,11 +406,12 @@ async def test_new_turn_sse_contract():
         assert resp.headers["Content-Type"].startswith("text/event-stream")
         events = _parse_sse(await resp.text())
         assert [name for name, _ in events] == ["ack", "route", "delta", "completed"]
+        _assert_sse_sequence(events)
 
         ack = events[0][1]
         turn_id = ack["turn_id"]
         attempt_id = ack["attempt_id"]
-        assert ack == {
+        assert {key: ack[key] for key in ("session_id", "turn_id", "attempt_id", "revision")} == {
             "session_id": session_id,
             "turn_id": turn_id,
             "attempt_id": attempt_id,
@@ -317,6 +429,20 @@ async def test_new_turn_sse_contract():
         assert completed["revision"] == 1
         assert completed["session"]["revision"] == 1
         assert completed["message"]["role"] == "assistant"
+        assert completed["message"]["status"] == "done"
+        assert completed["message"]["kind"] == "recommendation"
+        assert completed["message"]["related_recommendations"][0]["professor_id"] == "p1"
+
+        aggregate = await (await client.get(
+            f"/api/v1/chat/sessions/{session_id}",
+            headers=headers,
+        )).json()
+        assistant_messages = [
+            message for message in aggregate["data"]["messages"]
+            if message["role"] == "assistant"
+        ]
+        assert len(assistant_messages) == 1
+        assert assistant_messages[0]["related_recommendations"][0]["professor_id"] == "p1"
 
 
 @pytest.mark.asyncio
@@ -345,10 +471,97 @@ async def test_new_turn_sse_recommendation_can_complete_without_delta(monkeypatc
         assert resp.status == 200
         events = _parse_sse(await resp.text())
         assert [name for name, _ in events] == ["ack", "route", "completed"]
+        _assert_sse_sequence(events)
         assert events[1][1]["route"] == "recommendation"
         assert events[1][1]["revision"] == 0
         assert events[2][1]["revision"] == 1
         assert events[2][1]["message"]["content"] == ""
+
+
+@pytest.mark.asyncio
+async def test_new_turn_sse_empty_recommendation_uses_empty_state_copy(caplog):
+    async def runtime_factory(*args, **kwargs):
+        runtime = FakeRuntime()
+        runtime.conversation = EmptyRecommendationConversation()
+        return runtime
+
+    app = create_recommendation_app(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
+        runtime_factory=runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        identity = await (await client.post("/api/v1/identity/anonymous")).json()
+        headers = {"Authorization": f"Bearer {identity['data']['access_token']}"}
+        session = await (await client.post("/api/v1/chat/sessions", headers=headers, json={})).json()
+        session_id = session["data"]["id"]
+        request_id = "00000000-0000-0000-0000-0000000000b1"
+        with caplog.at_level("INFO", logger="dext_recommend.application.services"):
+            resp = await client.post(
+                f"/api/v1/chat/sessions/{session_id}/turns",
+                headers={**headers, "Idempotency-Key": request_id},
+                json={"text": "推荐南开大模型导师", "request_id": request_id, "expected_revision": 0},
+            )
+            raw = await resp.text()
+        assert resp.status == 200
+        events = _parse_sse(raw)
+        assert [name for name, _ in events] == ["ack", "route", "delta", "completed"]
+        _assert_sse_sequence(events)
+        completed = events[3][1]
+        message = completed["message"]
+        assert message["status"] == "done"
+        assert message["kind"] == "recommendation"
+        assert message["related_recommendations"] == []
+        assert message["content"] != "已根据你的问题推荐了合适的导师。"
+        assert "没有找到足够匹配的导师" in message["content"]
+        assert "related_count=0" in caplog.text
+        assert "warning_codes=no_candidates_after_filters" in caplog.text
+        assert "recall_count=8" in caplog.text
+        assert "post_filter_count=0" in caplog.text
+        assert "returned_count=0" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_new_turn_sse_recommendation_error_warning_marks_attempt_failed():
+    async def runtime_factory(*args, **kwargs):
+        runtime = FakeRuntime()
+        runtime.conversation = ErrorWarningRecommendationConversation()
+        return runtime
+
+    app = create_recommendation_app(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
+        runtime_factory=runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        identity = await (await client.post("/api/v1/identity/anonymous")).json()
+        headers = {"Authorization": f"Bearer {identity['data']['access_token']}"}
+        session = await (await client.post("/api/v1/chat/sessions", headers=headers, json={})).json()
+        session_id = session["data"]["id"]
+        request_id = "00000000-0000-0000-0000-0000000000b2"
+        resp = await client.post(
+            f"/api/v1/chat/sessions/{session_id}/turns",
+            headers={**headers, "Idempotency-Key": request_id},
+            json={"text": "推荐导师", "request_id": request_id, "expected_revision": 0},
+        )
+        assert resp.status == 200
+        events = _parse_sse(await resp.text())
+        assert [name for name, _ in events] == ["ack", "route", "delta", "completed"]
+        completed = events[3][1]
+        message = completed["message"]
+        assert message["status"] == "error"
+        assert message["kind"] == "recommendation"
+        assert message["related_recommendations"] == []
+        assert message["content"] == "LLM failed"
+
+        aggregate = await (await client.get(
+            f"/api/v1/chat/sessions/{session_id}",
+            headers=headers,
+        )).json()
+        assert aggregate["data"]["turns"][0]["status"] == "failed"
+        assistant_messages = [
+            item for item in aggregate["data"]["messages"]
+            if item["role"] == "assistant"
+        ]
+        assert assistant_messages[0]["status"] == "error"
 
 
 @pytest.mark.asyncio
@@ -371,6 +584,7 @@ async def test_new_turn_sse_dispatch_error_still_sends_ack_first():
         assert resp.status == 200
         events = _parse_sse(await resp.text())
         assert [name for name, _ in events] == ["ack", "error"]
+        _assert_sse_sequence(events)
         ack = events[0][1]
         error = events[1][1]
         _assert_sse_context(
@@ -382,6 +596,132 @@ async def test_new_turn_sse_dispatch_error_still_sends_ack_first():
         assert error["revision"] == 0
         assert error["code"] == "chat_stream_failed"
         assert error["message"] == "dispatch exploded"
+
+
+@pytest.mark.asyncio
+async def test_new_turn_sse_sends_comment_heartbeats_during_slow_dispatch():
+    async def slow_runtime_factory(*args, **kwargs):
+        runtime = FakeRuntime()
+        runtime.conversation = SlowConversation()
+        return runtime
+
+    app = create_recommendation_app(
+        AppSettings(
+            database_url="sqlite+aiosqlite:///:memory:",
+            schema_bootstrap=True,
+            sse_heartbeat_seconds=0.01,
+        ),
+        runtime_factory=slow_runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        identity = await (await client.post("/api/v1/identity/anonymous")).json()
+        headers = {"Authorization": f"Bearer {identity['data']['access_token']}"}
+        session = await (await client.post("/api/v1/chat/sessions", headers=headers, json={})).json()
+        session_id = session["data"]["id"]
+        request_id = "00000000-0000-0000-0000-0000000000ae"
+        resp = await client.post(
+            f"/api/v1/chat/sessions/{session_id}/turns",
+            headers={**headers, "Idempotency-Key": request_id},
+            json={"text": "推荐机器学习导师", "request_id": request_id, "expected_revision": 0},
+        )
+        raw = await resp.text()
+        assert ": heartbeat\n\n" in raw
+        events = _parse_sse(raw)
+        assert [name for name, _ in events] == ["ack", "route", "delta", "completed"]
+        _assert_sse_sequence(events)
+
+
+@pytest.mark.asyncio
+async def test_new_turn_completed_idempotency_replay_does_not_dispatch_again():
+    runtime = FakeRuntime()
+
+    async def runtime_factory(*args, **kwargs):
+        return runtime
+
+    app = create_recommendation_app(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
+        runtime_factory=runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        identity = await (await client.post("/api/v1/identity/anonymous")).json()
+        headers = {"Authorization": f"Bearer {identity['data']['access_token']}"}
+        session = await (await client.post("/api/v1/chat/sessions", headers=headers, json={})).json()
+        session_id = session["data"]["id"]
+        request_id = "00000000-0000-0000-0000-0000000000af"
+        payload = {"text": "推荐机器学习导师", "request_id": request_id, "expected_revision": 0}
+
+        first = await client.post(
+            f"/api/v1/chat/sessions/{session_id}/turns",
+            headers={**headers, "Idempotency-Key": request_id},
+            json=payload,
+        )
+        assert [name for name, _ in _parse_sse(await first.text())] == [
+            "ack", "route", "delta", "completed",
+        ]
+
+        second = await client.post(
+            f"/api/v1/chat/sessions/{session_id}/turns",
+            headers={**headers, "Idempotency-Key": request_id},
+            json=payload,
+        )
+        second_events = _parse_sse(await second.text())
+        assert [name for name, _ in second_events] == ["ack", "route", "delta", "completed"]
+        assert runtime.conversation.calls == 1
+
+        aggregate = await (await client.get(
+            f"/api/v1/chat/sessions/{session_id}",
+            headers=headers,
+        )).json()
+        assistant_messages = [
+            message for message in aggregate["data"]["messages"]
+            if message["role"] == "assistant"
+        ]
+        assert len(assistant_messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_new_turn_cancel_interrupts_registered_dispatch_task():
+    hanging = HangingConversation()
+
+    async def runtime_factory(*args, **kwargs):
+        runtime = FakeRuntime()
+        runtime.conversation = hanging
+        return runtime
+
+    app = create_recommendation_app(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
+        runtime_factory=runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        identity = await (await client.post("/api/v1/identity/anonymous")).json()
+        headers = {"Authorization": f"Bearer {identity['data']['access_token']}"}
+        session = await (await client.post("/api/v1/chat/sessions", headers=headers, json={})).json()
+        session_id = session["data"]["id"]
+        request_id = "00000000-0000-0000-0000-0000000000b0"
+        resp = await client.post(
+            f"/api/v1/chat/sessions/{session_id}/turns",
+            headers={**headers, "Idempotency-Key": request_id},
+            json={"text": "推荐机器学习导师", "request_id": request_id, "expected_revision": 0},
+        )
+        ack_raw = await _read_raw_sse_event(resp)
+        ack = _parse_sse(ack_raw)[0][1]
+        await asyncio.wait_for(hanging.started.wait(), timeout=1)
+
+        cancel = await client.post(
+            f"/api/v1/chat/attempts/{ack['attempt_id']}/cancel",
+            headers=headers,
+        )
+        assert cancel.status == 200
+        tail = (await asyncio.wait_for(resp.content.read(), timeout=1)).decode("utf-8")
+        assert "event: interrupted" in tail
+        assert hanging.cancelled.is_set()
+
+        aggregate = await (await client.get(
+            f"/api/v1/chat/sessions/{session_id}",
+            headers=headers,
+        )).json()
+        turn = aggregate["data"]["turns"][0]
+        assert turn["status"] == "interrupted"
 
 
 @pytest.mark.asyncio
