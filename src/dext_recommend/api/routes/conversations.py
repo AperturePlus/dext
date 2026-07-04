@@ -10,10 +10,12 @@ from dext_recommend.api.auth import require_principal
 from dext_recommend.api.middleware import ApiError, ok, read_json
 from dext_recommend.api.routes._utils import (
     idempotency_key,
+    prepare_sse,
     repository,
     runtime,
     services,
     write_sse,
+    write_sse_event,
 )
 from dext_recommend.api.schemas import (
     AttemptCreateRequest,
@@ -96,25 +98,18 @@ async def handle_list_turns(request: web.Request) -> web.Response:
 async def handle_create_turn(request: web.Request) -> web.StreamResponse:
     principal = await require_principal(request)
     dto = TurnCreateRequest.model_validate(await read_json(request))
-    try:
-        idem = idempotency_key(request)
-        if idem != str(dto.request_id):
-            raise ApiError(422, "idempotency_key_mismatch", "Idempotency-Key must equal request_id")
-        result = await services(request).create_turn_and_dispatch(
-            principal,
-            session_id=request.match_info["session_id"],
-            text=dto.text,
-            request_id=str(dto.request_id),
-            expected_revision=dto.expected_revision,
-            idempotency_key=idem,
-        )
-        return await write_sse(request, _sse_events(result))
-    except Exception as exc:
-        data = _sse_error_data(
-            exc,
-            session_id=request.match_info["session_id"],
-        )
-        return await write_sse(request, [("error", data)])
+    idem = idempotency_key(request)
+    if idem != str(dto.request_id):
+        raise ApiError(422, "idempotency_key_mismatch", "Idempotency-Key must equal request_id")
+    admitted = await services(request).admit_turn(
+        principal,
+        session_id=request.match_info["session_id"],
+        text=dto.text,
+        request_id=str(dto.request_id),
+        expected_revision=dto.expected_revision,
+        idempotency_key=idem,
+    )
+    return await _stream_admitted_attempt(request, principal, admitted, text=dto.text)
 
 
 async def handle_list_forks(request: web.Request) -> web.Response:
@@ -139,26 +134,18 @@ async def handle_create_fork(request: web.Request) -> web.Response:
 async def handle_create_attempt(request: web.Request) -> web.StreamResponse:
     principal = await require_principal(request)
     dto = AttemptCreateRequest.model_validate(await read_json(request))
-    try:
-        idem = idempotency_key(request)
-        if idem != str(dto.request_id):
-            raise ApiError(422, "idempotency_key_mismatch", "Idempotency-Key must equal request_id")
-        result = await services(request).retry_turn_and_dispatch(
-            principal,
-            turn_id=request.match_info["turn_id"],
-            session_id=str(dto.session_id),
-            request_id=str(dto.request_id),
-            expected_revision=dto.expected_revision,
-            idempotency_key=idem,
-        )
-        return await write_sse(request, _sse_events(result))
-    except Exception as exc:
-        data = _sse_error_data(
-            exc,
-            session_id=str(getattr(locals().get("dto", None), "session_id", "")),
-            turn_id=request.match_info["turn_id"],
-        )
-        return await write_sse(request, [("error", data)])
+    idem = idempotency_key(request)
+    if idem != str(dto.request_id):
+        raise ApiError(422, "idempotency_key_mismatch", "Idempotency-Key must equal request_id")
+    admitted = await services(request).admit_retry_attempt(
+        principal,
+        turn_id=request.match_info["turn_id"],
+        session_id=str(dto.session_id),
+        request_id=str(dto.request_id),
+        expected_revision=dto.expected_revision,
+        idempotency_key=idem,
+    )
+    return await _stream_admitted_attempt(request, principal, admitted, text=admitted["text"])
 
 
 async def handle_cancel_attempt(request: web.Request) -> web.Response:
@@ -249,14 +236,66 @@ async def handle_quick_actions(request: web.Request) -> web.Response:
     return ok({"quick_actions": quick_actions})
 
 
-def _sse_events(result: dict) -> list[tuple[str, dict]]:
+async def _stream_admitted_attempt(
+    request: web.Request,
+    principal,
+    admitted: dict,
+    *,
+    text: str,
+) -> web.StreamResponse:
+    response = await prepare_sse(request)
+    base = _sse_base(admitted)
+    await write_sse_event(response, "ack", base)
+    try:
+        result = await services(request).dispatch_existing_attempt(
+            principal,
+            session_id=base["session_id"],
+            turn_id=base["turn_id"],
+            attempt_id=base["attempt_id"],
+            text=text,
+            profile=None,
+        )
+        for event, data in _sse_events(result, include_ack=False, base_revision=base["revision"]):
+            await write_sse_event(response, event, data)
+    except Exception as exc:
+        await write_sse_event(
+            response,
+            "error",
+            _sse_error_data(
+                exc,
+                session_id=base["session_id"],
+                turn_id=base["turn_id"],
+                attempt_id=base["attempt_id"],
+                revision=base["revision"],
+            ),
+        )
+    await response.write_eof()
+    return response
+
+
+def _sse_base(data: dict) -> dict:
+    return {
+        "session_id": str(data.get("session_id") or ""),
+        "turn_id": str(data.get("turn_id") or ""),
+        "attempt_id": str(data.get("attempt_id") or ""),
+        "revision": int(data.get("revision") or 0),
+    }
+
+
+def _sse_events(
+    result: dict,
+    *,
+    include_ack: bool = True,
+    base_revision: int | None = None,
+) -> list[tuple[str, dict]]:
     turn = result.get("turn") or {}
     message = result.get("assistant_message")
     session = result.get("session") or {}
     session_id = str(session.get("id") or turn.get("session_id") or "")
     turn_id = str(turn.get("id") or "")
     attempt_id = str(result.get("attempt_id") or result.get("active_attempt_id") or "")
-    revision = int(session.get("revision") or result.get("revision") or 0)
+    completed_revision = int(session.get("revision") or result.get("revision") or 0)
+    revision = int(base_revision if base_revision is not None else completed_revision)
     route = turn.get("route") or "conversation"
     base = {
         "session_id": session_id,
@@ -266,22 +305,29 @@ def _sse_events(result: dict) -> list[tuple[str, dict]]:
     }
     completed = {
         **base,
-        "revision": int(session.get("revision") or revision),
+        "revision": completed_revision,
         "session": session,
         "message": message,
         "quick_actions": result.get("quick_actions") or [],
     }
-    events: list[tuple[str, dict]] = [
-        ("ack", base),
-        ("route", {**base, "route": route}),
-    ]
+    events: list[tuple[str, dict]] = []
+    if include_ack:
+        events.append(("ack", base))
+    events.append(("route", {**base, "route": route}))
     if message and message.get("content"):
         events.append(("delta", {**base, "text": message["content"]}))
     events.append(("completed", completed))
     return events
 
 
-def _sse_error_data(exc: Exception, *, session_id: str = "", turn_id: str = "", attempt_id: str = "") -> dict:
+def _sse_error_data(
+    exc: Exception,
+    *,
+    session_id: str = "",
+    turn_id: str = "",
+    attempt_id: str = "",
+    revision: int = 0,
+) -> dict:
     if isinstance(exc, ApiError):
         code = exc.error_code
         message = exc.message
@@ -292,7 +338,7 @@ def _sse_error_data(exc: Exception, *, session_id: str = "", turn_id: str = "", 
         "session_id": session_id,
         "turn_id": turn_id,
         "attempt_id": attempt_id,
-        "revision": 0,
+        "revision": revision,
         "code": code,
         "message": message,
     }

@@ -58,7 +58,7 @@ def raise_if_domain_error(warnings: tuple | list) -> None:
     raise ApiError(status, code, message)
 
 
-async def write_sse(request: web.Request, events: list[tuple[str, dict[str, Any]]]) -> web.StreamResponse:
+async def prepare_sse(request: web.Request) -> web.StreamResponse:
     response = web.StreamResponse(
         status=200,
         headers={
@@ -70,9 +70,22 @@ async def write_sse(request: web.Request, events: list[tuple[str, dict[str, Any]
     )
     _apply_sse_cors(request, response)
     await response.prepare(request)
+    return response
+
+
+async def write_sse_event(
+    response: web.StreamResponse,
+    event: str,
+    data: dict[str, Any],
+) -> None:
+    payload = json.dumps(data, ensure_ascii=False, sort_keys=True)
+    await response.write(f"event: {event}\ndata: {payload}\n\n".encode("utf-8"))
+
+
+async def write_sse(request: web.Request, events: list[tuple[str, dict[str, Any]]]) -> web.StreamResponse:
+    response = await prepare_sse(request)
     for event, data in events:
-        payload = json.dumps(data, ensure_ascii=False, sort_keys=True)
-        await response.write(f"event: {event}\ndata: {payload}\n\n".encode("utf-8"))
+        await write_sse_event(response, event, data)
     await response.write_eof()
     return response
 
@@ -92,9 +105,11 @@ def _apply_sse_cors(request: web.Request, response: web.StreamResponse) -> None:
 
 __all__ = [
     "idempotency_key",
+    "prepare_sse",
     "raise_if_domain_error",
     "repository",
     "runtime",
     "services",
     "write_sse",
+    "write_sse_event",
 ]

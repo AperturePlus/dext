@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -81,6 +82,11 @@ class FakeConversation:
         )
 
 
+class ExplodingConversation:
+    async def dispatch(self, request, *, viewer_permissions=None):
+        raise RuntimeError("dispatch exploded")
+
+
 class FakeQuickActions:
     def __init__(self):
         self.calls = []
@@ -108,6 +114,36 @@ class FakeRuntime:
 
 async def fake_runtime_factory(*args, **kwargs):
     return FakeRuntime()
+
+
+async def exploding_runtime_factory(*args, **kwargs):
+    runtime = FakeRuntime()
+    runtime.conversation = ExplodingConversation()
+    return runtime
+
+
+def _parse_sse(text: str) -> list[tuple[str, dict]]:
+    events: list[tuple[str, dict]] = []
+    for raw_event in text.strip().split("\n\n"):
+        if not raw_event.strip():
+            continue
+        event_name = "message"
+        data_lines: list[str] = []
+        for line in raw_event.splitlines():
+            if line.startswith("event:"):
+                event_name = line[len("event:"):].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[len("data:"):].lstrip())
+        if data_lines:
+            events.append((event_name, json.loads("\n".join(data_lines))))
+    return events
+
+
+def _assert_sse_context(data: dict, *, session_id: str, turn_id: str, attempt_id: str) -> None:
+    assert data["session_id"] == session_id
+    assert data["turn_id"] == turn_id
+    assert data["attempt_id"] == attempt_id
+    assert isinstance(data["revision"], int)
 
 
 @pytest.mark.asyncio
@@ -257,15 +293,119 @@ async def test_new_turn_sse_contract():
         )
         assert resp.status == 200
         assert resp.headers["Content-Type"].startswith("text/event-stream")
-        text = await resp.text()
-        assert "event: ack" in text
-        assert "event: route" in text
-        assert "event: delta" in text
-        assert "event: completed" in text
-        assert '"session_id":' in text
-        assert '"turn_id":' in text
-        assert '"attempt_id":' in text
-        assert '"message":' in text
+        events = _parse_sse(await resp.text())
+        assert [name for name, _ in events] == ["ack", "route", "delta", "completed"]
+
+        ack = events[0][1]
+        turn_id = ack["turn_id"]
+        attempt_id = ack["attempt_id"]
+        assert ack == {
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "attempt_id": attempt_id,
+            "revision": 0,
+        }
+        route = events[1][1]
+        _assert_sse_context(route, session_id=session_id, turn_id=turn_id, attempt_id=attempt_id)
+        assert route["revision"] == 0
+        assert route["route"] == "recommendation"
+        delta = events[2][1]
+        _assert_sse_context(delta, session_id=session_id, turn_id=turn_id, attempt_id=attempt_id)
+        assert delta["revision"] == 0
+        completed = events[3][1]
+        _assert_sse_context(completed, session_id=session_id, turn_id=turn_id, attempt_id=attempt_id)
+        assert completed["revision"] == 1
+        assert completed["session"]["revision"] == 1
+        assert completed["message"]["role"] == "assistant"
+
+
+@pytest.mark.asyncio
+async def test_new_turn_sse_recommendation_can_complete_without_delta(monkeypatch):
+    import dext_recommend.application.services as services_module
+
+    def no_delta_answer(result):
+        return "", [], {}
+
+    monkeypatch.setattr(services_module, "conversation_dispatch_to_answer", no_delta_answer)
+    app = create_recommendation_app(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
+        runtime_factory=fake_runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        identity = await (await client.post("/api/v1/identity/anonymous")).json()
+        headers = {"Authorization": f"Bearer {identity['data']['access_token']}"}
+        session = await (await client.post("/api/v1/chat/sessions", headers=headers, json={})).json()
+        session_id = session["data"]["id"]
+        request_id = "00000000-0000-0000-0000-0000000000ab"
+        resp = await client.post(
+            f"/api/v1/chat/sessions/{session_id}/turns",
+            headers={**headers, "Idempotency-Key": request_id},
+            json={"text": "推荐机器学习导师", "request_id": request_id, "expected_revision": 0},
+        )
+        assert resp.status == 200
+        events = _parse_sse(await resp.text())
+        assert [name for name, _ in events] == ["ack", "route", "completed"]
+        assert events[1][1]["route"] == "recommendation"
+        assert events[1][1]["revision"] == 0
+        assert events[2][1]["revision"] == 1
+        assert events[2][1]["message"]["content"] == ""
+
+
+@pytest.mark.asyncio
+async def test_new_turn_sse_dispatch_error_still_sends_ack_first():
+    app = create_recommendation_app(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
+        runtime_factory=exploding_runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        identity = await (await client.post("/api/v1/identity/anonymous")).json()
+        headers = {"Authorization": f"Bearer {identity['data']['access_token']}"}
+        session = await (await client.post("/api/v1/chat/sessions", headers=headers, json={})).json()
+        session_id = session["data"]["id"]
+        request_id = "00000000-0000-0000-0000-0000000000ac"
+        resp = await client.post(
+            f"/api/v1/chat/sessions/{session_id}/turns",
+            headers={**headers, "Idempotency-Key": request_id},
+            json={"text": "推荐机器学习导师", "request_id": request_id, "expected_revision": 0},
+        )
+        assert resp.status == 200
+        events = _parse_sse(await resp.text())
+        assert [name for name, _ in events] == ["ack", "error"]
+        ack = events[0][1]
+        error = events[1][1]
+        _assert_sse_context(
+            error,
+            session_id=session_id,
+            turn_id=ack["turn_id"],
+            attempt_id=ack["attempt_id"],
+        )
+        assert error["revision"] == 0
+        assert error["code"] == "chat_stream_failed"
+        assert error["message"] == "dispatch exploded"
+
+
+@pytest.mark.asyncio
+async def test_new_turn_revision_conflict_is_json_error_before_sse_ack():
+    app = create_recommendation_app(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
+        runtime_factory=fake_runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        identity = await (await client.post("/api/v1/identity/anonymous")).json()
+        headers = {"Authorization": f"Bearer {identity['data']['access_token']}"}
+        session = await (await client.post("/api/v1/chat/sessions", headers=headers, json={})).json()
+        session_id = session["data"]["id"]
+        request_id = "00000000-0000-0000-0000-0000000000ad"
+        resp = await client.post(
+            f"/api/v1/chat/sessions/{session_id}/turns",
+            headers={**headers, "Idempotency-Key": request_id},
+            json={"text": "推荐机器学习导师", "request_id": request_id, "expected_revision": 99},
+        )
+        assert resp.status == 409
+        assert not resp.headers["Content-Type"].startswith("text/event-stream")
+        body = await resp.json()
+        assert body["error_code"] == "conflict"
+        assert body["message"] == "session revision conflict"
 
 
 @pytest.mark.asyncio

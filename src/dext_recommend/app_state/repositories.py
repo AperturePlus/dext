@@ -433,6 +433,9 @@ class AppStateRepository:
                 active_attempt_id=attempt_id,
                 context_json={},
             )
+            session.add(turn)
+            srow.revision += 1
+            await session.flush()
             attempt = ConversationAttempt(
                 owner_id=owner_id,
                 id=attempt_id,
@@ -464,8 +467,7 @@ class AppStateRepository:
                 resource_id=turn_id,
                 expires_at=utcnow() + timedelta(hours=24),
             )
-            session.add_all([turn, attempt, message, idem])
-            srow.revision += 1
+            session.add_all([attempt, message, idem])
             await session.flush()
             return {
                 "turn_id": turn_id,

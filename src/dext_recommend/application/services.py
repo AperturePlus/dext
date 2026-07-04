@@ -68,6 +68,33 @@ class ApplicationServices:
         idempotency_key: str,
         profile: UserProfile | None = None,
     ) -> dict[str, Any]:
+        admitted = await self.admit_turn(
+            principal,
+            session_id=session_id,
+            text=text,
+            request_id=request_id,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+        )
+        return await self.dispatch_existing_attempt(
+            principal,
+            session_id=admitted["session_id"],
+            turn_id=admitted["turn_id"],
+            attempt_id=admitted["attempt_id"],
+            text=text,
+            profile=profile,
+        )
+
+    async def admit_turn(
+        self,
+        principal: Principal,
+        *,
+        session_id: str,
+        text: str,
+        request_id: str,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
         owner_id = str(principal.owner_id)
         request_hash = canonical_hash({
             "owner_id": owner_id,
@@ -85,14 +112,12 @@ class ApplicationServices:
             idempotency_key=idempotency_key,
             request_hash=request_hash,
         )
-        return await self.dispatch_existing_attempt(
-            principal,
-            session_id=admitted["session_id"],
-            turn_id=admitted["turn_id"],
-            attempt_id=admitted["attempt_id"],
-            text=text,
-            profile=profile,
-        )
+        return {
+            "session_id": str(admitted.get("session_id") or session_id),
+            "turn_id": str(admitted.get("turn_id") or admitted.get("resource_id") or ""),
+            "attempt_id": str(admitted.get("attempt_id") or admitted.get("active_attempt_id") or ""),
+            "revision": expected_revision,
+        }
 
     async def retry_turn_and_dispatch(
         self,
@@ -104,6 +129,33 @@ class ApplicationServices:
         expected_revision: int,
         idempotency_key: str,
         profile: UserProfile | None = None,
+    ) -> dict[str, Any]:
+        admitted = await self.admit_retry_attempt(
+            principal,
+            turn_id=turn_id,
+            session_id=session_id,
+            request_id=request_id,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+        )
+        return await self.dispatch_existing_attempt(
+            principal,
+            session_id=admitted["session_id"],
+            turn_id=admitted["turn_id"],
+            attempt_id=admitted["attempt_id"],
+            text=admitted["text"],
+            profile=profile,
+        )
+
+    async def admit_retry_attempt(
+        self,
+        principal: Principal,
+        *,
+        turn_id: str,
+        session_id: str,
+        request_id: str,
+        expected_revision: int,
+        idempotency_key: str,
     ) -> dict[str, Any]:
         owner_id = str(principal.owner_id)
         request_hash = canonical_hash({
@@ -123,14 +175,13 @@ class ApplicationServices:
             request_hash=request_hash,
         )
         _, text = await self.repository.turn_user_text(owner_id, turn_id)
-        return await self.dispatch_existing_attempt(
-            principal,
-            session_id=admitted["session_id"],
-            turn_id=admitted["turn_id"],
-            attempt_id=admitted["attempt_id"],
-            text=text,
-            profile=profile,
-        )
+        return {
+            "session_id": str(admitted.get("session_id") or session_id),
+            "turn_id": str(admitted.get("turn_id") or turn_id),
+            "attempt_id": str(admitted.get("attempt_id") or admitted.get("resource_id") or ""),
+            "revision": expected_revision,
+            "text": text,
+        }
 
     async def dispatch_existing_attempt(
         self,
