@@ -128,7 +128,7 @@ class RecommendSettings(BaseSettings):
     generation_profile_path: Path = Path("data/recommend/generation-profile.json")
 
     # Timeouts / limits (overview §6.6, §11)
-    total_timeout: float = Field(default=30.0, gt=0.0)
+    total_timeout: float = Field(default=90.0, gt=0.0)
     oversample_default: int = 200
     oversample_max: int = 1000
     query_max_chars: int = Field(default=4096, gt=0)
