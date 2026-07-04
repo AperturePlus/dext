@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +17,9 @@ from dext_recommend.app_state.repositories import (
     AppStateRepository,
     canonical_hash,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class AttemptRegistry:
@@ -117,6 +121,7 @@ class ApplicationServices:
             "turn_id": str(admitted.get("turn_id") or admitted.get("resource_id") or ""),
             "attempt_id": str(admitted.get("attempt_id") or admitted.get("active_attempt_id") or ""),
             "revision": expected_revision,
+            "replay": admitted.get("_idempotency_replay") == "completed",
         }
 
     async def retry_turn_and_dispatch(
@@ -181,6 +186,31 @@ class ApplicationServices:
             "attempt_id": str(admitted.get("attempt_id") or admitted.get("resource_id") or ""),
             "revision": expected_revision,
             "text": text,
+            "replay": admitted.get("_idempotency_replay") == "completed",
+        }
+
+    async def completed_attempt_result(
+        self,
+        principal: Principal,
+        *,
+        session_id: str,
+        turn_id: str,
+        attempt_id: str,
+    ) -> dict[str, Any]:
+        owner_id = str(principal.owner_id)
+        completed = await self.repository.get_attempt_result(
+            owner_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            attempt_id=attempt_id,
+        )
+        session_obj = await self.repository.get_session(owner_id, session_id)
+        return {
+            **completed,
+            "session": session_obj,
+            "attempt_id": attempt_id,
+            "revision": session_obj.get("revision", 0),
+            "quick_actions": [],
         }
 
     async def dispatch_existing_attempt(
@@ -207,8 +237,9 @@ class ApplicationServices:
                 viewer_permissions=principal.viewer_permissions(),
             )
         answer, related, snapshot = conversation_dispatch_to_answer(result)
-        status = "completed" if result.kind not in {"error"} else "failed"
         route = _conversation_route(result.kind)
+        status = "failed" if _has_terminal_error(result) else "completed"
+        diagnostics = _completion_diagnostics(result, related)
         completed = await self.repository.complete_attempt(
             owner_id,
             session_id=session_id,
@@ -231,6 +262,22 @@ class ApplicationServices:
             },
             snapshot_json=snapshot,
         )
+        logger.info(
+            "chat attempt completed session_id=%s turn_id=%s attempt_id=%s "
+            "route=%s status=%s related_count=%d warning_codes=%s "
+            "recall_count=%s post_filter_count=%s returned_count=%s build_id=%s",
+            session_id,
+            turn_id,
+            attempt_id,
+            route,
+            status,
+            diagnostics["related_count"],
+            ",".join(diagnostics["warning_codes"]),
+            diagnostics["recall_count"],
+            diagnostics["post_filter_count"],
+            diagnostics["returned_count"],
+            diagnostics["build_id"],
+        )
         session_obj = await self.repository.get_session(owner_id, session_id)
         return {
             **completed,
@@ -250,3 +297,35 @@ def _conversation_route(kind: str) -> str:
     if kind == "fork_reroute":
         return "forkReroute"
     return "conversation"
+
+
+def _has_terminal_error(result) -> bool:
+    if result.kind == "error":
+        return True
+    if result.kind == "recommendation" and result.recommendation is not None:
+        return any(w.severity == "error" for w in result.recommendation.warnings)
+    if result.kind == "detail_followup" and result.detail_followup is not None:
+        return any(w.severity == "error" for w in result.detail_followup.warnings)
+    return False
+
+
+def _completion_diagnostics(result, related: list[dict[str, Any]]) -> dict[str, Any]:
+    if result.kind == "recommendation" and result.recommendation is not None:
+        response = result.recommendation
+        return {
+            "related_count": len(related),
+            "warning_codes": [str(w.code) for w in response.warnings],
+            "recall_count": response.query.recall_count,
+            "post_filter_count": response.query.post_filter_count,
+            "returned_count": response.query.returned_count,
+            "build_id": response.build_id,
+        }
+    warnings = tuple(getattr(result, "issues", ()) or ())
+    return {
+        "related_count": len(related),
+        "warning_codes": [str(w.code) for w in warnings],
+        "recall_count": None,
+        "post_filter_count": None,
+        "returned_count": len(related),
+        "build_id": None,
+    }

@@ -49,6 +49,9 @@ class RequestInProgressError(ConflictError):
     error_code = "request_in_progress"
 
 
+TERMINAL_ATTEMPT_STATUSES = frozenset({"completed", "failed", "interrupted"})
+
+
 def new_uuid() -> str:
     return str(uuid.uuid4())
 
@@ -495,9 +498,32 @@ class AppStateRepository:
             attempt = await session.get(ConversationAttempt, {"owner_id": owner_id, "id": attempt_id})
             if turn is None or attempt is None or turn.session_id != session_id:
                 raise NotFoundError("attempt not found")
+            if attempt.status in TERMINAL_ATTEMPT_STATUSES:
+                assistant = await self._assistant_for_attempt(
+                    session, owner_id, turn_id, attempt_id,
+                )
+                await self._finish_idempotency(
+                    session,
+                    owner_id,
+                    session_id,
+                    turn_id,
+                    attempt,
+                    assistant.id if assistant is not None else None,
+                )
+                return {
+                    "turn": _turn_dict(turn),
+                    "assistant_message": (
+                        None if assistant is None else _message_dict(assistant)
+                    ),
+                }
             if attempt.cancel_requested_at is not None:
                 attempt.status = "interrupted"
                 turn.status = "interrupted"
+                turn.active_attempt_id = None
+                attempt.finished_at = attempt.finished_at or utcnow()
+                await self._finish_idempotency(
+                    session, owner_id, session_id, turn_id, attempt, None,
+                )
                 return {"turn": _turn_dict(turn), "assistant_message": None}
             turn.status = status
             turn.route = route
@@ -520,23 +546,43 @@ class AppStateRepository:
                 feedback="none",
             )
             session.add(assistant)
-            if attempt.idempotency_key:
-                idem = (await session.execute(select(IdempotencyRecord).where(
-                    IdempotencyRecord.owner_id == owner_id,
-                    IdempotencyRecord.scope == f"turn:{session_id}",
-                    IdempotencyRecord.key == attempt.idempotency_key,
-                ))).scalar_one_or_none()
-                if idem is not None:
-                    idem.state = "completed"
-                    idem.response_json = {
-                        "turn_id": turn_id,
-                        "attempt_id": attempt_id,
-                        "assistant_message_id": assistant.id,
-                    }
+            await self._finish_idempotency(
+                session, owner_id, session_id, turn_id, attempt, assistant.id,
+            )
             await session.flush()
             return {
                 "turn": _turn_dict(turn),
                 "assistant_message": _message_dict(assistant),
+            }
+
+    async def get_attempt_result(
+        self,
+        owner_id: str,
+        *,
+        session_id: str,
+        turn_id: str,
+        attempt_id: str,
+    ) -> dict[str, Any]:
+        async with self.sessionmaker() as session:
+            srow = await session.get(ConversationSession, {"owner_id": owner_id, "id": session_id})
+            turn = await session.get(ConversationTurn, {"owner_id": owner_id, "id": turn_id})
+            attempt = await session.get(ConversationAttempt, {"owner_id": owner_id, "id": attempt_id})
+            if (
+                srow is None
+                or turn is None
+                or attempt is None
+                or turn.session_id != session_id
+                or attempt.turn_id != turn_id
+            ):
+                raise NotFoundError("attempt not found")
+            assistant = await self._assistant_for_attempt(
+                session, owner_id, turn_id, attempt_id,
+            )
+            return {
+                "turn": _turn_dict(turn),
+                "assistant_message": (
+                    None if assistant is None else _message_dict(assistant)
+                ),
             }
 
     async def create_retry_attempt(
@@ -603,9 +649,14 @@ class AppStateRepository:
             attempt.cancel_requested_at = attempt.cancel_requested_at or now
             if attempt.status not in {"completed", "failed", "interrupted"}:
                 attempt.status = "interrupted"
+            attempt.finished_at = attempt.finished_at or now
             if turn is not None and turn.status not in {"completed", "failed", "interrupted"}:
                 turn.status = "interrupted"
                 turn.active_attempt_id = None
+            if turn is not None:
+                await self._finish_idempotency(
+                    session, owner_id, turn.session_id, turn.id, attempt, None,
+                )
             return {"attempt_id": attempt.id, "status": attempt.status}
 
     async def patch_feedback(self, owner_id: str, message_id: str, feedback: str) -> dict[str, Any]:
@@ -696,8 +747,13 @@ class AppStateRepository:
         if existing.state == "running":
             raise RequestInProgressError("request already in progress")
         if existing.response_json:
-            return {k: str(v) for k, v in existing.response_json.items() if v is not None}
-        return {"resource_id": str(existing.resource_id)}
+            replay = {k: str(v) for k, v in existing.response_json.items() if v is not None}
+            replay["_idempotency_replay"] = "completed"
+            return replay
+        return {
+            "resource_id": str(existing.resource_id),
+            "_idempotency_replay": str(existing.state),
+        }
 
     async def _next_turn_ordinal(self, session: AsyncSession, owner_id: str, session_id: str) -> int:
         result = await session.execute(select(func.max(ConversationTurn.ordinal)).where(
@@ -710,6 +766,49 @@ class AppStateRepository:
     async def _count(self, session: AsyncSession, model, owner_id: str) -> int:
         result = await session.execute(select(func.count()).select_from(model).where(model.owner_id == owner_id))
         return int(result.scalar_one())
+
+    async def _assistant_for_attempt(
+        self,
+        session: AsyncSession,
+        owner_id: str,
+        turn_id: str,
+        attempt_id: str,
+    ) -> ConversationMessage | None:
+        return (await session.execute(
+            select(ConversationMessage)
+            .where(
+                ConversationMessage.owner_id == owner_id,
+                ConversationMessage.turn_id == turn_id,
+                ConversationMessage.attempt_id == attempt_id,
+                ConversationMessage.role == "assistant",
+            )
+            .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
+        )).scalars().first()
+
+    async def _finish_idempotency(
+        self,
+        session: AsyncSession,
+        owner_id: str,
+        session_id: str,
+        turn_id: str,
+        attempt: ConversationAttempt,
+        assistant_message_id: str | None,
+    ) -> None:
+        if not attempt.idempotency_key:
+            return
+        rows = (await session.execute(select(IdempotencyRecord).where(
+            IdempotencyRecord.owner_id == owner_id,
+            IdempotencyRecord.key == attempt.idempotency_key,
+            IdempotencyRecord.scope.in_((f"turn:{session_id}", f"attempt:{turn_id}")),
+        ))).scalars().all()
+        for idem in rows:
+            idem.state = "completed"
+            idem.response_json = {
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "attempt_id": attempt.id,
+                "assistant_message_id": assistant_message_id,
+            }
 
 
 __all__ = [
