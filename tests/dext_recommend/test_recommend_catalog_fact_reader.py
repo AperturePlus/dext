@@ -71,7 +71,11 @@ def test_build_catalog_db_creates_real_schema(tmp_path):
 import asyncio
 import pytest
 
-from dext_recommend.adapters._catalog_fact_reader import CatalogSqliteFactReader
+from dext_recommend.adapters._catalog_fact_reader import (
+    CatalogSqliteFactReader,
+    _MENTIONS_SQL,
+    _TOPIC_LINKS_SQL,
+)
 from dext_recommend.ports.release_readback import ReadinessSourceError
 
 
@@ -117,6 +121,14 @@ def _profile_payload(entity_id, *, university_id="u1", org_unit_ids=("ou_cs",),
         "topic_ids": list(topic_ids),
         "profile_hash": profile_hash or f"h_{entity_id}",
     })
+
+
+def _explain_plan(path, sql: str, params: tuple[str, ...]) -> str:
+    with closing(sqlite3.connect(path)) as conn:
+        return "\n".join(
+            str(row[3])
+            for row in conn.execute(f"EXPLAIN QUERY PLAN {sql}", params)
+        )
 
 
 def test_read_fact_rows_returns_active_non_excluded(tmp_path):
@@ -304,7 +316,9 @@ def test_read_detail_rows_returns_full_evidence(tmp_path):
         ("s1", "b1", "e1", "obs1", "raw works on NLP", "works on NLP", "en", "sh1"),
     ]
     mentions = [
-        ("m1", "b1", "e1", "obs1", "raw paper", "Paper A", 2024, 0.9, 0),
+        ("m1", "b1", "e1", "obs2", "raw paper z", "Paper Z", 2025, 0.9, 0),
+        ("m1", "b1", "e1", "obs0", "raw paper a", "Paper A", 2024, 0.8, 0),
+        ("m2", "b1", "e1", "obs1", "raw paper b", "Paper B", 2023, 0.7, 0),
     ]
     topics = [("tax-v1", "t1", "NLP", "nlp", "method", "active", "llm")]
     topic_links = [
@@ -338,13 +352,41 @@ def test_read_detail_rows_returns_full_evidence(tmp_path):
     assert rows.university_name == "Tsinghua"
     assert len(rows.statements) == 1
     assert rows.statements[0]["normalized_text"] == "works on NLP"
-    assert len(rows.mentions) == 1
+    assert [row["normalized_text"] for row in rows.mentions] == [
+        "Paper A",
+        "Paper Z",
+        "Paper B",
+    ]
     assert len(rows.topic_links) == 1
     assert rows.topic_links[0]["canonical_name"] == "NLP"
     assert rows.topic_links[0]["review_status"] == "approved"
     assert len(rows.findings) == 1
     assert len(rows.source_urls) == 1
     assert "https://x/p" in rows.source_urls[0]["source_url"]
+
+
+def test_read_detail_mentions_query_uses_entity_index(tmp_path):
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=[_active_build()],
+    )
+
+    plan = _explain_plan(path, _MENTIONS_SQL, ("b1", "e1"))
+
+    assert "ix_mentions_build_entity" in plan
+    assert "sqlite_autoindex_publication_mentions_1 (build_id=?)" not in plan
+
+
+def test_read_detail_topic_links_query_filters_statements_first(tmp_path):
+    path = build_catalog_db(
+        tmp_path, schema_version=6, graph_builds=[_active_build()],
+    )
+
+    plan = _explain_plan(path, _TOPIC_LINKS_SQL, ("b1", "e1"))
+
+    assert "ix_statements_build_entity" in plan
+    assert "statement_topic_links" in plan
+    assert "build_id=? AND statement_id=?" in plan
+    assert "statement_topic_links_1 (build_id=?)" not in plan
 
 
 def test_read_detail_rows_excluded_returns_none(tmp_path):

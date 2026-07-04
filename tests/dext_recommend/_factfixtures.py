@@ -129,6 +129,15 @@ CREATE TABLE statement_topic_links (
     review_status TEXT NOT NULL, provenance_ref TEXT NOT NULL,
     PRIMARY KEY (build_id, statement_id, topic_id, relation_type, evidence_span)
 );
+CREATE INDEX ix_statements_build_entity
+ON research_statements(build_id, entity_id, id);
+CREATE INDEX ix_mentions_build_entity
+ON publication_mentions(build_id, entity_id, id);
+CREATE UNIQUE INDEX ux_statement_primary_topic_approved
+ON statement_topic_links(build_id, statement_id)
+WHERE relation_type='PRIMARY_TOPIC' AND review_status='approved';
+CREATE INDEX ix_statement_topic_links_approved
+ON statement_topic_links(build_id, review_status, statement_id);
 """
 
 

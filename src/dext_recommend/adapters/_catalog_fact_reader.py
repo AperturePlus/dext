@@ -95,17 +95,17 @@ _MENTIONS_SQL = """
 SELECT id, observation_id, normalized_text, doi, year, confidence, needs_review
 FROM publication_mentions
 WHERE build_id=? AND entity_id=?
-ORDER BY id, observation_id
+ORDER BY id
 """
 
 _TOPIC_LINKS_SQL = """
 SELECT l.statement_id, l.topic_id, l.relation_type, l.evidence_span,
        l.review_status, l.provenance_ref, t.canonical_name, t.kind, t.status
-FROM statement_topic_links l
+FROM research_statements s
+CROSS JOIN statement_topic_links l
+  ON l.build_id=s.build_id AND l.statement_id=s.id
 JOIN topics t
   ON t.taxonomy_version=l.taxonomy_version AND t.id=l.topic_id
-JOIN research_statements s
-  ON s.build_id=l.build_id AND s.id=l.statement_id
 WHERE s.build_id=? AND s.entity_id=?
   AND t.status='active'
 ORDER BY l.statement_id, l.topic_id
@@ -430,9 +430,10 @@ class CatalogSqliteFactReader:
                     statements = tuple(
                         dict(r) for r in conn.execute(_STATEMENTS_SQL, (build_id, entity_id))
                     )
-                    mentions = tuple(
-                        dict(r) for r in conn.execute(_MENTIONS_SQL, (build_id, entity_id))
-                    )
+                    mentions = tuple(sorted(
+                        (dict(r) for r in conn.execute(_MENTIONS_SQL, (build_id, entity_id))),
+                        key=lambda r: (str(r["id"]), str(r["observation_id"])),
+                    ))
                     topic_links = tuple(
                         dict(r) for r in conn.execute(_TOPIC_LINKS_SQL, (build_id, entity_id))
                     )
