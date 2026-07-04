@@ -216,24 +216,27 @@ Headers: `Authorization` and `Idempotency-Key` are required. Request:
 ```
 
 Response is `text/event-stream`. Every event carries `session_id`, `turn_id`,
-`attempt_id`, and `revision`; clients must discard events that do not match the
-current operation.
+`attempt_id`, `revision`, and monotonically increasing `seq`; clients must
+discard events that do not match the current operation. During long-running
+classification or recommendation work, the server may send SSE comment
+heartbeats (`: heartbeat`) that contain no user data and are not business
+events.
 
 ```text
 event: ack
-data: {"session_id":"...","turn_id":"...","attempt_id":"...","revision":3}
+data: {"session_id":"...","turn_id":"...","attempt_id":"...","revision":3,"seq":0}
 
 event: route
-data: {"session_id":"...","turn_id":"...","attempt_id":"...","revision":3,"route":"conversation"}
+data: {"session_id":"...","turn_id":"...","attempt_id":"...","revision":3,"route":"conversation","seq":1}
 
 event: delta
-data: {"session_id":"...","turn_id":"...","attempt_id":"...","revision":3,"text":"主要依据是"}
+data: {"session_id":"...","turn_id":"...","attempt_id":"...","revision":3,"text":"主要依据是","seq":2}
 
 event: completed
-data: {"session_id":"...","turn_id":"...","attempt_id":"...","revision":4,"session":{},"message":{},"quick_actions":[]}
+data: {"session_id":"...","turn_id":"...","attempt_id":"...","revision":4,"session":{},"message":{},"quick_actions":[],"seq":3}
 
 event: error
-data: {"session_id":"...","turn_id":"...","attempt_id":"...","revision":3,"code":"revision_conflict","message":"会话已更新"}
+data: {"session_id":"...","turn_id":"...","attempt_id":"...","revision":3,"code":"revision_conflict","message":"会话已更新","seq":1}
 ```
 
 `route` is `recommendation`, `conversation`, or `forkReroute`.

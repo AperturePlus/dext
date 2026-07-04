@@ -283,7 +283,7 @@ paths:
           headers:
             X-Request-ID:
               $ref: '#/components/headers/RequestId'
-          description: SSE ack, route, delta, completed, and error events. Every event includes session_id, turn_id, attempt_id, and revision.
+          description: SSE ack, route, delta, completed, error, and interrupted events. Every JSON event includes session_id, turn_id, attempt_id, revision, and seq; long-running attempts may also emit comment heartbeats.
           content:
             text/event-stream:
               schema: { type: string }
@@ -352,7 +352,7 @@ paths:
           headers:
             X-Request-ID:
               $ref: '#/components/headers/RequestId'
-          description: SSE events with the same grammar as turn submission.
+          description: SSE events with the same grammar and comment heartbeats as turn submission.
           content:
             text/event-stream:
               schema: { type: string }
