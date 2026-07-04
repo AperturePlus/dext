@@ -13,6 +13,7 @@ from dext_recommend.api.keys import REQUEST_ID_KEY, SETTINGS_KEY
 from dext_recommend.app_state.db import SchemaNotReadyError
 from dext_recommend.app_state.repositories import AppStateError
 from dext_recommend.errors import RecommendationRuntimeError
+from dext_recommend.ports.release_readback import ReadinessSourceError
 
 
 logger = logging.getLogger(__name__)
@@ -150,6 +151,14 @@ async def request_middleware(request: web.Request, handler):
             error_code=exc.code,
             message=exc.message,
             request_id=request_id,
+        )
+    except ReadinessSourceError as exc:
+        response = error_response(
+            status=503,
+            error_code="readiness_source_unavailable",
+            message="导师详情暂时不可用，请稍后重试",
+            request_id=request_id,
+            data={"source": exc.source, "retryable": exc.retryable},
         )
     except web.HTTPException as exc:
         response = error_response(

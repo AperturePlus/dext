@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,8 @@ from dext_recommend.models import (
     RecommendedProfessor,
     RecommendationWarning,
 )
+from dext_recommend.ports.release_readback import ReadinessSourceError
+from dext_recommend.readiness import ActiveBuildSnapshot
 
 
 def _recommended_professor() -> RecommendedProfessor:
@@ -206,8 +209,32 @@ class FakeRuntime:
         self.closed = True
 
 
+class ReadinessErrorFacts:
+    async def get_detail(self, snapshot, entity_id, include_contacts, viewer_permissions):
+        raise ReadinessSourceError(
+            "catalog", "read timed out after 5.0s", retryable=True,
+        )
+
+
 async def fake_runtime_factory(*args, **kwargs):
     return FakeRuntime()
+
+
+def _snapshot() -> ActiveBuildSnapshot:
+    return ActiveBuildSnapshot(
+        build_id="build-1",
+        catalog_schema_version=6,
+        neo4j_active_build_id="build-1",
+        qdrant_alias_target="dext_professors__build_1",
+        qdrant_payload_schema_version=2,
+        embedding_provider="test",
+        embedding_model="test-model",
+        embedding_dimension=1024,
+        embedding_fingerprint="fp",
+        taxonomy_version="tax-v1",
+        ranking_profile_version="rank-v1",
+        created_at=datetime.now(timezone.utc),
+    )
 
 
 async def exploding_runtime_factory(*args, **kwargs):
@@ -331,6 +358,30 @@ async def test_recommendations_route_uses_fake_runtime():
         assert resp.status == 200
         body = await resp.json()
         assert body["data"]["recommendations"][0]["professor_id"] == "p1"
+
+
+@pytest.mark.asyncio
+async def test_professor_detail_readiness_error_returns_503():
+    async def runtime_factory(*args, **kwargs):
+        runtime = FakeRuntime()
+        runtime.readiness = SimpleNamespace(get_snapshot=_snapshot)
+        runtime.core = SimpleNamespace(
+            deps=SimpleNamespace(facts_port=ReadinessErrorFacts()),
+        )
+        return runtime
+
+    app = create_recommendation_app(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
+        runtime_factory=runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/v1/professors/p1")
+        body = await resp.json()
+
+    assert resp.status == 503
+    assert body["error_code"] == "readiness_source_unavailable"
+    assert body["message"] == "导师详情暂时不可用，请稍后重试"
+    assert body["data"] == {"source": "catalog", "retryable": True}
 
 
 def test_public_profile_accepts_flutter_score_fields():
