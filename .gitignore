@@ -28,3 +28,5 @@ webui/dist/
 
 # Local git worktrees (parallel agent workspaces)
 .worktrees/
+
+flutter-app-source/
