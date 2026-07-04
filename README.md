@@ -175,6 +175,22 @@ uv run dext graph gold evaluate BUILD_ID \
 `DEXT_BUILD_NEO4J_BATCH`。密码不会进入 build settings、catalog 或日志。证据型 Gold 只验证
 SQLite snapshot 到 catalog/Neo4j 的结构保真度，不替代人工 curation/语义 gold set。
 
+## 推荐系统 HTTP API
+
+默认监听 `127.0.0.1:21530`：
+
+~~~bash
+uv run recommend serve
+~~~
+
+`--host` 和 `--port` 可覆写 `.env` 中的 `DEXT_APP_HTTP_HOST`、`DEXT_APP_HTTP_PORT`：
+
+~~~bash
+uv run recommend serve --host 0.0.0.0 --port 21531
+~~~
+
+开发环境需要自动创建应用状态表时，可追加 `--dev-bootstrap-schema`。
+
 ## Monitor WebUI
 
 Monitor 是 `dext graph` 的平级只读观察面，只读取 catalog SQLite，不触发 build/resume，也不持有
