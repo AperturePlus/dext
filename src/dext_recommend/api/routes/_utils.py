@@ -63,7 +63,7 @@ async def prepare_sse(request: web.Request) -> web.StreamResponse:
         status=200,
         headers={
             "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
             "X-Request-ID": request.get(REQUEST_ID_KEY, ""),
         },
@@ -73,20 +73,60 @@ async def prepare_sse(request: web.Request) -> web.StreamResponse:
     return response
 
 
+class SseWriter:
+    def __init__(self, response: web.StreamResponse) -> None:
+        self._response = response
+        self._seq = 0
+
+    @property
+    def seq(self) -> int:
+        return self._seq
+
+    async def event(self, event: str, data: dict[str, Any]) -> None:
+        payload = dict(data)
+        payload["seq"] = self._seq
+        self._seq += 1
+        await self._response.write(_sse_event_bytes(event, payload))
+
+    async def heartbeat(self) -> None:
+        await self._response.write(b": heartbeat\n\n")
+
+    async def eof(self) -> None:
+        await self._response.write_eof()
+
+
+def _sse_event_bytes(event: str, data: dict[str, Any]) -> bytes:
+    payload = json.dumps(data, ensure_ascii=False, sort_keys=True)
+    return f"event: {event}\ndata: {payload}\n\n".encode("utf-8")
+
+
 async def write_sse_event(
     response: web.StreamResponse,
     event: str,
     data: dict[str, Any],
 ) -> None:
-    payload = json.dumps(data, ensure_ascii=False, sort_keys=True)
-    await response.write(f"event: {event}\ndata: {payload}\n\n".encode("utf-8"))
+    writer = getattr(response, "_dext_sse_writer", None)
+    if writer is None:
+        writer = SseWriter(response)
+        setattr(response, "_dext_sse_writer", writer)
+    await writer.event(event, data)
+
+
+async def write_sse_heartbeat(response: web.StreamResponse) -> None:
+    writer = getattr(response, "_dext_sse_writer", None)
+    if writer is None:
+        writer = SseWriter(response)
+        setattr(response, "_dext_sse_writer", writer)
+    await writer.heartbeat()
 
 
 async def write_sse(request: web.Request, events: list[tuple[str, dict[str, Any]]]) -> web.StreamResponse:
     response = await prepare_sse(request)
+    writer = SseWriter(response)
+    setattr(response, "_dext_sse_writer", writer)
     for event, data in events:
-        await write_sse_event(response, event, data)
-    await response.write_eof()
+        await writer.event(event, data)
+    await writer.eof()
     return response
 
 
@@ -104,6 +144,7 @@ def _apply_sse_cors(request: web.Request, response: web.StreamResponse) -> None:
 
 
 __all__ = [
+    "SseWriter",
     "idempotency_key",
     "prepare_sse",
     "raise_if_domain_error",
@@ -112,4 +153,5 @@ __all__ = [
     "services",
     "write_sse",
     "write_sse_event",
+    "write_sse_heartbeat",
 ]

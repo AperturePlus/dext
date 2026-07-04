@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
+from contextlib import suppress
+
 from aiohttp import web
 
 from dext_recommend.api.adapters import (
@@ -8,14 +13,15 @@ from dext_recommend.api.adapters import (
 )
 from dext_recommend.api.auth import require_principal
 from dext_recommend.api.middleware import ApiError, ok, read_json
+from dext_recommend.api.keys import REQUEST_ID_KEY, SETTINGS_KEY
 from dext_recommend.api.routes._utils import (
+    SseWriter,
     idempotency_key,
     prepare_sse,
     repository,
     runtime,
     services,
     write_sse,
-    write_sse_event,
 )
 from dext_recommend.api.schemas import (
     AttemptCreateRequest,
@@ -26,6 +32,8 @@ from dext_recommend.api.schemas import (
     SessionCreateRequest,
     TurnCreateRequest,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def routes(prefix: str) -> list[web.AbstractRouteDef]:
@@ -244,22 +252,52 @@ async def _stream_admitted_attempt(
     text: str,
 ) -> web.StreamResponse:
     response = await prepare_sse(request)
+    writer = SseWriter(response)
+    setattr(response, "_dext_sse_writer", writer)
     base = _sse_base(admitted)
-    await write_sse_event(response, "ack", base)
+    owner_id = str(principal.owner_id)
+    start = time.perf_counter()
+    heartbeat_count = 0
+    terminal = "unknown"
+    route = None
+    replay = bool(admitted.get("replay"))
+    result_ready = replay
+    await writer.event("ack", base)
     try:
-        result = await services(request).dispatch_existing_attempt(
-            principal,
-            session_id=base["session_id"],
-            turn_id=base["turn_id"],
-            attempt_id=base["attempt_id"],
-            text=text,
-            profile=None,
-        )
+        if replay:
+            result = await services(request).completed_attempt_result(
+                principal,
+                session_id=base["session_id"],
+                turn_id=base["turn_id"],
+                attempt_id=base["attempt_id"],
+            )
+        else:
+            result, heartbeat_count = await _dispatch_with_heartbeats(
+                request,
+                writer,
+                principal,
+                owner_id=owner_id,
+                base=base,
+                text=text,
+            )
+        result_ready = True
         for event, data in _sse_events(result, include_ack=False, base_revision=base["revision"]):
-            await write_sse_event(response, event, data)
+            terminal = event
+            if event == "route":
+                route = data.get("route")
+            await writer.event(event, data)
+    except asyncio.CancelledError:
+        terminal = "cancelled"
+        await _mark_attempt_interrupted(request, owner_id, base["attempt_id"])
+        raise
+    except (ConnectionResetError, OSError):
+        terminal = "disconnected"
+        if not result_ready:
+            await _mark_attempt_interrupted(request, owner_id, base["attempt_id"])
+        return response
     except Exception as exc:
-        await write_sse_event(
-            response,
+        terminal = "error"
+        await writer.event(
             "error",
             _sse_error_data(
                 exc,
@@ -269,8 +307,92 @@ async def _stream_admitted_attempt(
                 revision=base["revision"],
             ),
         )
-    await response.write_eof()
+    finally:
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        logger.info(
+            "chat sse attempt finished request_id=%s session_id=%s turn_id=%s "
+            "attempt_id=%s terminal=%s route=%s elapsed_ms=%.1f "
+            "heartbeats=%d replay=%s",
+            request.get(REQUEST_ID_KEY, ""),
+            base["session_id"],
+            base["turn_id"],
+            base["attempt_id"],
+            terminal,
+            route,
+            elapsed_ms,
+            heartbeat_count,
+            replay,
+        )
+    with suppress(ConnectionResetError, OSError, RuntimeError):
+        await writer.eof()
     return response
+
+
+async def _dispatch_with_heartbeats(
+    request: web.Request,
+    writer: SseWriter,
+    principal,
+    *,
+    owner_id: str,
+    base: dict,
+    text: str,
+) -> tuple[dict, int]:
+    svc = services(request)
+    heartbeat_seconds = request.app[SETTINGS_KEY].sse_heartbeat_seconds
+    task = asyncio.create_task(
+        svc.dispatch_existing_attempt(
+            principal,
+            session_id=base["session_id"],
+            turn_id=base["turn_id"],
+            attempt_id=base["attempt_id"],
+            text=text,
+            profile=None,
+        ),
+        name=f"dext-chat-attempt-{base['attempt_id']}",
+    )
+    svc.attempts.register(owner_id, base["attempt_id"], task)
+    heartbeats = 0
+    try:
+        while not task.done():
+            done, _ = await asyncio.wait({task}, timeout=heartbeat_seconds)
+            if done:
+                break
+            await writer.heartbeat()
+            heartbeats += 1
+        return await task, heartbeats
+    except asyncio.CancelledError:
+        if task.done() and task.cancelled():
+            await _mark_attempt_interrupted(request, owner_id, base["attempt_id"])
+            result = await svc.completed_attempt_result(
+                principal,
+                session_id=base["session_id"],
+                turn_id=base["turn_id"],
+                attempt_id=base["attempt_id"],
+            )
+            return result, heartbeats
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        await _mark_attempt_interrupted(request, owner_id, base["attempt_id"])
+        raise
+    except (ConnectionResetError, OSError):
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        await _mark_attempt_interrupted(request, owner_id, base["attempt_id"])
+        raise
+
+
+async def _mark_attempt_interrupted(
+    request: web.Request,
+    owner_id: str,
+    attempt_id: str,
+) -> None:
+    if not attempt_id:
+        return
+    with suppress(Exception):
+        await repository(request).cancel_attempt(owner_id, attempt_id)
 
 
 def _sse_base(data: dict) -> dict:
@@ -313,6 +435,9 @@ def _sse_events(
     events: list[tuple[str, dict]] = []
     if include_ack:
         events.append(("ack", base))
+    if turn.get("status") == "interrupted":
+        events.append(("interrupted", completed))
+        return events
     events.append(("route", {**base, "route": route}))
     if message and message.get("content"):
         events.append(("delta", {**base, "text": message["content"]}))
