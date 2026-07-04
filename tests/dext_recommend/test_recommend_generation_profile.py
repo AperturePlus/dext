@@ -116,6 +116,7 @@ def test_checked_in_profile_matches_grounded_manifest_and_is_deeply_immutable() 
     )
     assert profile.grounded_rules_manifest_hash == load_grounded_rules().manifest_hash
     assert {"match_analysis", "outreach_email", "professor_comparison", "quick_actions"} <= set(profile.operations)
+    assert profile.operations["query_understanding"].timeout >= 20.0
     assert set(profile.operations["match_analysis"].json_schema["required"]) == {
         "summary", "dimension_scores", "next_steps", "claims",
     }
