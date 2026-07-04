@@ -229,12 +229,28 @@ def conversation_dispatch_to_answer(result: ConversationDispatchResult) -> tuple
         recommendations = [
             recommended_professor_to_public(item) for item in result.recommendation.results
         ]
-        answer = "已根据你的问题推荐了合适的导师。"
+        warnings = [warning_to_public(w) for w in result.recommendation.warnings]
+        if recommendations:
+            answer = "已根据你的问题推荐了合适的导师。"
+        else:
+            errors = [w for w in warnings if w["severity"] == "error"]
+            if errors:
+                answer = errors[0]["message"] or "无法完成本次导师推荐。"
+            elif any(w["code"] == "no_candidates_after_filters" for w in warnings):
+                answer = "这次没有找到足够匹配的导师，可以放宽学校或研究方向后再试。"
+            else:
+                answer = "这次没有生成可展示的导师推荐，可以调整条件后再试。"
         snapshot = {
             "result_entity_ids": [item["professor_id"] for item in recommendations],
             "build_id": result.recommendation.build_id,
             "ranking_profile_version": result.recommendation.ranking_profile_version,
             "generation_profile_version": result.recommendation.generation_profile_version,
+            "warnings": warnings,
+            "query_diagnostics": query_diagnostics_to_public(result.recommendation.query),
+            "phase_diagnostics": [
+                phase_diagnostic_to_public(item)
+                for item in result.recommendation.phase_diagnostics
+            ],
         }
         return answer, recommendations, snapshot
     if result.kind == "detail_followup" and result.detail_followup is not None:
@@ -264,6 +280,27 @@ def warning_to_public(value) -> dict[str, Any]:
         "code": str(value.code),
         "message": str(value.message),
         "severity": str(value.severity),
+    }
+
+
+def query_diagnostics_to_public(value) -> dict[str, Any]:
+    return {
+        "query_length": int(value.query_length),
+        "language_summary": value.language_summary,
+        "filter_summary": value.filter_summary,
+        "recall_count": int(getattr(value, "recall_count", 0)),
+        "post_filter_count": int(getattr(value, "post_filter_count", 0)),
+        "returned_count": int(getattr(value, "returned_count", 0)),
+        "steps_used": int(getattr(value, "steps_used", 0)),
+    }
+
+
+def phase_diagnostic_to_public(value) -> dict[str, Any]:
+    return {
+        "phase": str(value.phase),
+        "attempt": value.attempt,
+        "elapsed_ms": float(value.elapsed_ms),
+        "error_code": value.error_code,
     }
 
 
