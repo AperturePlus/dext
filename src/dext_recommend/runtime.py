@@ -91,7 +91,12 @@ async def _new_live_clients(settings: RecommendSettings) -> LiveClients:
     graph_kwargs: dict[str, Any] = {}
     username = settings.neo4j_username
     password = settings.neo4j_password.get_secret_value()
-    if username or password:
+    if bool(username) != bool(password):
+        raise RecommendationRuntimeError(
+            code="neo4j_auth_misconfigured",
+            message="neo4j username and password must be configured together",
+        )
+    if username and password:
         graph_kwargs["auth"] = (username, password)
     if settings.neo4j_max_connection_lifetime is not None:
         graph_kwargs["max_connection_lifetime"] = settings.neo4j_max_connection_lifetime
@@ -219,7 +224,9 @@ async def build_live_recommendation_runtime(
             live_clients.qdrant_client,
             payload_schema_version=settings.qdrant_payload_schema_version,
         ))
-        graph_port = GraphReleaseAdapter(Neo4jReader(live_clients.neo4j_driver))
+        graph_port = GraphReleaseAdapter(
+            Neo4jReader(live_clients.neo4j_driver, database=settings.neo4j_database)
+        )
         ranking_port = RankingProfileAdapter()
         generation_profile_port = LiveGenerationProfileAdapter()
 

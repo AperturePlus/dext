@@ -1,4 +1,5 @@
 import sqlite3
+import json
 from contextlib import closing
 from datetime import datetime, timezone
 
@@ -87,13 +88,20 @@ async def test_read_active_returns_none_when_no_active(tmp_path):
 
 async def test_read_samples_returns_professor_samples(tmp_path):
     profs = [("e1", "b1", "n1", "professor", "included", "[]", "confirmed", "unknown")]
-    profiles = [("b1", "e1", "h1", "tv", "ti", "np", 10, "{}", "2026-01-01T00:00:00+00:00")]
+    profiles = [
+        (
+            "b1", "e1", "h1", "tv", "ti", "np", 10,
+            json.dumps({"org_unit_ids": ["org-a", "org-b"]}),
+            "2026-01-01T00:00:00+00:00",
+        )
+    ]
     path = _build_db(tmp_path, active_rows=[_active_row()], professors=profs, profiles=profiles)
     adapter = CatalogReleaseAdapter(CatalogSqliteReader(path), sample_size=10)
     samples = await adapter.read_samples("b1", ("e1",))
     assert len(samples) == 1
     assert samples[0].entity_id == "e1"
     assert samples[0].profile_hash == "h1"
+    assert samples[0].org_unit_ids == ("org-a", "org-b")
 
 
 def test_connect_ro_rejects_missing_file(tmp_path):

@@ -38,9 +38,16 @@ class FakeSession:
 
 
 class FakeDriver:
-    def __init__(self, session): self._session = session
+    def __init__(self, session):
+        self._session = session
+        self.session_kwargs = []
+
     async def verify_connectivity(self): pass
-    def session(self, **kw): return self._session
+
+    def session(self, **kw):
+        self.session_kwargs.append(kw)
+        return self._session
+
     async def close(self): pass
 
 
@@ -57,6 +64,15 @@ async def test_read_active_returns_observation():
     assert obs is not None
     assert obs.build_id == "b1"
     assert len(obs.samples) == 1
+
+
+async def test_read_active_uses_configured_database():
+    session = FakeSession(pointer="b1")
+    driver = FakeDriver(session)
+    reader = Neo4jReader(driver, database="neo4j-test")
+    adapter = GraphReleaseAdapter(reader)
+    await adapter.read_active(())
+    assert driver.session_kwargs == [{"database": "neo4j-test"}, {"database": "neo4j-test"}]
 
 
 async def test_read_active_returns_none_when_pointer_missing():

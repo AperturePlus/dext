@@ -12,9 +12,19 @@ from dext_recommend import RecommendSettings
 def test_recommend_settings_defaults():
     s = RecommendSettings()
     assert s.qdrant_alias == "dext_professors_current"
+    assert s.embedding_provider == "siliconflow"
+    assert s.embedding_model == "BAAI/bge-m3"
+    assert s.embedding_base_url == "https://api.siliconflow.cn/v1"
     assert s.total_timeout == 30
     assert s.oversample_default == 200
     assert s.oversample_max == 1000
+
+
+def test_recommend_settings_secret_defaults_are_empty_strings():
+    s = RecommendSettings(_env_file=None)
+    assert s.neo4j_password.get_secret_value() == ""
+    assert s.embedding_api_key.get_secret_value() == ""
+    assert s.llm_api_key.get_secret_value() == ""
 
 
 def test_recommend_settings_safe_snapshot_excludes_api_keys():
@@ -48,6 +58,36 @@ def test_recommend_settings_accepts_legacy_neo4j_uri(monkeypatch):
     monkeypatch.setenv("DEXT_RECOMMEND_NEO4J_URI", "bolt://legacy:7687")
     settings = RecommendSettings(_env_file=None)
     assert settings.neo4j_uri == "bolt://legacy:7687"
+
+
+def test_recommend_settings_accepts_graph_neo4j_env_aliases(monkeypatch):
+    monkeypatch.delenv("DEXT_RECOMMEND_NEO4J_URL", raising=False)
+    monkeypatch.delenv("DEXT_RECOMMEND_NEO4J_URI", raising=False)
+    monkeypatch.delenv("DEXT_RECOMMEND_NEO4J_USERNAME", raising=False)
+    monkeypatch.delenv("DEXT_RECOMMEND_NEO4J_PASSWORD", raising=False)
+    monkeypatch.setenv("DEXT_NEO4J_URI", "bolt://graph-env:7687")
+    monkeypatch.setenv("DEXT_NEO4J_USERNAME", "neo4j-user")
+    monkeypatch.setenv("DEXT_NEO4J_PASSWORD", "neo4j-pass")
+    settings = RecommendSettings(_env_file=None)
+    assert settings.neo4j_uri == "bolt://graph-env:7687"
+    assert settings.neo4j_username == "neo4j-user"
+    assert settings.neo4j_password.get_secret_value() == "neo4j-pass"
+
+
+def test_recommend_settings_accepts_graph_embedding_env_aliases(monkeypatch):
+    monkeypatch.delenv("DEXT_RECOMMEND_EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.delenv("DEXT_RECOMMEND_EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("DEXT_RECOMMEND_EMBEDDING_API_KEY", raising=False)
+    monkeypatch.delenv("DEXT_RECOMMEND_EMBEDDING_BASE_URL", raising=False)
+    monkeypatch.setenv("DEXT_EMBEDDING_PROVIDER", "graph-provider")
+    monkeypatch.setenv("DEXT_EMBEDDING_MODEL", "graph-model")
+    monkeypatch.setenv("DEXT_EMBEDDING_API_KEY", "graph-key")
+    monkeypatch.setenv("DEXT_EMBEDDING_BASE_URL", "https://embedding.test/v1")
+    settings = RecommendSettings(_env_file=None)
+    assert settings.embedding_provider == "graph-provider"
+    assert settings.embedding_model == "graph-model"
+    assert settings.embedding_api_key.get_secret_value() == "graph-key"
+    assert settings.embedding_base_url == "https://embedding.test/v1"
 
 
 def test_readiness_thresholds_have_defaults():

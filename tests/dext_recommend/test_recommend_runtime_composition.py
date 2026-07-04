@@ -160,7 +160,7 @@ class FakeNeo4j:
     async def verify_connectivity(self):
         self.network_calls += 1
 
-    def session(self):
+    def session(self, **kwargs):
         self.network_calls += 1
         return Session()
 

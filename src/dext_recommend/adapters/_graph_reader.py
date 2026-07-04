@@ -14,11 +14,13 @@ _POINTER_QUERY = (
 )
 _SAMPLE_QUERY = (
     "MATCH (n:Professor {build_id: $build_id}) "
-    "WHERE n.id IN $ids "
-    "RETURN n.id AS entity_id, n.profile_hash AS profile_hash, "
+    "WHERE n.logical_id IN $ids "
+    "OPTIONAL MATCH (n)-[:AFFILIATED_WITH {build_id: $build_id}]->"
+    "(org:OrgUnit {build_id: $build_id}) "
+    "WITH n, org.logical_id AS org_unit_id ORDER BY org_unit_id "
+    "RETURN n.logical_id AS entity_id, n.profile_hash AS profile_hash, "
     "n.role_status AS role_status, n.master_eligibility AS master_eligibility, "
-    "n.phd_eligibility AS phd_eligibility, n.embedding_fingerprint AS embedding_fingerprint, "
-    "n.org_unit_ids AS org_unit_ids"
+    "n.phd_eligibility AS phd_eligibility, collect(DISTINCT org_unit_id) AS org_unit_ids"
 )
 
 
@@ -29,15 +31,16 @@ class GraphReleaseReader(Protocol):
 
 
 class Neo4jReader:
-    def __init__(self, driver: Any) -> None:
+    def __init__(self, driver: Any, *, database: str | None = None) -> None:
         self._driver = driver
+        self._database = database or None
 
     async def read_active(
         self, sample_ids: tuple[str, ...],
     ) -> dict[str, Any] | None:
         try:
             await self._driver.verify_connectivity()
-            async with self._driver.session() as session:
+            async with self._driver.session(database=self._database) as session:
                 result = await session.run(_POINTER_QUERY)
                 values = [str(r["build_id"]) async for r in result]
         except Exception as exc:
@@ -48,7 +51,7 @@ class Neo4jReader:
             raise ReadinessSourceError("neo4j", "active pointer targets multiple builds")
         build_id = values[0]
         try:
-            async with self._driver.session() as session:
+            async with self._driver.session(database=self._database) as session:
                 result = await session.run(_SAMPLE_QUERY, build_id=build_id, ids=list(sample_ids))
                 samples = [dict(r) async for r in result]
         except Exception as exc:

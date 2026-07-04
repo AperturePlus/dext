@@ -10,7 +10,7 @@ from dext_recommend.api.settings import AppSettings
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="python -m dext_recommend.api.cli")
+    parser = argparse.ArgumentParser(prog="recommend")
     sub = parser.add_subparsers(dest="command", required=True)
     serve = sub.add_parser("serve")
     serve.add_argument("--host")

@@ -18,36 +18,104 @@ class RecommendSettings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     # Published-artifact locations
-    catalog_path: Path = Path("data/catalog/catalog.db")
-    qdrant_url: str = "http://127.0.0.1:6333"
+    catalog_path: Path = Field(
+        default=Path("data/catalog/catalog.db"),
+        validation_alias=AliasChoices(
+            "DEXT_RECOMMEND_CATALOG_PATH",
+            "DEXT_CATALOG_PATH",
+        ),
+    )
+    qdrant_url: str = Field(
+        default="http://127.0.0.1:6333",
+        validation_alias=AliasChoices(
+            "DEXT_RECOMMEND_QDRANT_URL",
+            "DEXT_QDRANT_URL",
+        ),
+    )
     qdrant_alias: str = "dext_professors_current"
     neo4j_uri: str = Field(
         default="bolt://127.0.0.1:7687",
         validation_alias=AliasChoices(
             "DEXT_RECOMMEND_NEO4J_URL",
             "DEXT_RECOMMEND_NEO4J_URI",
+            "DEXT_NEO4J_URI",
         ),
     )
-    neo4j_database: str = "neo4j"
-    neo4j_username: str = ""
-    neo4j_password: SecretStr = Field(default_factory=SecretStr)
+    neo4j_database: str = Field(
+        default="neo4j",
+        validation_alias=AliasChoices(
+            "DEXT_RECOMMEND_NEO4J_DATABASE",
+            "DEXT_NEO4J_DATABASE",
+        ),
+    )
+    neo4j_username: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "DEXT_RECOMMEND_NEO4J_USERNAME",
+            "DEXT_NEO4J_USERNAME",
+        ),
+    )
+    neo4j_password: SecretStr = Field(
+        default_factory=lambda: SecretStr(""),
+        validation_alias=AliasChoices(
+            "DEXT_RECOMMEND_NEO4J_PASSWORD",
+            "DEXT_NEO4J_PASSWORD",
+        ),
+    )
 
     # Embedding (must align with ACTIVE build fingerprint)
-    embedding_provider: str = ""
-    embedding_model: str = ""
-    embedding_api_key: SecretStr = Field(default_factory=SecretStr)
-    embedding_base_url: str = ""
-    embedding_query_prefix: str = ""
-    bm25_tokenizer_version: str = "bm25-simple-v1"
+    embedding_provider: str = Field(
+        default="siliconflow",
+        validation_alias=AliasChoices(
+            "DEXT_RECOMMEND_EMBEDDING_PROVIDER",
+            "DEXT_EMBEDDING_PROVIDER",
+        ),
+    )
+    embedding_model: str = Field(
+        default="BAAI/bge-m3",
+        validation_alias=AliasChoices(
+            "DEXT_RECOMMEND_EMBEDDING_MODEL",
+            "DEXT_EMBEDDING_MODEL",
+        ),
+    )
+    embedding_api_key: SecretStr = Field(
+        default_factory=lambda: SecretStr(""),
+        validation_alias=AliasChoices(
+            "DEXT_RECOMMEND_EMBEDDING_API_KEY",
+            "DEXT_EMBEDDING_API_KEY",
+        ),
+    )
+    embedding_base_url: str = Field(
+        default="https://api.siliconflow.cn/v1",
+        validation_alias=AliasChoices(
+            "DEXT_RECOMMEND_EMBEDDING_BASE_URL",
+            "DEXT_EMBEDDING_BASE_URL",
+        ),
+    )
+    embedding_query_prefix: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "DEXT_RECOMMEND_EMBEDDING_QUERY_PREFIX",
+            "DEXT_EMBEDDING_QUERY_PREFIX",
+        ),
+    )
+    bm25_tokenizer_version: str = Field(
+        default="bm25-simple-v1",
+        validation_alias=AliasChoices(
+            "DEXT_RECOMMEND_BM25_TOKENIZER_VERSION",
+            "DEXT_BM25_TOKENIZER_VERSION",
+        ),
+    )
     embedding_timeout: float = Field(default=10.0, gt=0.0)
     embedding_max_retries: int = Field(default=1, ge=0, le=5)
 
     # LLM (constrained generation)
     llm_api_key: SecretStr = Field(
-        default_factory=SecretStr,
+        default_factory=lambda: SecretStr(""),
         validation_alias=AliasChoices("DEXT_RECOMMEND_LLM_API_KEY", "DEEPSEEK_API_KEY"),
     )
     llm_base_url: str = "https://api.deepseek.com"

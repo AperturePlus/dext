@@ -6,6 +6,7 @@ Read-only URI mode + query_only pragma guarantees no writes.
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from collections.abc import Mapping
 from contextlib import closing
@@ -41,13 +42,36 @@ WHERE build_id=? AND active=1 ORDER BY entity_id
 
 _SAMPLE_SQL = """
 SELECT cp.entity_id, cp.role_status, cp.master_eligibility, cp.phd_eligibility,
-       pp.profile_hash
+       pp.profile_hash, pp.payload_json
 FROM canonical_professors cp
 LEFT JOIN professor_profiles pp
   ON pp.build_id=cp.build_id AND pp.entity_id=cp.entity_id
 WHERE cp.build_id=? AND cp.entity_id IN (%s)
 ORDER BY cp.entity_id
 """
+
+
+def _org_unit_ids_from_profile_payload(
+    payload_json: str | None, *, entity_id: str
+) -> tuple[str, ...]:
+    if not payload_json:
+        return ()
+    try:
+        payload = json.loads(payload_json)
+    except (TypeError, ValueError) as exc:
+        raise ReadinessSourceError(
+            "catalog", f"invalid profile payload_json for entity {entity_id}",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ReadinessSourceError(
+            "catalog", f"profile payload_json not an object for entity {entity_id}",
+        )
+    org_unit_ids = payload.get("org_unit_ids") or ()
+    if isinstance(org_unit_ids, (str, bytes)) or not isinstance(org_unit_ids, (list, tuple)):
+        raise ReadinessSourceError(
+            "catalog", f"profile org_unit_ids not an array for entity {entity_id}",
+        )
+    return tuple(dict.fromkeys(str(value) for value in org_unit_ids if value is not None))
 
 
 class CatalogReleaseReader(Protocol):
@@ -92,9 +116,15 @@ class CatalogSqliteReader:
 
         def _read() -> tuple[Mapping[str, Any], ...]:
             with closing(self._connect_ro()) as conn:
-                return tuple(
-                    dict(r) for r in conn.execute(sql, (build_id, *sample_ids))
-                )
+                rows = []
+                for row in conn.execute(sql, (build_id, *sample_ids)):
+                    data = dict(row)
+                    data["org_unit_ids"] = _org_unit_ids_from_profile_payload(
+                        data.pop("payload_json", None),
+                        entity_id=str(data["entity_id"]),
+                    )
+                    rows.append(data)
+                return tuple(rows)
         return await asyncio.wait_for(
             asyncio.to_thread(_read), self._timeout,
         )
