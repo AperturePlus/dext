@@ -189,6 +189,73 @@ async def test_validation_is_deterministic_and_missing_gold_blocks_ready(
 
 
 @pytest.mark.asyncio
+async def test_validation_can_explicitly_skip_missing_gold_gates(tmp_path, monkeypatch):
+    settings, build_id, sink = await _prepare_validating_build(
+        tmp_path, monkeypatch, with_gold=False
+    )
+
+    async def neo4j_ok(_build_id, _settings):
+        return None
+
+    async with CatalogWriter(settings.catalog_path, max_queue=2) as writer:
+        result = await run_validation(
+            writer,
+            build_id,
+            settings,
+            qdrant_sink=sink,
+            neo4j_validator=neo4j_ok,
+            skip_gold_gates=True,
+        )
+
+    assert result["build"]["status"] == "READY"
+    manifest = result["validation"]["manifest_json"]
+    assert manifest["passed"] is True
+    assert manifest["release_mode"] == "skip_gold_gates"
+    assert set(manifest["skipped_checks"]) == {
+        "curation_gold_gate",
+        "graph_gold_gate",
+        "topic_gold_gate",
+    }
+    skipped = {
+        check["name"]: check
+        for check in manifest["checks"]
+        if check.get("skipped")
+    }
+    assert set(skipped) == set(manifest["skipped_checks"])
+
+
+@pytest.mark.asyncio
+async def test_validation_skip_gold_does_not_skip_qdrant_failures(
+    tmp_path, monkeypatch
+):
+    settings, build_id, sink = await _prepare_validating_build(
+        tmp_path, monkeypatch, with_gold=False
+    )
+    sink.points[0].payload["org_unit_ids"] = []
+
+    async def neo4j_ok(_build_id, _settings):
+        return None
+
+    async with CatalogWriter(settings.catalog_path, max_queue=2) as writer:
+        result = await run_validation(
+            writer,
+            build_id,
+            settings,
+            qdrant_sink=sink,
+            neo4j_validator=neo4j_ok,
+            skip_gold_gates=True,
+        )
+
+    assert result["build"]["status"] == "FAILED_VALIDATION"
+    failed = {
+        check["name"]
+        for check in result["validation"]["manifest_json"]["checks"]
+        if not check["passed"]
+    }
+    assert failed == {"qdrant_payload_reconciliation"}
+
+
+@pytest.mark.asyncio
 async def test_validation_passes_and_manifest_hash_is_stable(tmp_path, monkeypatch):
     settings, build_id, sink = await _prepare_validating_build(
         tmp_path, monkeypatch, with_gold=True

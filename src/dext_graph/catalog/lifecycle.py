@@ -30,6 +30,9 @@ from dext_graph.catalog.vector_sink import ProfessorQdrant, professor_collection
 from dext_graph.config import GraphSettings
 
 VALIDATION_VERSION = "release-validation-v1"
+GOLD_GATE_NAMES = frozenset(
+    {"curation_gold_gate", "graph_gold_gate", "topic_gold_gate"}
+)
 
 Neo4jValidator = Callable[[str, GraphSettings], Awaitable[None]]
 Neo4jSetter = Callable[[str, GraphSettings], Awaitable[None]]
@@ -572,11 +575,27 @@ def _finish_validation(
         "version": VALIDATION_VERSION,
         "manifest_hash": manifest_hash,
         "passed": passed,
+        "release_mode": manifest.get("release_mode", "standard"),
+        "skipped_checks": manifest.get("skipped_checks", []),
     }
     connection.execute(
         "UPDATE graph_builds SET status=?,summary_json=?,last_error=? WHERE id=?",
         (build_status, json_dumps(summary), error, build_id),
     )
+
+
+def _apply_skipped_gold_gates(checks: list[dict[str, Any]]) -> list[str]:
+    skipped: list[str] = []
+    for check in checks:
+        if (
+            str(check.get("name")) in GOLD_GATE_NAMES
+            and not bool(check.get("passed"))
+        ):
+            check["passed"] = True
+            check["skipped"] = True
+            check["skip_reason"] = "skip_gold_gates"
+            skipped.append(str(check["name"]))
+    return skipped
 
 
 async def run_validation(
@@ -586,6 +605,7 @@ async def run_validation(
     *,
     qdrant_sink: Any | None = None,
     neo4j_validator: Neo4jValidator | None = None,
+    skip_gold_gates: bool = False,
 ) -> dict[str, Any]:
     run_id = await writer.execute(
         lambda connection: _prepare_validation(connection, build_id)
@@ -646,10 +666,13 @@ async def run_validation(
             await qdrant_sink.close()
 
     checks.sort(key=lambda item: str(item["name"]))
+    skipped_checks = _apply_skipped_gold_gates(checks) if skip_gold_gates else []
     manifest = {
         "validation_version": VALIDATION_VERSION,
         "build_id": build_id,
         "checks": checks,
+        "release_mode": "skip_gold_gates" if skip_gold_gates else "standard",
+        "skipped_checks": skipped_checks,
         "passed": all(bool(check["passed"]) for check in checks),
     }
     await writer.execute(
@@ -668,6 +691,7 @@ async def validate_build(
     *,
     qdrant_sink: Any | None = None,
     neo4j_validator: Neo4jValidator | None = None,
+    skip_gold_gates: bool = False,
 ) -> dict[str, Any]:
     settings = settings or GraphSettings()
     path = Path(settings.catalog_path).expanduser().resolve()
@@ -681,6 +705,7 @@ async def validate_build(
                 settings,
                 qdrant_sink=qdrant_sink,
                 neo4j_validator=neo4j_validator,
+                skip_gold_gates=skip_gold_gates,
             )
 
 
