@@ -7,6 +7,7 @@ import pytest
 from dext_graph.catalog.db import initialize_catalog
 from dext_graph.catalog.db import CatalogError
 from dext_graph.catalog.topic_merge import persist_merge_suggestions
+from dext_graph.catalog.topic_repair import repair_incompatible_topic_links
 from dext_graph.catalog.topics import (
     apply_statement_concepts,
     complete_link_mutual_clusters,
@@ -16,6 +17,7 @@ from dext_graph.catalog.topics import (
     materialize_taxonomy_relations,
     validate_concepts,
 )
+from dext_graph.config import GraphSettings
 from dext_graph.catalog.vector_workflow import _entity_topics
 from dext_graph.catalog.topic_workflow import _mark_job
 from dext_graph.catalog.evidence import _relationship_rows
@@ -38,6 +40,37 @@ def _catalog(tmp_path):
     connection.execute(
         "UPDATE graph_builds SET taxonomy_version=? WHERE id='build-1'",
         (manifest.version,),
+    )
+    connection.execute(
+        """
+        INSERT INTO source_snapshots(
+          id,university_id,source_path,snapshot_path,file_hash,schema_version,
+          row_counts_json,created_at
+        ) VALUES (
+          'snapshot-1','university-1','source.db','snapshot.db','snapshot-hash',
+          1,'{}','now'
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO professor_observations(
+          id,university_id,source_snapshot_id,source_professor_id,source_url,
+          source_page_kind,extraction_batch_size,source_content_hash,
+          source_document_id,org_unit_source_id,name_raw,name_key,payload_json,
+          row_hash,provenance_grade,first_seen_build,last_seen_build,active
+        ) VALUES (
+          'observation-1','university-1','snapshot-1',1,NULL,'unknown',NULL,
+          'content-hash',NULL,NULL,'张三','zhang san','{}','row-hash',
+          'legacy_merged','build-1','build-1',1
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO entities(id,kind,status,created_at,updated_at)
+        VALUES ('entity-1','professor','active','now','now')
+        """
     )
     connection.execute(
         """
@@ -209,6 +242,153 @@ def test_invalid_evidence_relation_and_multiple_primary_are_not_auto_approved(tm
         assert {row["review_status"] for row in rows} == {"review"}
     finally:
         connection.close()
+
+
+def test_primary_topic_requires_discipline_topic_kind(tmp_path):
+    connection, _manifest = _catalog(tmp_path)
+    try:
+        rows = apply_statement_concepts(
+            connection,
+            build_id="build-1",
+            statement_id="statement-1",
+            raw_text="机器学习",
+            concepts=[
+                {
+                    "evidence_span": "机器学习",
+                    "canonical_name": "机器学习",
+                    "kind": "method",
+                    "relation_type": "PRIMARY_TOPIC",
+                },
+            ],
+        )
+
+        assert rows == [
+            {
+                "topic_id": "00000000-0000-5000-8000-000000000027",
+                "relation_type": "PRIMARY_TOPIC",
+                "review_status": "review",
+                "method": "alias_exact",
+            }
+        ]
+        approved = connection.execute(
+            "SELECT COUNT(*) FROM statement_topic_links "
+            "WHERE build_id='build-1' AND relation_type='PRIMARY_TOPIC' "
+            "AND review_status='approved'"
+        ).fetchone()[0]
+        assert approved == 0
+    finally:
+        connection.close()
+
+
+@pytest.mark.asyncio
+async def test_repair_incompatible_topic_links_resets_derived_stages(tmp_path):
+    path = tmp_path / "catalog.db"
+    connection, manifest = _catalog(tmp_path)
+    try:
+        connection.execute(
+            """
+            INSERT INTO statement_topic_links(
+              build_id,statement_id,taxonomy_version,topic_id,relation_type,
+              evidence_span,method,confidence,review_status,provenance_ref
+            ) VALUES (
+              'build-1','statement-1',?,
+              '00000000-0000-5000-8000-000000000027','PRIMARY_TOPIC',
+              '机器学习','alias_exact',1.0,'approved',
+              'catalog:research-statement:build-1:statement-1'
+            )
+            """,
+            (manifest.version,),
+        )
+        connection.execute(
+            """
+            INSERT INTO topic_runs(
+              id,build_id,taxonomy_version,manifest_hash,status,summary_json,
+              started_at,finished_at
+            ) VALUES (
+              'build-1:topics','build-1',?,?, 'COMPLETED',
+              '{"approved_links":1,"review_links":0}','now','now'
+            )
+            """,
+            (manifest.version, manifest.manifest_hash),
+        )
+        connection.execute(
+            """
+            INSERT INTO vector_runs(
+              id,build_id,status,profile_template_version,tokenizer_identity,
+              sparse_tokenizer_version,embedding_fingerprint,collection_name,
+              summary_json,started_at,finished_at
+            ) VALUES (
+              'build-1:vector','build-1','COMPLETED','baseline-v1',
+              'character-v1','bm25-simple-v1','fingerprint',
+              'dext_professors__build-1','{}','now','now'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO sink_checkpoints(
+              build_id,sink,partition_key,last_key,last_batch_id,rows_written,updated_at
+            ) VALUES ('build-1','qdrant','professors','entity-1',NULL,1,'now')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_runs(
+              id,build_id,validation_version,status,manifest_json,manifest_hash
+            ) VALUES ('build-1:validation','build-1','v','PASSED','{}','hash')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO promotion_runs(
+              build_id,validation_manifest_hash,status,neo4j_done,qdrant_done,
+              readback_done,started_at,updated_at
+            ) VALUES ('build-1','hash','COMPLETED',1,1,1,'now','now')
+            """
+        )
+        connection.execute(
+            "UPDATE graph_builds SET status='FAILED_VALIDATION' WHERE id='build-1'"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    result = await repair_incompatible_topic_links(
+        "build-1", GraphSettings(catalog_path=path, build_neo4j_batch=1)
+    )
+
+    assert result["build"]["status"] == "WRITING_VECTOR"
+    assert result["topic_link_repair"]["downgraded_links"] == 1
+    assert result["topic_link_repair"]["rebuilt_partitions"] == ["rel:PRIMARY_TOPIC"]
+    assert result["topic_link_repair"]["vector_reset"] is True
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT review_status FROM statement_topic_links WHERE build_id='build-1'"
+        ).fetchone()[0] == "review"
+        assert connection.execute(
+            "SELECT status FROM vector_runs WHERE build_id='build-1'"
+        ).fetchone()[0] == "PENDING"
+        assert connection.execute(
+            "SELECT COUNT(*) FROM validation_runs WHERE build_id='build-1'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM promotion_runs WHERE build_id='build-1'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sink_checkpoints WHERE build_id='build-1' "
+            "AND sink='qdrant'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT row_count FROM graph_export_partitions "
+            "WHERE build_id='build-1' AND partition_key='rel:PRIMARY_TOPIC'"
+        ).fetchone()[0] == 0
+        topic_summary = json.loads(
+            connection.execute(
+                "SELECT summary_json FROM topic_runs WHERE build_id='build-1'"
+            ).fetchone()[0]
+        )
+        assert topic_summary["approved_links"] == 0
+        assert topic_summary["review_links"] == 1
 
 
 def test_complete_link_clustering_does_not_chain_similar_topics(tmp_path):

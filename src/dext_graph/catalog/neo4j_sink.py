@@ -84,6 +84,25 @@ def _relationship_cypher(relationship_type: str) -> str:
     )
 
 
+async def _clear_relationship_partition(
+    session: Any, build_id: str, partition: str
+) -> None:
+    if partition.startswith("node:"):
+        return
+    relationship_type = partition.split(":", 1)[1]
+    if relationship_type not in _REL_ENDPOINTS:
+        raise CatalogError(f"unknown relationship export partition: {partition}")
+
+    async def clear(tx: Any) -> None:
+        result = await tx.run(
+            f"MATCH ()-[r:{relationship_type} {{build_id: $build_id}}]->() DELETE r",
+            build_id=build_id,
+        )
+        await result.consume()
+
+    await session.execute_write(clear)
+
+
 async def _write_batch(session: Any, partition: str, rows: list[dict[str, Any]]) -> None:
     label = partition.split(":", 1)[1]
     cypher = _node_cypher(label) if partition.startswith("node:") else _relationship_cypher(label)
@@ -196,6 +215,10 @@ async def write_neo4j_exports(
                         ),
                         transactional=False,
                     )
+                    if not last and written == 0:
+                        await _clear_relationship_partition(
+                            session, build_id, partition
+                        )
                     rows = _load_batch(
                         str(writer.path), build_id, partition, last, settings.build_neo4j_batch
                     )

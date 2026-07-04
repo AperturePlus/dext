@@ -399,6 +399,12 @@ def validate_concepts(raw_text: str, values: Iterable[Mapping[str, Any]]) -> lis
     return concepts
 
 
+def _relation_matches_topic_kind(relation_type: str, topic_kind: str) -> bool:
+    if relation_type == "PRIMARY_TOPIC":
+        return topic_kind == "discipline"
+    return RELATION_KIND.get(relation_type) == topic_kind
+
+
 def _provisional_topic(
     connection: sqlite3.Connection,
     *,
@@ -475,9 +481,11 @@ def apply_statement_concepts(
         method = "alias_exact"
         confidence = 1.0
         review_status = "approved"
+        topic_kind = concept.kind
         if alias is not None:
             topic_id = str(alias[0])
-            if str(alias[1]) != concept.kind or str(alias[2]) != "active":
+            topic_kind = str(alias[1])
+            if topic_kind != concept.kind or str(alias[2]) != "active":
                 review_status = "review"
         else:
             choice = choices.get(concept.evidence_span)
@@ -491,9 +499,10 @@ def apply_statement_concepts(
                     "SELECT kind,status FROM topics WHERE taxonomy_version=? AND id=?",
                     (taxonomy_version, topic_id),
                 ).fetchone()
+                topic_kind = str(selected[0]) if selected is not None else concept.kind
                 if (
                     selected is None
-                    or str(selected[0]) != concept.kind
+                    or topic_kind != concept.kind
                     or str(selected[1]) != "active"
                 ):
                     continue
@@ -505,6 +514,8 @@ def apply_statement_concepts(
                 confidence = 0.0
             else:
                 continue
+        if not _relation_matches_topic_kind(concept.relation_type, topic_kind):
+            review_status = "review"
         if concept.relation_type == "PRIMARY_TOPIC" and primary_count > 1:
             review_status = "review"
         provenance = f"catalog:research-statement:{build_id}:{statement_id}"
