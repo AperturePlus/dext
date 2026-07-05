@@ -14,6 +14,10 @@ from dext_grounded import (
 from dext_recommend.core.generation_profile import RecommendGenerationProfile
 
 
+_MISSING_CONTENT_ATTEMPTS = 2
+_ALLOWED_REQUEST_OPTIONS = {"extra_body"}
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
@@ -33,6 +37,62 @@ def _json_default(value: object) -> object:
     if converted is not value:
         return converted
     raise TypeError(f"not JSON serializable: {type(value).__name__}")
+
+
+def _is_deepseek_provider(*, base_url: str | None = None, model: str = "") -> bool:
+    return "deepseek" in str(base_url or "").lower() or model.lower().startswith("deepseek")
+
+
+def _default_request_options(*, base_url: str | None = None, model: str = "") -> dict[str, Any]:
+    if not _is_deepseek_provider(base_url=base_url, model=model):
+        return {}
+    return {"extra_body": {"thinking": {"type": "disabled"}}}
+
+
+def _validated_request_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
+    if options is None:
+        return {}
+    invalid = set(options) - _ALLOWED_REQUEST_OPTIONS
+    if invalid:
+        names = ", ".join(sorted(str(key) for key in invalid))
+        raise ValueError(f"unsupported request option(s): {names}")
+    return dict(options)
+
+
+def _value(raw: Any, name: str) -> Any:
+    if isinstance(raw, Mapping):
+        return raw.get(name)
+    return getattr(raw, name, None)
+
+
+def _content_part_text(part: Any) -> str | None:
+    if isinstance(part, str):
+        return part
+    text = _value(part, "text")
+    if isinstance(text, str):
+        return text
+    content = _value(part, "content")
+    if isinstance(content, str):
+        return content
+    return None
+
+
+def _message_content(response: Any) -> str | None:
+    choices = _value(response, "choices")
+    try:
+        choice = choices[0]
+    except (IndexError, TypeError):
+        return None
+    message = _value(choice, "message")
+    content = _value(message, "content")
+    if isinstance(content, str):
+        stripped = content.strip()
+        return stripped or None
+    if isinstance(content, list):
+        combined = "".join(text for part in content if (text := _content_part_text(part)))
+        stripped = combined.strip()
+        return stripped or None
+    return None
 
 
 def _schema_errors(value: Any, schema: dict, path: str = "$" ) -> list[str]:
@@ -126,12 +186,36 @@ def _claims(output: dict) -> tuple[Claim, ...]:
 class OpenAICompatibleLLMGenerationAdapter:
     """Stateless LLMGenerationPort backed by an injected AsyncOpenAI-compatible client."""
 
-    def __init__(self, *, client: Any, model: str, profile: RecommendGenerationProfile) -> None:
+    def __init__(
+        self,
+        *,
+        client: Any,
+        model: str,
+        profile: RecommendGenerationProfile,
+        request_max_retries: int | None = None,
+        request_options: Mapping[str, Any] | None = None,
+        provider_base_url: str | None = None,
+    ) -> None:
         if not model:
             raise ValueError("model must be non-empty")
+        if (
+            request_max_retries is not None
+            and (
+                not isinstance(request_max_retries, int)
+                or isinstance(request_max_retries, bool)
+                or request_max_retries < 0
+            )
+        ):
+            raise ValueError("request_max_retries must be a non-negative int")
         self._client = client
         self._model = model
         self._profile = profile
+        self._request_max_retries = request_max_retries
+        self._request_options = (
+            _validated_request_options(request_options)
+            if request_options is not None
+            else _default_request_options(base_url=provider_base_url, model=model)
+        )
         self._operations = {op.system_prompt_id: op for op in profile.operations.values()}
 
     @classmethod
@@ -144,7 +228,12 @@ class OpenAICompatibleLLMGenerationAdapter:
             api_key=key, base_url=settings.llm_base_url,
             max_retries=settings.llm_max_retries,
         )
-        return cls(client=client, model=settings.llm_model, profile=profile)
+        return cls(
+            client=client,
+            model=settings.llm_model,
+            profile=profile,
+            provider_base_url=settings.llm_base_url,
+        )
 
     async def generate(
         self, system_prompt_id: str, user_inputs: dict[str, Any], fact_bundle,
@@ -165,30 +254,31 @@ class OpenAICompatibleLLMGenerationAdapter:
                 "json_schema": schema,
             },
         }
-        response = await self._client.chat.completions.create(
-            model=self._model,
-            messages=[
+        client = self._client
+        if self._request_max_retries is not None:
+            client = client.with_options(max_retries=self._request_max_retries)
+        request = {
+            "model": self._model,
+            "messages": [
                 {"role": "system", "content": operation.system_prompt},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=_json_default)},
             ],
-            response_format={"type": "json_object"},
-            max_tokens=operation.token_budget,
-            timeout=operation.timeout,
-            stream=False,
-        )
-        try:
-            content = response.choices[0].message.content
-        except (AttributeError, IndexError, TypeError):
+            "response_format": {"type": "json_object"},
+            "max_tokens": operation.token_budget,
+            "timeout": operation.timeout,
+            "stream": False,
+        }
+        request.update(self._request_options)
+        content = None
+        for _ in range(_MISSING_CONTENT_ATTEMPTS):
+            response = await client.chat.completions.create(**request)
+            content = _message_content(response)
+            if content is not None:
+                break
+        if content is None:
             return GenerationResult(
                 output={}, warnings=[GenerationWarning(
-                    code="generation_parse_error",
-                    message="provider response missing message content",
-                )],
-            )
-        if not isinstance(content, str) or not content:
-            return GenerationResult(
-                output={}, warnings=[GenerationWarning(
-                    code="generation_parse_error",
+                    code="llm_unavailable",
                     message="provider response missing message content",
                 )],
             )
