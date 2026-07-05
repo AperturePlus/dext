@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 
 from aiohttp import web
 
-from dext_app.api.app import create_app
-from dext_competition.catalog import CatalogArtifactError
-from dext_competition.index import IndexArtifactError
+from dext_app.api.app import create_app, prepare_competition_artifacts
+from dext_competition.catalog import CatalogArtifactError, CatalogExtractionError
+from dext_competition.index import IndexArtifactError, KnowledgeSourceReadError
 from dext_recommend.api.access_log import RecommendAccessLogger
 from dext_recommend.api.settings import AppSettings
 from dext_recommend.app_state.db import SchemaNotReadyError
@@ -65,6 +66,7 @@ def main(argv: list[str] | None = None) -> None:
     settings = _settings_from_args(args)
     _configure_logging(settings.log_level)
     try:
+        asyncio.run(prepare_competition_artifacts())
         app = create_app(settings)
         web.run_app(
             app,
@@ -78,11 +80,17 @@ def main(argv: list[str] | None = None) -> None:
         parser.exit(1, f"Error: recommendation app-state schema is not ready: {exc}\n")
     except ConnectionRefusedError as exc:
         parser.exit(1, f"Error: recommendation app-state database is unavailable: {exc}\n")
-    except (CatalogArtifactError, IndexArtifactError, OSError, ValueError) as exc:
+    except (
+        CatalogArtifactError,
+        CatalogExtractionError,
+        IndexArtifactError,
+        KnowledgeSourceReadError,
+        OSError,
+        ValueError,
+    ) as exc:
         parser.exit(
             1,
-            "Error: competition artifacts are not ready. "
-            "Run `dext-competition index build` and `dext-competition catalog build` first.\n"
+            "Error: competition artifacts could not be prepared automatically.\n"
             f"Cause: {exc}\n",
         )
 
