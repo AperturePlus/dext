@@ -139,6 +139,41 @@ def _split_turns_messages(turns: list[dict[str, Any]]) -> tuple[list[dict[str, A
     return flat_turns, messages
 
 
+_RECOMMENDATION_CONTEXT_FIELDS = (
+    "professor_id",
+    "name",
+    "university",
+    "college",
+    "title",
+    "research_fields",
+    "reason",
+    "limitations",
+    "homepage_url",
+)
+
+
+def _selected_recommendation_snapshot(
+    recommendations: list[dict[str, Any]],
+    professor_id: str,
+) -> dict[str, Any] | None:
+    for item in recommendations:
+        if str(item.get("professor_id") or "") != professor_id:
+            continue
+        return {field: item.get(field) for field in _RECOMMENDATION_CONTEXT_FIELDS}
+    return None
+
+
+def _model_context_message(row: ConversationMessage) -> dict[str, Any]:
+    message = _message_dict(row)
+    return {
+        "id": message["id"],
+        "role": message["role"],
+        "kind": message["kind"],
+        "content": message["content"],
+        "related_recommendations": message["related_recommendations"],
+    }
+
+
 @dataclass(slots=True)
 class AppStateRepository:
     sessionmaker: async_sessionmaker[AsyncSession]
@@ -364,6 +399,64 @@ class AppStateRepository:
                 item.deleted_at = item.deleted_at or now
                 item.revision += 1
 
+    async def soft_delete_all_session_trees(self, owner_id: str) -> int:
+        async with self.sessionmaker() as session, session.begin():
+            active_rows = (await session.execute(select(ConversationSession).where(
+                ConversationSession.owner_id == owner_id,
+                ConversationSession.deleted_at.is_(None),
+            ))).scalars().all()
+            if not active_rows:
+                return 0
+
+            root_ids = {row.root_session_id for row in active_rows}
+            rows = (await session.execute(select(ConversationSession).where(
+                ConversationSession.owner_id == owner_id,
+                ConversationSession.root_session_id.in_(root_ids),
+            ))).scalars().all()
+            now = utcnow()
+            deleted_count = 0
+            session_ids: list[str] = []
+            for item in rows:
+                session_ids.append(item.id)
+                if item.deleted_at is None:
+                    item.deleted_at = now
+                    item.revision += 1
+                    deleted_count += 1
+
+            turn_ids = (await session.execute(
+                select(ConversationTurn.id).where(
+                    ConversationTurn.owner_id == owner_id,
+                    ConversationTurn.session_id.in_(session_ids),
+                )
+            )).scalars().all()
+            idempotency_scopes = [f"turn:{session_id}" for session_id in session_ids]
+            idempotency_scopes.extend(f"attempt:{turn_id}" for turn_id in turn_ids)
+
+            if idempotency_scopes:
+                await session.execute(delete(IdempotencyRecord).where(
+                    IdempotencyRecord.owner_id == owner_id,
+                    IdempotencyRecord.scope.in_(idempotency_scopes),
+                ))
+            await session.execute(delete(ConversationSummaryModel).where(
+                ConversationSummaryModel.owner_id == owner_id,
+                ConversationSummaryModel.session_id.in_(session_ids),
+            ))
+            await session.execute(delete(ConversationMessage).where(
+                ConversationMessage.owner_id == owner_id,
+                ConversationMessage.session_id.in_(session_ids),
+            ))
+            if turn_ids:
+                await session.execute(delete(ConversationAttempt).where(
+                    ConversationAttempt.owner_id == owner_id,
+                    ConversationAttempt.turn_id.in_(turn_ids),
+                ))
+            await session.execute(delete(ConversationTurn).where(
+                ConversationTurn.owner_id == owner_id,
+                ConversationTurn.session_id.in_(session_ids),
+            ))
+            await session.flush()
+            return deleted_count
+
     async def list_forks(self, owner_id: str, session_id: str) -> list[dict[str, Any]]:
         async with self.sessionmaker() as session:
             rows = (await session.execute(select(ConversationSession).where(
@@ -377,29 +470,149 @@ class AppStateRepository:
     async def create_fork(
         self, owner_id: str, session_id: str, source_turn_id: str, professor_id: str | None,
     ) -> dict[str, Any]:
-        async with self.sessionmaker() as session:
+        if not professor_id:
+            raise ConflictError("fork requires professor_id")
+        async with self.sessionmaker() as session, session.begin():
+            source_session = await session.get(
+                ConversationSession,
+                {"owner_id": owner_id, "id": session_id},
+            )
+            if source_session is None or source_session.deleted_at is not None:
+                raise NotFoundError("session not found")
+            source_turn = await session.get(
+                ConversationTurn,
+                {"owner_id": owner_id, "id": source_turn_id},
+            )
+            if source_turn is None:
+                raise NotFoundError("source turn not found")
+            if source_turn.session_id != session_id:
+                raise ConflictError("source turn does not belong to session")
+            if source_turn.status != "completed" or source_turn.route != "recommendation":
+                raise ConflictError("source turn is not a completed recommendation")
+            assistant = (await session.execute(
+                select(ConversationMessage)
+                .where(
+                    ConversationMessage.owner_id == owner_id,
+                    ConversationMessage.turn_id == source_turn_id,
+                    ConversationMessage.role == "assistant",
+                    ConversationMessage.kind == "recommendation",
+                )
+                .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
+            )).scalars().first()
+            recommendations = list(
+                assistant.related_recommendations_json or []
+            ) if assistant is not None else []
+            if _selected_recommendation_snapshot(recommendations, professor_id) is None:
+                raise ConflictError("source recommendation does not contain professor")
             existing = (await session.execute(select(ConversationSession).where(
                 ConversationSession.owner_id == owner_id,
                 ConversationSession.source_session_id == session_id,
                 ConversationSession.source_turn_id == source_turn_id,
+                ConversationSession.professor_id == professor_id,
                 ConversationSession.kind == "fork",
                 ConversationSession.deleted_at.is_(None),
             ))).scalar_one_or_none()
             if existing is not None:
                 return _session_dict(existing)
-        return await self.create_session(
-            owner_id,
-            kind="fork",
-            professor_id=professor_id,
-            source_session_id=session_id,
-            source_turn_id=source_turn_id,
-        )
+            row = ConversationSession(
+                owner_id=owner_id,
+                id=new_uuid(),
+                kind="fork",
+                root_session_id=source_session.root_session_id,
+                source_session_id=session_id,
+                source_turn_id=source_turn_id,
+                professor_id=professor_id,
+                revision=0,
+            )
+            session.add(row)
+            await session.flush()
+            return _session_dict(row)
 
     async def get_session_projection(self, owner_id: str, session_id: str) -> dict[str, Any]:
         session_obj = await self.get_session(owner_id, session_id)
         turns = await self.list_turns(owner_id, session_id)
         flat_turns, messages = _split_turns_messages(turns)
         return {"session": session_obj, "turns": flat_turns, "messages": messages}
+
+    async def get_fork_model_context(
+        self,
+        owner_id: str,
+        session_id: str,
+        current_turn_id: str,
+        current_question: str,
+    ) -> dict[str, Any] | None:
+        async with self.sessionmaker() as session:
+            fork = await session.get(ConversationSession, {"owner_id": owner_id, "id": session_id})
+            if fork is None or fork.deleted_at is not None:
+                raise NotFoundError("session not found")
+            if fork.kind != "fork":
+                return None
+            if not fork.source_session_id or not fork.source_turn_id or not fork.professor_id:
+                raise ConflictError("fork session is missing source context")
+            current_turn = await session.get(
+                ConversationTurn,
+                {"owner_id": owner_id, "id": current_turn_id},
+            )
+            if current_turn is None or current_turn.session_id != session_id:
+                raise NotFoundError("turn not found")
+            source_turn = await session.get(
+                ConversationTurn,
+                {"owner_id": owner_id, "id": fork.source_turn_id},
+            )
+            if source_turn is None or source_turn.session_id != fork.source_session_id:
+                raise ConflictError("fork source turn is unavailable")
+            source_assistant = (await session.execute(
+                select(ConversationMessage)
+                .where(
+                    ConversationMessage.owner_id == owner_id,
+                    ConversationMessage.turn_id == fork.source_turn_id,
+                    ConversationMessage.role == "assistant",
+                    ConversationMessage.kind == "recommendation",
+                )
+                .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
+            )).scalars().first()
+            recommendations = list(
+                source_assistant.related_recommendations_json or []
+            ) if source_assistant is not None else []
+            selected = _selected_recommendation_snapshot(recommendations, fork.professor_id)
+            if selected is None:
+                raise ConflictError("fork source recommendation is unavailable")
+            source_turns = (await session.execute(
+                select(ConversationTurn)
+                .where(
+                    ConversationTurn.owner_id == owner_id,
+                    ConversationTurn.session_id == fork.source_session_id,
+                    ConversationTurn.ordinal <= source_turn.ordinal,
+                )
+                .order_by(ConversationTurn.ordinal)
+            )).scalars().all()
+            fork_turns = (await session.execute(
+                select(ConversationTurn)
+                .where(
+                    ConversationTurn.owner_id == owner_id,
+                    ConversationTurn.session_id == session_id,
+                    ConversationTurn.ordinal < current_turn.ordinal,
+                )
+                .order_by(ConversationTurn.ordinal)
+            )).scalars().all()
+            return {
+                "session": {
+                    "id": fork.id,
+                    "kind": fork.kind,
+                    "root_session_id": fork.root_session_id,
+                    "source_session_id": fork.source_session_id,
+                    "source_turn_id": fork.source_turn_id,
+                    "professor_id": fork.professor_id,
+                },
+                "source_prefix": await self._turns_for_model_context(
+                    session, owner_id, source_turns,
+                ),
+                "selected_recommendation": selected,
+                "fork_history": await self._turns_for_model_context(
+                    session, owner_id, fork_turns,
+                ),
+                "current_question": current_question,
+            }
 
     async def list_turns(self, owner_id: str, session_id: str) -> list[dict[str, Any]]:
         async with self.sessionmaker() as session:
@@ -790,6 +1003,31 @@ class AppStateRepository:
     async def _count(self, session: AsyncSession, model, owner_id: str) -> int:
         result = await session.execute(select(func.count()).select_from(model).where(model.owner_id == owner_id))
         return int(result.scalar_one())
+
+    async def _turns_for_model_context(
+        self,
+        session: AsyncSession,
+        owner_id: str,
+        turns: list[ConversationTurn],
+    ) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for turn in turns:
+            messages = (await session.execute(
+                select(ConversationMessage)
+                .where(
+                    ConversationMessage.owner_id == owner_id,
+                    ConversationMessage.turn_id == turn.id,
+                )
+                .order_by(ConversationMessage.created_at, ConversationMessage.id)
+            )).scalars().all()
+            out.append({
+                "turn_id": turn.id,
+                "ordinal": turn.ordinal,
+                "status": turn.status,
+                "route": turn.route,
+                "messages": [_model_context_message(message) for message in messages],
+            })
+        return out
 
     async def _assistant_for_attempt(
         self,

@@ -159,12 +159,21 @@ class RecommendRequest:
     student_context: StudentContext | None = None
     filters: RecommendationFilters = field(default_factory=RecommendationFilters)
     conversation_context: ConversationContext | None = None
+    conversation_model_context: Mapping[str, object] | None = None
     limit: int = 10
     oversample: int = 200
     ranking_mode: str = "explainable_precision"
     review_policy: str = "exclude"          # exclude|include_downranked
     include_contacts: bool = False
     diagnostics_level: str = "summary"      # none|summary|debug
+
+    def __post_init__(self) -> None:
+        if self.conversation_model_context is not None:
+            object.__setattr__(
+                self,
+                "conversation_model_context",
+                freeze_mapping(self.conversation_model_context),
+            )
 
 
 @dataclass(frozen=True, slots=True)

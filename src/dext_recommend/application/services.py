@@ -18,6 +18,7 @@ from dext_recommend.app_state.repositories import (
     canonical_hash,
 )
 from dext_recommend.generation.conversation_title import fallback_title
+from dext_recommend.models import ConversationContext
 
 
 logger = logging.getLogger(__name__)
@@ -225,11 +226,40 @@ class ApplicationServices:
         profile: UserProfile | None,
     ) -> dict[str, Any]:
         owner_id = str(principal.owner_id)
+        fork_model_context = await self.repository.get_fork_model_context(
+            owner_id,
+            session_id,
+            turn_id,
+            text,
+        )
+        if fork_model_context is not None and _is_fork_reroute_request(text):
+            return await self._complete_fork_reroute_attempt(
+                owner_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                attempt_id=attempt_id,
+                text=text,
+                fork_model_context=fork_model_context,
+            )
+        conversation_context = None
+        if fork_model_context is not None:
+            fork_session = fork_model_context["session"]
+            conversation_context = ConversationContext(
+                session_id=session_id,
+                turn_id=turn_id,
+                main_session_id=str(fork_session["source_session_id"]),
+                source_turn_id=str(fork_session["source_turn_id"]),
+                anchor_entity_id=str(fork_session["professor_id"]),
+                intent="detail_followup",
+                intent_source="explicit",
+            )
         request = recommend_request_from_public(
             prompt=text,
             profile=profile,
             session_id=session_id,
             turn_id=turn_id,
+            conversation_context=conversation_context,
+            conversation_model_context=fork_model_context,
             limit=10,
         )
         with bind_conversation_owner(owner_id):
@@ -253,6 +283,8 @@ class ApplicationServices:
             context_json={
                 "session_id": session_id,
                 "turn_id": turn_id,
+                "main_session_id": getattr(result.context, "main_session_id", None) if result.context else None,
+                "source_turn_id": getattr(result.context, "source_turn_id", None) if result.context else None,
                 "intent": getattr(result.context, "intent", None) if result.context else None,
                 "intent_source": getattr(result.context, "intent_source", None) if result.context else None,
                 "intent_confidence": getattr(result.context, "intent_confidence", None) if result.context else None,
@@ -285,6 +317,69 @@ class ApplicationServices:
             session_id=session_id,
             turn_id=turn_id,
             status=status,
+            completed=completed,
+            session_obj=session_obj,
+            first_user_message=text,
+            assistant_answer=answer,
+        )
+        return {
+            **completed,
+            "session": session_obj,
+            "attempt_id": attempt_id,
+            "revision": session_obj.get("revision", 0),
+            "quick_actions": [],
+        }
+
+    async def _complete_fork_reroute_attempt(
+        self,
+        owner_id: str,
+        *,
+        session_id: str,
+        turn_id: str,
+        attempt_id: str,
+        text: str,
+        fork_model_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        fork_session = fork_model_context["session"]
+        selected = fork_model_context["selected_recommendation"]
+        professor_name = str(selected.get("name") or fork_session["professor_id"])
+        answer = (
+            f"当前追问会话锚定在{professor_name}。如果你想换一批或重新推荐其他导师，"
+            "请回到原推荐会话发起新的导师推荐；这个 fork 会话不会改换锚定导师。"
+        )
+        completed = await self.repository.complete_attempt(
+            owner_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            attempt_id=attempt_id,
+            status="completed",
+            route="forkReroute",
+            assistant_content=answer,
+            related_recommendations=[],
+            context_json={
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "main_session_id": fork_session["source_session_id"],
+                "source_turn_id": fork_session["source_turn_id"],
+                "intent": "fork_reroute",
+                "intent_source": "explicit",
+                "intent_confidence": None,
+                "anchor_entity_id": fork_session["professor_id"],
+                "prior_result_entity_ids": [],
+            },
+            snapshot_json={
+                "fork_reroute": True,
+                "source_session_id": fork_session["source_session_id"],
+                "source_turn_id": fork_session["source_turn_id"],
+                "professor_id": fork_session["professor_id"],
+            },
+        )
+        session_obj = await self.repository.get_session(owner_id, session_id)
+        session_obj = await self._ensure_initial_session_title(
+            owner_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            status="completed",
             completed=completed,
             session_obj=session_obj,
             first_user_message=text,
@@ -394,3 +489,23 @@ def _completion_diagnostics(result, related: list[dict[str, Any]]) -> dict[str, 
         "returned_count": len(related),
         "build_id": None,
     }
+
+
+def _is_fork_reroute_request(text: str) -> bool:
+    normalized = "".join(str(text or "").strip().lower().split())
+    if not normalized:
+        return False
+    markers = (
+        "换一批",
+        "重新推荐",
+        "推荐其他导师",
+        "推荐其它导师",
+        "推荐别的导师",
+        "换其他导师",
+        "换其它导师",
+        "换别的导师",
+        "找其他导师",
+        "找其它导师",
+        "找别的导师",
+    )
+    return any(marker in normalized for marker in markers)

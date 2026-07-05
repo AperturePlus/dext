@@ -224,15 +224,24 @@ class ConversationDispatcher:
                 ctx, snapshot, gen_profile, request, conversation_summary)
             if classify_issue is not None:
                 if classify_issue.code == "needs_clarification":
+                    if ctx.anchor_entity_id:
+                        ctx = replace(
+                            ctx,
+                            intent="detail_followup",
+                            intent_source="implicit",
+                            intent_confidence=0.0,
+                        )
+                    else:
+                        return ConversationDispatchResult(
+                            kind="clarification", context=ctx, recommendation=None,
+                            detail_followup=None, issues=(classify_issue,),
+                            generation_profile_version=gen_profile.version,
+                        )
+                else:
                     return ConversationDispatchResult(
-                        kind="clarification", context=ctx, recommendation=None,
-                        detail_followup=None, issues=(classify_issue,),
-                        generation_profile_version=gen_profile.version,
+                        kind="error", context=ctx, recommendation=None, detail_followup=None,
+                        issues=(classify_issue,), generation_profile_version=gen_profile.version,
                     )
-                return ConversationDispatchResult(
-                    kind="error", context=ctx, recommendation=None, detail_followup=None,
-                    issues=(classify_issue,), generation_profile_version=gen_profile.version,
-                )
             try:
                 ctx = _validate_context(ctx, phase="resolved")
             except ConversationValidationError as e:
@@ -256,7 +265,7 @@ class ConversationDispatcher:
 
         if route.detail_followup:
             outcome = await self._resolve_detail_followup_pinned(
-                ctx, snapshot, gen_profile, request, vp)
+                ctx, snapshot, gen_profile, request, vp, conversation_summary)
             if isinstance(outcome, ConversationDispatchResult):
                 return outcome
             return ConversationDispatchResult(
@@ -344,7 +353,9 @@ class ConversationDispatcher:
         ctx = replace(ctx, intent_source="implicit", intent=intent, intent_confidence=float(confidence))
         return ctx, None
 
-    async def _resolve_detail_followup_pinned(self, ctx, snapshot, gen_profile, request, vp):
+    async def _resolve_detail_followup_pinned(
+        self, ctx, snapshot, gen_profile, request, vp, conversation_summary,
+    ):
         try:
             detail = await self._core.deps.facts_port.get_detail(
                 snapshot, ctx.anchor_entity_id, include_contacts=False,
@@ -367,11 +378,16 @@ class ConversationDispatcher:
                 generation_profile_version=gen_profile.version,
             )
         op = gen_profile.operations["detail_followup"]
+        summary_text = conversation_summary.text if conversation_summary is not None else ""
         try:
             result = await asyncio.wait_for(self._pipeline.generate(
                 system_prompt_id=op.system_prompt_id,
-                user_inputs={"question": request.query_text,
-                             "display_name": detail.display_name},
+                user_inputs={
+                    "question": request.query_text,
+                    "display_name": detail.display_name,
+                    "conversation_summary": summary_text,
+                    "conversation_model_context": request.conversation_model_context or {},
+                },
                 fact_bundle=detail.fact_bundle,
                 student_context=request.student_context,
                 json_schema=dict(op.json_schema),
