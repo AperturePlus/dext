@@ -17,6 +17,7 @@ def _profile_payload():
     return {
         "version": "generation-v1",
         "grounded_rules_manifest_hash": "grh",
+        "output_contract_instructions": ["test output contract"],
         "operations": {
             "query_understanding": {
                 "system_prompt_id": "dext_recommend.query_understanding.v1",
@@ -55,6 +56,16 @@ def _profile_payload():
                 "system_prompt_id": "dext_recommend.quick_actions.v1",
                 "system_prompt": "quick actions prompt",
                 "json_schema": {"type": "object"}, "timeout": 8.0, "token_budget": 256,
+            },
+            "conversation_title": {
+                "system_prompt_id": "dext_recommend.conversation_title.v1",
+                "system_prompt": "conversation title prompt",
+                "json_schema": {"type": "object"}, "timeout": 8.0, "token_budget": 128,
+            },
+            "achievement_extraction": {
+                "system_prompt_id": "dext_recommend.achievement_extraction.v1",
+                "system_prompt": "achievement extraction prompt",
+                "json_schema": {"type": "object"}, "timeout": 8.0, "token_budget": 768,
             },
         },
     }
