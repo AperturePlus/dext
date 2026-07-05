@@ -117,7 +117,14 @@ def test_cli_exposes_catalog_build_commands():
     assert "evaluate" in gold_help.output
     topics_help = runner.invoke(main, ["graph", "topics", "--help"])
     assert topics_help.exit_code == 0
-    for command in ("build", "suggest-merges", "gold-generate", "gold-evaluate"):
+    for command in (
+        "build",
+        "suggest-merges",
+        "repair-links",
+        "reuse-links",
+        "gold-generate",
+        "gold-evaluate",
+    ):
         assert command in topics_help.output
 
 

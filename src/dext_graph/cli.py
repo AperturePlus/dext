@@ -704,6 +704,27 @@ def topics_repair_links_command(build_id: str, json_output: bool) -> None:
     )
 
 
+@topics_group.command("reuse-links")
+@click.argument("build_id")
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Emit full JSON details instead of the concise summary.",
+)
+def topics_reuse_links_command(build_id: str, json_output: bool) -> None:
+    """Reuse terminal Topic links from the latest compatible ACTIVE build."""
+    from dext_graph.catalog.topic_repair import reuse_topic_links_from_active_build
+    from dext_graph.config import GraphSettings
+
+    settings = GraphSettings()
+    _guard_catalog(
+        lambda: reuse_topic_links_from_active_build(build_id, settings),
+        asynchronous=True,
+        json_output=json_output,
+    )
+
+
 @topics_group.command("gold-generate")
 @click.argument("build_id")
 @click.option("--size", default=400, show_default=True, type=click.IntRange(min=1))

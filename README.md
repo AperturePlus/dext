@@ -142,6 +142,33 @@ uv run dext graph resume BUILD_ID
 `DEXT_BUILD_MIN_SOURCE_RETENTION_RATIO`。catalog 与每次修改前的备份位于
 `data/catalog/`；source snapshot 位于 `data/catalog/source-snapshots/`。API key 不写入 catalog。
 
+### 旧库增量导入
+
+旧 schema 的大学库可放在 `data/old/*.db`，用 `scripts/import_old_university_sources.py`
+增量合入当前 ACTIVE graph。脚本默认以最新 ACTIVE build 的 immutable source snapshots
+作为基线，追加 `data/old` 中的旧库，先备份整个 catalog，再创建新 build、跳过尚未提供的 gold gates
+做 validation，并 promote 到 Neo4j/Qdrant。旧库的 `crawl_status=failed/in_progress` 或缺少
+`crawl_graph_nodes` 只会产生 warning，不阻断 professors/org_units 导入。
+
+```bash
+# 只预检，不写 catalog；确认 baseline/old/combined 来源数和旧库教授数
+uv run python scripts/import_old_university_sources.py --dry-run
+
+# 生成候选 build，但不 validate/promote
+uv run python scripts/import_old_university_sources.py --no-promote
+
+# 默认完整流程：备份当前 catalog，构建新 build，validate --skip-gold-gates，并 promote
+uv run python scripts/import_old_university_sources.py
+
+# 严格要求 gold gates，或跳过显式 ACTIVE 备份
+uv run python scripts/import_old_university_sources.py --strict-gold
+uv run python scripts/import_old_university_sources.py --no-backup-active
+```
+
+显式 ACTIVE 备份位于 `data/catalog/backups/catalog-*.db`，旁边会写同名 `.sha256` 和 `.json`
+manifest，记录旧 ACTIVE build、旧库列表和新 build id。若旧库与当前 ACTIVE 基线包含同一所学校，
+默认拒绝导入；确认要用旧库替换基线来源时加 `--replace-existing`。
+
 ## 阶段 2：清洗、资格与身份消歧
 
 阶段 2 自动消费阶段 1 的 active observations，使用版本化 YAML 规则完成文本规范化、保守身份归属、
@@ -177,19 +204,199 @@ SQLite snapshot 到 catalog/Neo4j 的结构保真度，不替代人工 curation/
 
 ## 推荐系统 HTTP API
 
-默认监听 `127.0.0.1:21530`：
+推荐系统由两类数据组成：
+
+- 发布数据：`data/catalog/catalog.db` 中的 ACTIVE build、Neo4j 中的 active graph、Qdrant 中的导师向量 alias。
+- 应用状态：Postgres 中的匿名身份、会话、收藏、历史和用户档案。
+
+先启动本地数据服务：
+
+~~~bash
+docker compose -f docker/compose.yaml up -d
+~~~
+
+再发布一个推荐系统可读取的 ACTIVE build。`dext graph build` 会产出 `BUILD_ID` 并停在
+`WRITING_VECTOR`；之后需要写入 Qdrant、验证并 promote，才会切换 ACTIVE catalog、Neo4j 和
+Qdrant alias：
+
+~~~bash
+uv run dext graph build
+
+# 从 build 输出或 status 中复制 BUILD_ID
+uv run dext graph status
+
+# 生成/恢复导师向量 collection
+uv run dext graph vector BUILD_ID
+
+# 本地尚未准备 gold datasets 时可跳过 gold gates
+uv run dext graph validate BUILD_ID --skip-gold-gates
+uv run dext graph promote BUILD_ID
+
+# 若 build/vector/validate 中断，可从失败点恢复
+uv run dext graph resume BUILD_ID
+~~~
+
+### 独立导师推荐 API
+
+只运行导师推荐后端时使用 `recommend serve`，默认监听 `127.0.0.1:21530`，所有接口前缀为
+`/api/v1`：
 
 ~~~bash
 uv run recommend serve
 ~~~
 
-`--host` 和 `--port` 可覆写 `.env` 中的 `DEXT_APP_HTTP_HOST`、`DEXT_APP_HTTP_PORT`：
+开发环境首次启动可自动创建应用状态表：
 
 ~~~bash
-uv run recommend serve --host 0.0.0.0 --port 21531
+uv run recommend serve --dev-bootstrap-schema
 ~~~
 
-开发环境需要自动创建应用状态表时，可追加 `--dev-bootstrap-schema`。
+对外或给手机真机访问时需要监听所有网卡：
+
+~~~bash
+uv run recommend serve --host 0.0.0.0 --port 21530 --dev-bootstrap-schema
+~~~
+
+### Flutter 集成 API
+
+Flutter 端需要导师推荐和竞赛接口共用同一个后端 origin 时，启动合并 API：
+
+~~~bash
+uv run dext-api serve --dev-bootstrap-schema
+~~~
+
+`dext-api serve` 会复用导师推荐接口，并额外注册竞赛接口。若竞赛 artifacts 缺失或与当前知识库版本不匹配，
+启动时会自动构建 `data/competition/index/` 和 `data/competition/catalog/`。也可以提前手动预构建：
+
+~~~bash
+uv run dext-competition index build
+uv run dext-competition catalog build
+uv run dext-api serve --dev-bootstrap-schema
+~~~
+
+Flutter 的 `API_BASE_URL` 填后端 origin，不要带 `/api/v1`，客户端会自动追加：
+
+~~~bash
+cd flutter-app-source
+
+# Windows/macOS/Linux 桌面或浏览器访问本机后端
+flutter run --dart-define=API_BASE_URL=http://127.0.0.1:21530
+
+# Android 模拟器访问宿主机后端
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:21530
+
+# 手机真机访问同局域网后端：后端需 --host 0.0.0.0，URL 使用电脑局域网 IP
+flutter run --dart-define=API_BASE_URL=http://192.168.x.x:21530
+~~~
+
+未设置 `API_BASE_URL` 时，Flutter 会走本地 LLM/mock 数据源；设置后会切到 HTTP 后端。调试接口错误详情可追加
+`--dart-define=API_SHOW_ERROR_DETAILS=true`。
+
+### API 启动参数
+
+`recommend serve` 和 `dext-api serve` 支持同一组服务参数：
+
+| 参数 | 默认值 / 环境变量 | 说明 |
+|------|-------------------|------|
+| `--host HOST` | `DEXT_APP_HTTP_HOST=127.0.0.1` | HTTP 监听地址；真机联调通常用 `0.0.0.0` |
+| `--port PORT` | `DEXT_APP_HTTP_PORT=21530` | HTTP 端口 |
+| `--dev-bootstrap-schema` | `DEXT_APP_SCHEMA_BOOTSTRAP=false` | 本地开发时自动创建 Postgres 应用状态表；生产应使用迁移流程 |
+| `--log-level LEVEL` | `DEXT_APP_LOG_LEVEL=INFO` | `debug`、`info`、`warning`、`error`、`critical` |
+| `--no-access-log` | `DEXT_APP_ACCESS_LOG_ENABLED=true` | 关闭逐请求访问日志 |
+
+### 推荐系统配置
+
+核心配置从 `.env` 读取。`DEXT_RECOMMEND_*` 优先；部分变量会 fallback 到图谱构建时使用的
+`DEXT_*` 变量，便于本地复用。
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `DEXT_APP_DATABASE_URL` | `postgresql://dext:dext_dev_password@127.0.0.1:5432/dext_app` | 应用状态 Postgres DSN |
+| `DEXT_APP_AUTH_TOKEN_PEPPER` | `dev-only-change-me` | 匿名 token 哈希 pepper；生产必须改 |
+| `DEXT_APP_CORS_ALLOWED_ORIGINS` | 空 | 逗号分隔的允许跨域 origin |
+| `DEXT_APP_CSRF_ALLOWED_ORIGINS` | 空 | 使用 cookie auth 的 Web origin 白名单 |
+| `DEXT_RECOMMEND_CATALOG_PATH` | `data/catalog/catalog.db` | ACTIVE build 指针和 catalog 事实库；也可用 `DEXT_CATALOG_PATH` |
+| `DEXT_RECOMMEND_QDRANT_URL` | `http://127.0.0.1:6333` | Qdrant 地址；也可用 `DEXT_QDRANT_URL` |
+| `DEXT_RECOMMEND_QDRANT_ALIAS` | `dext_professors_current` | 导师向量 collection alias |
+| `DEXT_RECOMMEND_NEO4J_URL` | `bolt://127.0.0.1:7687` | Neo4j Bolt 地址；兼容 `DEXT_RECOMMEND_NEO4J_URI` / `DEXT_NEO4J_URI` |
+| `DEXT_RECOMMEND_NEO4J_DATABASE` | `neo4j` | Neo4j database；也可用 `DEXT_NEO4J_DATABASE` |
+| `DEXT_RECOMMEND_NEO4J_USERNAME` / `DEXT_RECOMMEND_NEO4J_PASSWORD` | 空 | Neo4j 开启鉴权时填写 |
+| `DEXT_RECOMMEND_EMBEDDING_API_KEY` | 空 | 查询 embedding API key；也可用 `DEXT_EMBEDDING_API_KEY` |
+| `DEXT_RECOMMEND_EMBEDDING_BASE_URL` | `https://api.siliconflow.cn/v1` | Embedding OpenAI-compatible base URL |
+| `DEXT_RECOMMEND_EMBEDDING_MODEL` | `BAAI/bge-m3` | 必须与 ACTIVE build embedding fingerprint 对齐 |
+| `DEXT_RECOMMEND_LLM_API_KEY` | 空 | 推荐解释、追问、匹配分析等 LLM key；也可用 `DEEPSEEK_API_KEY` |
+| `DEXT_RECOMMEND_LLM_BASE_URL` | `https://api.deepseek.com` | LLM OpenAI-compatible base URL |
+| `DEXT_RECOMMEND_LLM_MODEL` | `deepseek-v4-flash` | LLM 模型 |
+| `DEXT_RECOMMEND_RANKING_PROFILE_PATH` | `data/recommend/ranking-profile.json` | 排名 profile |
+| `DEXT_RECOMMEND_GENERATION_PROFILE_PATH` | `data/recommend/generation-profile.json` | 生成 profile |
+| `DEXT_RECOMMEND_TOTAL_TIMEOUT` | `90` | 单次推荐总超时秒数 |
+| `DEXT_RECOMMEND_OVERSAMPLE_DEFAULT` / `DEXT_RECOMMEND_OVERSAMPLE_MAX` | `200` / `1000` | 召回候选数默认值和上限 |
+| `DEXT_RECOMMEND_QUERY_MAX_CHARS` | `4096` | 用户查询最大长度 |
+| `DEXT_RECOMMEND_LIMIT_MAX` | `50` | 单次返回导师数上限 |
+
+### 最小联调请求
+
+先创建匿名身份，返回体中的 `data.access_token` 用于后续 Bearer 认证：
+
+~~~bash
+curl -X POST http://127.0.0.1:21530/api/v1/identity/anonymous
+~~~
+
+请求导师推荐：
+
+~~~bash
+curl -X POST http://127.0.0.1:21530/api/v1/recommendations/mentors \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "我是计算机科学本科生，想申请硕士，研究兴趣是计算机视觉和医学影像，最好在北京或上海。",
+    "limit": 5,
+    "profile": {
+      "degree_stage": "本科",
+      "target_degree": "硕士",
+      "school": "示例大学",
+      "major": "计算机科学与技术",
+      "research_interests": ["计算机视觉", "医学影像"]
+    }
+  }'
+~~~
+
+请求体参数：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `prompt` | 是 | 自然语言需求，1-4096 字符 |
+| `limit` | 否 | 返回导师数量，默认 `10`，范围 `1..50` |
+| `session_id` | 否 | UUID；用于把直接推荐请求绑定到已有会话 |
+| `profile` | 否 | 学生画像；用于匹配分析和推荐解释，不会覆盖已保存档案 |
+| `profile.research_interests` | 否 | 研究兴趣列表，最多 50 项 |
+| `profile.highlights` | 否 | 成果/经历摘要，最多 2000 字符 |
+| `profile.score` | 否 | `{gpa, scale, rank_mode, percent, rank_position, rank_total}` |
+| `profile.competitions` | 否 | `{name, level, award, year}` 列表，最多 20 项 |
+| `profile.research` | 否 | `{type, title, role, venue_or_status, year}` 列表，`type` 为 `paper/project/patent/other` |
+
+响应统一包在 `{ "code": 0, "message": "ok", "data": ... }` 中。推荐结果位于
+`data.recommendations`，每项包含 `professor_id`、`name`、`university`、`college`、`title`、
+`research_fields`、`match_score`、`match_level`、`reason`、`limitations` 和 `homepage_url`。
+
+常用接口：
+
+| 接口 | 说明 |
+|------|------|
+| `POST /api/v1/identity/anonymous` | 创建匿名身份 |
+| `GET /api/v1/home/config?mode=mentor` | 首页文案、快捷标签和示例 prompt |
+| `POST /api/v1/recommendations/mentors` | 导师推荐 |
+| `GET /api/v1/professors/{professor_id}` | 导师详情 |
+| `POST /api/v1/professors/{professor_id}/match-analysis` | 学生画像与导师匹配分析 |
+| `POST /api/v1/professors/{professor_id}/outreach-email` | 生成套磁邮件草稿 |
+| `POST /api/v1/professors/compare` | 对比 2-3 位导师 |
+| `POST /api/v1/chat/sessions` / `POST /api/v1/chat/sessions/{id}/turns` | 对话式导师推荐与追问，turn 创建接口返回 SSE |
+| `GET/PUT/DELETE /api/v1/profile` | 用户档案 |
+| `GET/PUT/DELETE /api/v1/favorites` | 收藏 |
+| `GET/POST/DELETE /api/v1/history` | 历史记录 |
+
+导师推荐联调质量报告见 `docs/mentor-recommendation-integration-test-report.md`；完整前端契约见
+`docs/appside/api-contract.md` 和 `docs/appside/openapi.yaml`。
 
 ## Monitor WebUI
 

@@ -50,6 +50,8 @@ class RequestInProgressError(ConflictError):
 
 
 TERMINAL_ATTEMPT_STATUSES = frozenset({"completed", "failed", "interrupted"})
+RETRYABLE_TURN_STATUSES = frozenset({"failed", "interrupted"})
+REGENERABLE_COMPLETED_ROUTES = frozenset({"conversation", "recommendation"})
 
 
 def new_uuid() -> str:
@@ -161,6 +163,48 @@ def _selected_recommendation_snapshot(
             continue
         return {field: item.get(field) for field in _RECOMMENDATION_CONTEXT_FIELDS}
     return None
+
+
+def _selected_recommendation_from_messages(
+    messages: list[ConversationMessage],
+    professor_id: str,
+) -> dict[str, Any] | None:
+    for message in messages:
+        if (
+            message.role != "assistant"
+            or message.kind != "recommendation"
+            or message.status != "done"
+        ):
+            continue
+        snapshot = _selected_recommendation_snapshot(
+            list(message.related_recommendations_json or []),
+            professor_id,
+        )
+        if snapshot is not None:
+            return snapshot
+    return None
+
+
+def _message_order(row: ConversationMessage) -> tuple[datetime, str]:
+    return row.created_at, row.id
+
+
+def _visible_turn_messages(messages: list[ConversationMessage]) -> list[ConversationMessage]:
+    visible = [message for message in messages if message.role != "assistant"]
+    assistants = [message for message in messages if message.role == "assistant"]
+    latest_done = next((m for m in reversed(assistants) if m.status == "done"), None)
+    latest_error = next((m for m in reversed(assistants) if m.status == "error"), None)
+    selected: list[ConversationMessage] = []
+    if latest_done is not None:
+        selected.append(latest_done)
+    if latest_error is not None and (
+        latest_done is None or _message_order(latest_error) > _message_order(latest_done)
+    ):
+        selected.append(latest_error)
+    elif latest_done is None and latest_error is None and assistants:
+        selected.append(assistants[-1])
+    visible.extend(selected)
+    return sorted(visible, key=_message_order)
 
 
 def _model_context_message(row: ConversationMessage) -> dict[str, Any]:
@@ -489,7 +533,7 @@ class AppStateRepository:
                 raise ConflictError("source turn does not belong to session")
             if source_turn.status != "completed" or source_turn.route != "recommendation":
                 raise ConflictError("source turn is not a completed recommendation")
-            assistant = (await session.execute(
+            source_assistants = (await session.execute(
                 select(ConversationMessage)
                 .where(
                     ConversationMessage.owner_id == owner_id,
@@ -498,11 +542,8 @@ class AppStateRepository:
                     ConversationMessage.kind == "recommendation",
                 )
                 .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
-            )).scalars().first()
-            recommendations = list(
-                assistant.related_recommendations_json or []
-            ) if assistant is not None else []
-            if _selected_recommendation_snapshot(recommendations, professor_id) is None:
+            )).scalars().all()
+            if _selected_recommendation_from_messages(source_assistants, professor_id) is None:
                 raise ConflictError("source recommendation does not contain professor")
             existing = (await session.execute(select(ConversationSession).where(
                 ConversationSession.owner_id == owner_id,
@@ -561,7 +602,7 @@ class AppStateRepository:
             )
             if source_turn is None or source_turn.session_id != fork.source_session_id:
                 raise ConflictError("fork source turn is unavailable")
-            source_assistant = (await session.execute(
+            source_assistants = (await session.execute(
                 select(ConversationMessage)
                 .where(
                     ConversationMessage.owner_id == owner_id,
@@ -570,11 +611,8 @@ class AppStateRepository:
                     ConversationMessage.kind == "recommendation",
                 )
                 .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
-            )).scalars().first()
-            recommendations = list(
-                source_assistant.related_recommendations_json or []
-            ) if source_assistant is not None else []
-            selected = _selected_recommendation_snapshot(recommendations, fork.professor_id)
+            )).scalars().all()
+            selected = _selected_recommendation_from_messages(source_assistants, fork.professor_id)
             if selected is None:
                 raise ConflictError("fork source recommendation is unavailable")
             source_turns = (await session.execute(
@@ -631,7 +669,9 @@ class AppStateRepository:
                     ConversationMessage.turn_id == turn.id,
                 ).order_by(ConversationMessage.created_at, ConversationMessage.id))).scalars().all()
                 td = _turn_dict(turn)
-                td["messages"] = [_message_dict(msg) for msg in messages]
+                td["messages"] = [
+                    _message_dict(msg) for msg in _visible_turn_messages(list(messages))
+                ]
                 out.append(td)
             return out
 
@@ -753,22 +793,37 @@ class AppStateRepository:
                         None if assistant is None else _message_dict(assistant)
                     ),
                 }
+            prior_done_assistant = await self._latest_done_assistant_for_turn(
+                session, owner_id, turn_id,
+            )
+            preserve_completed_result = (
+                prior_done_assistant is not None
+                and turn.route in REGENERABLE_COMPLETED_ROUTES
+            )
             if attempt.cancel_requested_at is not None:
                 attempt.status = "interrupted"
-                turn.status = "interrupted"
+                turn.status = "completed" if preserve_completed_result else "interrupted"
                 turn.active_attempt_id = None
                 attempt.finished_at = attempt.finished_at or utcnow()
                 await self._finish_idempotency(
                     session, owner_id, session_id, turn_id, attempt, None,
                 )
                 return {"turn": _turn_dict(turn), "assistant_message": None}
-            turn.status = status
-            turn.route = route
+            if status == "completed" or not preserve_completed_result:
+                turn.status = status
+                turn.route = route
+                turn.context_json = context_json
+                turn.snapshot_json = snapshot_json
+            else:
+                turn.status = "completed"
             turn.active_attempt_id = None
-            turn.context_json = context_json
-            turn.snapshot_json = snapshot_json
             attempt.status = "completed" if status == "completed" else status
             attempt.finished_at = utcnow()
+            assistant_kind = (
+                turn.route
+                if status != "completed" and preserve_completed_result
+                else route
+            ) or "text"
             assistant = ConversationMessage(
                 owner_id=owner_id,
                 id=new_uuid(),
@@ -777,7 +832,7 @@ class AppStateRepository:
                 attempt_id=attempt_id,
                 role="assistant",
                 status="done" if status == "completed" else "error",
-                kind=route or "text",
+                kind=assistant_kind,
                 content=assistant_content,
                 related_recommendations_json=related_recommendations,
                 feedback="none",
@@ -846,8 +901,24 @@ class AppStateRepository:
                 raise NotFoundError("turn not found")
             if srow.revision != expected_revision:
                 raise ConflictError("session revision conflict")
+            if turn.active_attempt_id is not None:
+                raise RequestInProgressError("request already in progress")
             if turn.status == "completed":
-                raise ConflictError("completed turn cannot be retried")
+                latest_ordinal = await session.scalar(select(func.max(ConversationTurn.ordinal)).where(
+                    ConversationTurn.owner_id == owner_id,
+                    ConversationTurn.session_id == session_id,
+                ))
+                has_completed_answer = await self._latest_done_assistant_for_turn(
+                    session, owner_id, turn_id,
+                ) is not None
+                if (
+                    turn.route not in REGENERABLE_COMPLETED_ROUTES
+                    or turn.ordinal != latest_ordinal
+                    or not has_completed_answer
+                ):
+                    raise ConflictError("completed turn cannot be retried")
+            elif turn.status not in RETRYABLE_TURN_STATUSES:
+                raise ConflictError("turn cannot be retried")
             attempt_id = new_uuid()
             attempt = ConversationAttempt(
                 owner_id=owner_id,
@@ -888,7 +959,14 @@ class AppStateRepository:
                 attempt.status = "interrupted"
             attempt.finished_at = attempt.finished_at or now
             if turn is not None and turn.status not in {"completed", "failed", "interrupted"}:
-                turn.status = "interrupted"
+                prior_done_assistant = await self._latest_done_assistant_for_turn(
+                    session, owner_id, turn.id,
+                )
+                preserve_completed_result = (
+                    prior_done_assistant is not None
+                    and turn.route in REGENERABLE_COMPLETED_ROUTES
+                )
+                turn.status = "completed" if preserve_completed_result else "interrupted"
                 turn.active_attempt_id = None
             if turn is not None:
                 await self._finish_idempotency(
@@ -1025,7 +1103,10 @@ class AppStateRepository:
                 "ordinal": turn.ordinal,
                 "status": turn.status,
                 "route": turn.route,
-                "messages": [_model_context_message(message) for message in messages],
+                "messages": [
+                    _model_context_message(message)
+                    for message in _visible_turn_messages(list(messages))
+                ],
             })
         return out
 
@@ -1043,6 +1124,23 @@ class AppStateRepository:
                 ConversationMessage.turn_id == turn_id,
                 ConversationMessage.attempt_id == attempt_id,
                 ConversationMessage.role == "assistant",
+            )
+            .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
+        )).scalars().first()
+
+    async def _latest_done_assistant_for_turn(
+        self,
+        session: AsyncSession,
+        owner_id: str,
+        turn_id: str,
+    ) -> ConversationMessage | None:
+        return (await session.execute(
+            select(ConversationMessage)
+            .where(
+                ConversationMessage.owner_id == owner_id,
+                ConversationMessage.turn_id == turn_id,
+                ConversationMessage.role == "assistant",
+                ConversationMessage.status == "done",
             )
             .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
         )).scalars().first()

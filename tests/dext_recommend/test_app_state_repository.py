@@ -41,7 +41,9 @@ async def _complete_recommendation_turn(
     session_id: str,
     *,
     request_id: str,
+    expected_revision: int = 0,
     route: str = "recommendation",
+    assistant_content: str = "已根据你的问题推荐了合适的导师。",
     related_recommendations: list[dict] | None = None,
 ) -> dict:
     text = f"推荐导师 {request_id[-2:]}"
@@ -50,14 +52,14 @@ async def _complete_recommendation_turn(
         "session_id": session_id,
         "text": text,
         "request_id": request_id,
-        "expected_revision": 0,
+        "expected_revision": expected_revision,
     })
     admitted = await repository.admit_turn(
         owner_id,
         session_id,
         text=text,
         request_id=request_id,
-        expected_revision=0,
+        expected_revision=expected_revision,
         idempotency_key=request_id,
         request_hash=request_hash,
     )
@@ -72,12 +74,28 @@ async def _complete_recommendation_turn(
         attempt_id=admitted["attempt_id"],
         status="completed",
         route=route,
-        assistant_content="已根据你的问题推荐了合适的导师。",
+        assistant_content=assistant_content,
         related_recommendations=recommendations,
         context_json={},
         snapshot_json={"result_entity_ids": [item["professor_id"] for item in recommendations]},
     )
     return admitted
+
+
+def _retry_request_hash(
+    owner_id: str,
+    session_id: str,
+    turn_id: str,
+    request_id: str,
+    expected_revision: int,
+) -> str:
+    return canonical_hash({
+        "owner_id": owner_id,
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "request_id": request_id,
+        "expected_revision": expected_revision,
+    })
 
 
 @pytest.mark.asyncio
@@ -321,6 +339,374 @@ async def test_create_fork_rejects_invalid_source_or_professor():
                 conversation_turn["turn_id"],
                 "p1",
             )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("route", "request_id", "retry_request_id"),
+    [
+        (
+            "recommendation",
+            "00000000-0000-0000-0000-0000000010a1",
+            "00000000-0000-0000-0000-0000000010a2",
+        ),
+        (
+            "conversation",
+            "00000000-0000-0000-0000-0000000010b1",
+            "00000000-0000-0000-0000-0000000010b2",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_create_retry_attempt_allows_latest_completed_recommendation_or_conversation(
+    route,
+    request_id,
+    retry_request_id,
+):
+    engine = create_async_engine_from_settings(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True)
+    )
+    try:
+        await ensure_schema_ready(engine, bootstrap=True)
+        sessionmaker = create_sessionmaker(engine)
+        repository = AppStateRepository(sessionmaker)
+        owner_id = "00000000-0000-0000-0000-000000000001"
+        created_session = await repository.create_session(owner_id)
+        admitted = await _complete_recommendation_turn(
+            repository,
+            owner_id,
+            created_session["id"],
+            request_id=request_id,
+            route=route,
+        )
+
+        retry = await repository.create_retry_attempt(
+            owner_id,
+            admitted["turn_id"],
+            session_id=created_session["id"],
+            request_id=retry_request_id,
+            expected_revision=1,
+            idempotency_key=retry_request_id,
+            request_hash=_retry_request_hash(
+                owner_id,
+                created_session["id"],
+                admitted["turn_id"],
+                retry_request_id,
+                1,
+            ),
+        )
+
+        assert retry["turn_id"] == admitted["turn_id"]
+        assert retry["attempt_id"]
+        async with sessionmaker() as session:
+            turn = await session.get(
+                ConversationTurn,
+                {"owner_id": owner_id, "id": admitted["turn_id"]},
+            )
+            attempt = await session.get(
+                ConversationAttempt,
+                {"owner_id": owner_id, "id": retry["attempt_id"]},
+            )
+        assert turn is not None
+        assert attempt is not None
+        assert turn.status == "queued"
+        assert turn.route == route
+        assert turn.active_attempt_id == retry["attempt_id"]
+        assert attempt.status == "queued"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_create_retry_attempt_rejects_completed_fork_reroute_and_non_latest_turn():
+    engine = create_async_engine_from_settings(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True)
+    )
+    try:
+        await ensure_schema_ready(engine, bootstrap=True)
+        sessionmaker = create_sessionmaker(engine)
+        repository = AppStateRepository(sessionmaker)
+        owner_id = "00000000-0000-0000-0000-000000000001"
+
+        fork_reroute_session = await repository.create_session(owner_id)
+        fork_reroute = await _complete_recommendation_turn(
+            repository,
+            owner_id,
+            fork_reroute_session["id"],
+            request_id="00000000-0000-0000-0000-0000000011a1",
+            route="forkReroute",
+        )
+        retry_request_id = "00000000-0000-0000-0000-0000000011a2"
+        with pytest.raises(ConflictError, match="completed turn cannot be retried"):
+            await repository.create_retry_attempt(
+                owner_id,
+                fork_reroute["turn_id"],
+                session_id=fork_reroute_session["id"],
+                request_id=retry_request_id,
+                expected_revision=1,
+                idempotency_key=retry_request_id,
+                request_hash=_retry_request_hash(
+                    owner_id,
+                    fork_reroute_session["id"],
+                    fork_reroute["turn_id"],
+                    retry_request_id,
+                    1,
+                ),
+            )
+
+        conversation = await repository.create_session(owner_id)
+        first = await _complete_recommendation_turn(
+            repository,
+            owner_id,
+            conversation["id"],
+            request_id="00000000-0000-0000-0000-0000000011b1",
+        )
+        await _complete_recommendation_turn(
+            repository,
+            owner_id,
+            conversation["id"],
+            request_id="00000000-0000-0000-0000-0000000011b2",
+            expected_revision=1,
+        )
+        stale_retry_request_id = "00000000-0000-0000-0000-0000000011b3"
+        with pytest.raises(ConflictError, match="completed turn cannot be retried"):
+            await repository.create_retry_attempt(
+                owner_id,
+                first["turn_id"],
+                session_id=conversation["id"],
+                request_id=stale_retry_request_id,
+                expected_revision=2,
+                idempotency_key=stale_retry_request_id,
+                request_hash=_retry_request_hash(
+                    owner_id,
+                    conversation["id"],
+                    first["turn_id"],
+                    stale_retry_request_id,
+                    2,
+                ),
+            )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_completed_retry_success_replaces_visible_assistant_but_keeps_history():
+    engine = create_async_engine_from_settings(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True)
+    )
+    try:
+        await ensure_schema_ready(engine, bootstrap=True)
+        sessionmaker = create_sessionmaker(engine)
+        repository = AppStateRepository(sessionmaker)
+        owner_id = "00000000-0000-0000-0000-000000000001"
+        created_session = await repository.create_session(owner_id)
+        admitted = await _complete_recommendation_turn(
+            repository,
+            owner_id,
+            created_session["id"],
+            request_id="00000000-0000-0000-0000-0000000012a1",
+            assistant_content="first answer",
+            related_recommendations=[_recommendation("p1", "张老师")],
+        )
+        retry_request_id = "00000000-0000-0000-0000-0000000012a2"
+        retry = await repository.create_retry_attempt(
+            owner_id,
+            admitted["turn_id"],
+            session_id=created_session["id"],
+            request_id=retry_request_id,
+            expected_revision=1,
+            idempotency_key=retry_request_id,
+            request_hash=_retry_request_hash(
+                owner_id,
+                created_session["id"],
+                admitted["turn_id"],
+                retry_request_id,
+                1,
+            ),
+        )
+        await repository.complete_attempt(
+            owner_id,
+            session_id=created_session["id"],
+            turn_id=admitted["turn_id"],
+            attempt_id=retry["attempt_id"],
+            status="completed",
+            route="recommendation",
+            assistant_content="second answer",
+            related_recommendations=[_recommendation("p3", "王老师")],
+            context_json={},
+            snapshot_json={"result_entity_ids": ["p3"]},
+        )
+
+        projection = await repository.get_session_projection(owner_id, created_session["id"])
+        assistant_messages = [
+            message for message in projection["messages"]
+            if message["role"] == "assistant"
+        ]
+        assert [message["content"] for message in assistant_messages] == ["second answer"]
+        assert assistant_messages[0]["related_recommendations"][0]["professor_id"] == "p3"
+        async with sessionmaker() as session:
+            assistant_count = await session.scalar(
+                select(func.count()).select_from(ConversationMessage).where(
+                    ConversationMessage.owner_id == owner_id,
+                    ConversationMessage.turn_id == admitted["turn_id"],
+                    ConversationMessage.role == "assistant",
+                )
+            )
+        assert assistant_count == 2
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_completed_retry_failure_preserves_old_answer_and_shows_latest_error():
+    engine = create_async_engine_from_settings(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True)
+    )
+    try:
+        await ensure_schema_ready(engine, bootstrap=True)
+        sessionmaker = create_sessionmaker(engine)
+        repository = AppStateRepository(sessionmaker)
+        owner_id = "00000000-0000-0000-0000-000000000001"
+        created_session = await repository.create_session(owner_id)
+        admitted = await _complete_recommendation_turn(
+            repository,
+            owner_id,
+            created_session["id"],
+            request_id="00000000-0000-0000-0000-0000000013a1",
+            assistant_content="stable answer",
+            related_recommendations=[_recommendation("p1", "张老师")],
+        )
+        retry_request_id = "00000000-0000-0000-0000-0000000013a2"
+        retry = await repository.create_retry_attempt(
+            owner_id,
+            admitted["turn_id"],
+            session_id=created_session["id"],
+            request_id=retry_request_id,
+            expected_revision=1,
+            idempotency_key=retry_request_id,
+            request_hash=_retry_request_hash(
+                owner_id,
+                created_session["id"],
+                admitted["turn_id"],
+                retry_request_id,
+                1,
+            ),
+        )
+
+        completed = await repository.complete_attempt(
+            owner_id,
+            session_id=created_session["id"],
+            turn_id=admitted["turn_id"],
+            attempt_id=retry["attempt_id"],
+            status="failed",
+            route="recommendation",
+            assistant_content="retry failed",
+            related_recommendations=[],
+            context_json={"intent": "new_search"},
+            snapshot_json={"result_entity_ids": ["failed"]},
+        )
+
+        assert completed["turn"]["status"] == "completed"
+        assert completed["assistant_message"]["status"] == "error"
+        assert completed["assistant_message"]["kind"] == "recommendation"
+        projection = await repository.get_session_projection(owner_id, created_session["id"])
+        assistant_messages = [
+            message for message in projection["messages"]
+            if message["role"] == "assistant"
+        ]
+        assert [message["content"] for message in assistant_messages] == [
+            "stable answer",
+            "retry failed",
+        ]
+        assert [message["status"] for message in assistant_messages] == ["done", "error"]
+        async with sessionmaker() as session:
+            turn = await session.get(
+                ConversationTurn,
+                {"owner_id": owner_id, "id": admitted["turn_id"]},
+            )
+        assert turn is not None
+        assert turn.status == "completed"
+        assert turn.snapshot_json == {"result_entity_ids": ["p1"]}
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_fork_model_context_resolves_professor_from_historical_recommendation():
+    engine = create_async_engine_from_settings(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True)
+    )
+    try:
+        await ensure_schema_ready(engine, bootstrap=True)
+        sessionmaker = create_sessionmaker(engine)
+        repository = AppStateRepository(sessionmaker)
+        owner_id = "00000000-0000-0000-0000-000000000001"
+        source = await repository.create_session(owner_id)
+        source_turn = await _complete_recommendation_turn(
+            repository,
+            owner_id,
+            source["id"],
+            request_id="00000000-0000-0000-0000-0000000014a1",
+            related_recommendations=[_recommendation("p1", "张老师")],
+        )
+        fork = await repository.create_fork(owner_id, source["id"], source_turn["turn_id"], "p1")
+        retry_request_id = "00000000-0000-0000-0000-0000000014a2"
+        retry = await repository.create_retry_attempt(
+            owner_id,
+            source_turn["turn_id"],
+            session_id=source["id"],
+            request_id=retry_request_id,
+            expected_revision=1,
+            idempotency_key=retry_request_id,
+            request_hash=_retry_request_hash(
+                owner_id,
+                source["id"],
+                source_turn["turn_id"],
+                retry_request_id,
+                1,
+            ),
+        )
+        await repository.complete_attempt(
+            owner_id,
+            session_id=source["id"],
+            turn_id=source_turn["turn_id"],
+            attempt_id=retry["attempt_id"],
+            status="completed",
+            route="recommendation",
+            assistant_content="new answer",
+            related_recommendations=[_recommendation("p3", "王老师")],
+            context_json={},
+            snapshot_json={"result_entity_ids": ["p3"]},
+        )
+        fork_question_id = "00000000-0000-0000-0000-0000000014a3"
+        fork_question_hash = canonical_hash({
+            "owner_id": owner_id,
+            "session_id": fork["id"],
+            "text": "这位导师适合我吗",
+            "request_id": fork_question_id,
+            "expected_revision": 0,
+        })
+        fork_turn = await repository.admit_turn(
+            owner_id,
+            fork["id"],
+            text="这位导师适合我吗",
+            request_id=fork_question_id,
+            expected_revision=0,
+            idempotency_key=fork_question_id,
+            request_hash=fork_question_hash,
+        )
+
+        context = await repository.get_fork_model_context(
+            owner_id,
+            fork["id"],
+            fork_turn["turn_id"],
+            "这位导师适合我吗",
+        )
+
+        assert context is not None
+        assert context["selected_recommendation"]["professor_id"] == "p1"
+        assert context["selected_recommendation"]["name"] == "张老师"
     finally:
         await engine.dispose()
 

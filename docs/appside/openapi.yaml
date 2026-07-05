@@ -117,6 +117,10 @@ paths:
       - $ref: '#/components/parameters/RequestIdHeader'
     post:
       summary: Get competition recommendations.
+      description: >
+        Returns a non-empty session_id. If the request omits session_id, the
+        backend generates one with a c_ prefix; otherwise it echoes the provided
+        id.
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -350,6 +354,14 @@ paths:
       - $ref: '#/components/parameters/RequestIdHeader'
     post:
       summary: Regenerate an existing turn without adding a user message.
+      description: >
+        Retries failed or interrupted turns. Completed turns can be regenerated
+        only when they are the latest turn and their route is conversation or
+        recommendation. Successful completed-turn regeneration replaces the
+        visible assistant answer; failed or cancelled regeneration preserves the
+        previous completed answer and may surface the latest failure as an error
+        assistant message. Completed forkReroute turns and non-latest completed
+        turns fail with 409 conflict.
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -698,6 +710,10 @@ paths:
         - name: include_defense
           in: query
           required: true
+          description: >
+            For submission templates, true includes defense_prep and false
+            omits it. For eventWindow templates this must be false and the
+            response never contains defense_prep.
           schema: { type: boolean }
         - name: category
           in: query
