@@ -22,11 +22,36 @@ def _ref_key(ref) -> tuple[str, str, str]:
     return (ref.doc_path, ref.heading_path, ref.chunk_hash)
 
 
+def _canonical_refs_for_indices(indices, bundle: FactBundle):
+    if not isinstance(indices, list) or not indices:
+        return None
+    refs = []
+    seen: set[tuple[str, str, str]] = set()
+    for fact_index in indices:
+        if (
+            not isinstance(fact_index, int)
+            or isinstance(fact_index, bool)
+            or fact_index < 0
+            or fact_index >= len(bundle.facts)
+        ):
+            return None
+        fact_refs = tuple(bundle.facts[fact_index].source_refs)
+        if not fact_refs:
+            return None
+        for ref in fact_refs:
+            key = _ref_key(ref)
+            if key in seen:
+                continue
+            seen.add(key)
+            refs.append(ref)
+    return tuple(refs)
+
+
 def validate_fact_index_support(
     result: GenerationResult,
     bundle: FactBundle,
 ) -> GenerationResult:
-    """Enforce fact-index-to-reference ownership before citation validation."""
+    """Resolve fact claims from fact_indices before citation validation."""
     output_claims = result.output.get("claims", ()) if isinstance(result.output, dict) else ()
     kept = []
     dropped: list[str] = []
@@ -38,23 +63,8 @@ def validate_fact_index_support(
             else {}
         )
         if claim.content_class == ContentClass.FACT:
-            indices = raw.get("fact_indices")
-            valid_indices = (
-                isinstance(indices, list) and bool(indices)
-                and all(
-                    isinstance(i, int) and not isinstance(i, bool)
-                    and 0 <= i < len(bundle.facts)
-                    for i in indices
-                )
-            )
-            allowed = set()
-            if valid_indices:
-                for fact_index in indices:
-                    allowed.update(_ref_key(ref) for ref in bundle.facts[fact_index].source_refs)
-            refs_valid = bool(claim.fact_refs) and all(
-                _ref_key(ref) in allowed for ref in claim.fact_refs
-            )
-            if not valid_indices or not refs_valid:
+            canonical_refs = _canonical_refs_for_indices(raw.get("fact_indices"), bundle)
+            if not canonical_refs:
                 dropped.append(claim.text)
                 warnings.append(GenerationWarning(
                     code=RecommendationErrorCode.INSUFFICIENT_FACTS.value,
@@ -62,6 +72,7 @@ def validate_fact_index_support(
                     claim_text=claim.text,
                 ))
                 continue
+            claim = replace(claim, fact_refs=canonical_refs)
         elif claim.content_class == ContentClass.UNCERTAIN and claim.fact_refs:
             claim = replace(claim, fact_refs=())
         kept.append(claim)

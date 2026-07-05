@@ -329,7 +329,7 @@ class ConversationDispatcher:
                 "request refused by content policy",
                 severity="error",
             )
-        blocking = {"generation_unavailable", "generation_parse_error",
+        blocking = {"generation_unavailable", "generation_parse_error", "llm_unavailable",
                     "json_parse_failed", "schema_validation_failed", "unsafe_advice"}
         if any(w.code in blocking for w in result.warnings):
             return ctx, _warn(RecommendationErrorCode.NEEDS_CLARIFICATION,
