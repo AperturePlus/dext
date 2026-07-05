@@ -9,10 +9,12 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from dext_recommend.api import AppSettings, create_recommendation_app
+from dext_recommend.api.adapters import conversation_dispatch_to_answer
 from dext_recommend.generation.achievement_extraction import fallback_achievement_draft
 from dext_recommend.models import (
     AuxiliaryGenerationResult,
     ConversationDispatchResult,
+    DetailFollowupResponse,
     MatchAnalysis,
     QueryDiagnostics,
     QueryUnderstanding,
@@ -103,6 +105,103 @@ class FakeConversation:
 
     async def dispatch(self, request, *, viewer_permissions=None):
         self.calls += 1
+        response = await FakeCore().recommend(request, viewer_permissions=viewer_permissions)
+        return ConversationDispatchResult(
+            kind="recommendation",
+            context=request.conversation_context,
+            recommendation=response,
+            detail_followup=None,
+            issues=(),
+        )
+
+
+def test_conversation_dispatch_to_answer_sanitizes_terminal_issue_message():
+    result = ConversationDispatchResult(
+        kind="error",
+        context=None,
+        recommendation=None,
+        detail_followup=None,
+        issues=(RecommendationWarning(
+            code="intent_classification_unavailable",
+            message="implicit intent output was not usable",
+            severity="error",
+        ),),
+    )
+
+    answer, related, snapshot = conversation_dispatch_to_answer(result)
+
+    assert answer == "这次对话暂时无法完成，请稍后重试。"
+    assert "implicit intent output was not usable" not in answer
+    assert related == []
+    assert snapshot["issues"][0]["message"] == "implicit intent output was not usable"
+
+
+def test_conversation_dispatch_to_answer_keeps_detail_followup_answer():
+    result = ConversationDispatchResult(
+        kind="detail_followup",
+        context=None,
+        recommendation=None,
+        detail_followup=DetailFollowupResponse(
+            build_id="build-1",
+            ranking_profile_version="rank-v1",
+            generation_profile_version="gen-v1",
+            grounded_rules_manifest_hash="hash",
+            embedding_fingerprint="fp",
+            taxonomy_version="tax-v1",
+            anchor_entity_id="p1",
+            anchor_display_name="张老师",
+            answer="这位导师的经历有一定含金量。",
+            claims=(),
+            cited_refs=(),
+            warnings=(),
+        ),
+        issues=(RecommendationWarning(
+            code="needs_clarification",
+            message="implicit intent output was not usable",
+        ),),
+    )
+
+    answer, related, snapshot = conversation_dispatch_to_answer(result)
+
+    assert answer == "这位导师的经历有一定含金量。"
+    assert related == []
+    assert snapshot["result_entity_ids"] == ["p1"]
+
+
+class ForkAwareConversation:
+    def __init__(self):
+        self.requests = []
+
+    async def dispatch(self, request, *, viewer_permissions=None):
+        self.requests.append(request)
+        context = request.conversation_context
+        if context is not None and context.intent == "detail_followup":
+            model_context = request.conversation_model_context or {}
+            selected = model_context.get("selected_recommendation") or {}
+            name = selected.get("name") or context.anchor_entity_id
+            university = selected.get("university") or ""
+            fields = "、".join(selected.get("research_fields") or [])
+            answer = f"联系{name}时，材料应围绕{university}{fields}方向准备。"
+            return ConversationDispatchResult(
+                kind="detail_followup",
+                context=context,
+                recommendation=None,
+                detail_followup=DetailFollowupResponse(
+                    build_id="build-1",
+                    ranking_profile_version="rank-v1",
+                    generation_profile_version="gen-v1",
+                    grounded_rules_manifest_hash="hash",
+                    embedding_fingerprint="fp",
+                    taxonomy_version="tax-v1",
+                    anchor_entity_id=context.anchor_entity_id,
+                    anchor_display_name=str(name),
+                    answer=answer,
+                    claims=(),
+                    cited_refs=(),
+                    warnings=(),
+                ),
+                issues=(),
+            )
         response = await FakeCore().recommend(request, viewer_permissions=viewer_permissions)
         return ConversationDispatchResult(
             kind="recommendation",
@@ -782,6 +881,142 @@ async def test_new_turn_sse_contract():
         second_completed = second_events[-1][1]
         assert second_completed["session"]["revision"] == 2
         assert second_completed["session"]["title"] == "机器学习导师"
+
+
+@pytest.mark.asyncio
+async def test_delete_all_chat_sessions_returns_count_and_hides_deleted_sessions():
+    app = create_recommendation_app(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
+        runtime_factory=fake_runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        identity = await (await client.post("/api/v1/identity/anonymous")).json()
+        headers = {"Authorization": f"Bearer {identity['data']['access_token']}"}
+        session = await (await client.post("/api/v1/chat/sessions", headers=headers, json={})).json()
+        source_id = session["data"]["id"]
+        request_id = "00000000-0000-0000-0000-0000000000c1"
+        source_resp = await client.post(
+            f"/api/v1/chat/sessions/{source_id}/turns",
+            headers={**headers, "Idempotency-Key": request_id},
+            json={"text": "推荐机器学习导师", "request_id": request_id, "expected_revision": 0},
+        )
+        source_events = _parse_sse(await source_resp.text())
+        source_turn_id = source_events[0][1]["turn_id"]
+        fork_resp = await client.post(
+            f"/api/v1/chat/sessions/{source_id}/forks",
+            headers=headers,
+            json={"source_turn_id": source_turn_id, "professor_id": "p1"},
+        )
+        fork_id = (await fork_resp.json())["data"]["id"]
+        second = await (await client.post(
+            "/api/v1/chat/sessions",
+            headers=headers,
+            json={},
+        )).json()
+
+        delete_resp = await client.delete("/api/v1/chat/sessions", headers=headers)
+
+        assert delete_resp.status == 200
+        body = await delete_resp.json()
+        assert body["code"] == 0
+        assert body["data"] == {"deleted": True, "deleted_count": 3}
+        listed = await (await client.get("/api/v1/chat/sessions", headers=headers)).json()
+        assert listed["data"]["items"] == []
+        for session_id in (source_id, fork_id, second["data"]["id"]):
+            detail = await client.get(f"/api/v1/chat/sessions/{session_id}", headers=headers)
+            assert detail.status == 404
+
+        repeat = await client.delete("/api/v1/chat/sessions", headers=headers)
+        repeat_body = await repeat.json()
+        assert repeat.status == 200
+        assert repeat_body["data"] == {"deleted": True, "deleted_count": 0}
+
+
+@pytest.mark.asyncio
+async def test_fork_turn_injects_source_context_and_reroutes_explicit_new_recommendation():
+    runtime = FakeRuntime()
+    runtime.conversation = ForkAwareConversation()
+
+    async def runtime_factory(*args, **kwargs):
+        return runtime
+
+    app = create_recommendation_app(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
+        runtime_factory=runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        identity = await (await client.post("/api/v1/identity/anonymous")).json()
+        headers = {"Authorization": f"Bearer {identity['data']['access_token']}"}
+        session = await (await client.post("/api/v1/chat/sessions", headers=headers, json={})).json()
+        source_id = session["data"]["id"]
+        request_id = "00000000-0000-0000-0000-0000000000d1"
+        source_resp = await client.post(
+            f"/api/v1/chat/sessions/{source_id}/turns",
+            headers={**headers, "Idempotency-Key": request_id},
+            json={"text": "推荐机器学习导师", "request_id": request_id, "expected_revision": 0},
+        )
+        source_events = _parse_sse(await source_resp.text())
+        source_turn_id = source_events[0][1]["turn_id"]
+        assert source_events[-1][1]["message"]["related_recommendations"][0]["professor_id"] == "p1"
+
+        fork_resp = await client.post(
+            f"/api/v1/chat/sessions/{source_id}/forks",
+            headers=headers,
+            json={"source_turn_id": source_turn_id, "professor_id": "p1"},
+        )
+        assert fork_resp.status == 200
+        fork = (await fork_resp.json())["data"]
+        assert fork["kind"] == "fork"
+        assert fork["source_session_id"] == source_id
+        assert fork["source_turn_id"] == source_turn_id
+        assert fork["professor_id"] == "p1"
+
+        follow_request_id = "00000000-0000-0000-0000-0000000000d2"
+        follow_resp = await client.post(
+            f"/api/v1/chat/sessions/{fork['id']}/turns",
+            headers={**headers, "Idempotency-Key": follow_request_id},
+            json={"text": "怎么准备联系材料呢？", "request_id": follow_request_id, "expected_revision": 0},
+        )
+        assert follow_resp.status == 200
+        events = _parse_sse(await follow_resp.text())
+        assert [name for name, _ in events] == ["ack", "route", "delta", "completed"]
+        assert events[1][1]["route"] == "conversation"
+        completed = events[-1][1]
+        assert completed["message"]["kind"] == "conversation"
+        assert "张老师" in completed["message"]["content"]
+        assert "没有生成可展示的导师推荐" not in completed["message"]["content"]
+
+        follow_request = runtime.conversation.requests[-1]
+        assert follow_request.conversation_context.intent == "detail_followup"
+        assert follow_request.conversation_context.intent_source == "explicit"
+        assert follow_request.conversation_context.anchor_entity_id == "p1"
+        model_context = follow_request.conversation_model_context
+        assert model_context["selected_recommendation"]["name"] == "张老师"
+        assert model_context["selected_recommendation"]["university"] == "测试大学"
+        assert model_context["current_question"] == "怎么准备联系材料呢？"
+        assert model_context["source_prefix"][0]["messages"][0]["content"] == "推荐机器学习导师"
+        assert model_context["fork_history"] == ()
+
+        fork_projection = await (await client.get(
+            f"/api/v1/chat/sessions/{fork['id']}",
+            headers=headers,
+        )).json()
+        visible_contents = [item["content"] for item in fork_projection["data"]["messages"]]
+        assert "推荐机器学习导师" not in visible_contents
+        assert "怎么准备联系材料呢？" in visible_contents
+
+        reroute_request_id = "00000000-0000-0000-0000-0000000000d3"
+        reroute_resp = await client.post(
+            f"/api/v1/chat/sessions/{fork['id']}/turns",
+            headers={**headers, "Idempotency-Key": reroute_request_id},
+            json={"text": "换一批", "request_id": reroute_request_id, "expected_revision": 1},
+        )
+        reroute_events = _parse_sse(await reroute_resp.text())
+        assert [name for name, _ in reroute_events] == ["ack", "route", "delta", "completed"]
+        assert reroute_events[1][1]["route"] == "forkReroute"
+        assert reroute_events[-1][1]["message"]["kind"] == "forkReroute"
+        assert reroute_events[-1][1]["message"]
+        assert len(runtime.conversation.requests) == 2
 
 
 @pytest.mark.asyncio

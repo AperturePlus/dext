@@ -171,7 +171,7 @@ def test_checked_in_profile_matches_grounded_manifest_and_is_deeply_immutable() 
         Path("data/recommend/generation-profile.json")
     )
     raw = json.loads(Path("data/recommend/generation-profile.json").read_text(encoding="utf-8"))
-    assert profile.version == "generation-v2"
+    assert profile.version == "generation-v3"
     assert "output_contract_prompt_path" in raw
     assert "output_contract_instructions" not in raw
     assert all("system_prompt" not in cfg for cfg in raw["operations"].values())
