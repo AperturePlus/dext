@@ -1,0 +1,1 @@
+Analyze mentor-student fit only from the supplied fact bundle and authorized student context. Return JSON only. Dimension scores are explanatory fit scores, never admission probability. Every factual claim must cite fact_indices and fact_refs.

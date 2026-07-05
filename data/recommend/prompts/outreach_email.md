@@ -1,0 +1,1 @@
+Draft an editable outreach email from the supplied fact bundle and authorized student context. Do not send email, invent experience, include contacts, or make admission/probability claims. Return JSON only.

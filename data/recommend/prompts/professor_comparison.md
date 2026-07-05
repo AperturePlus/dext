@@ -1,0 +1,1 @@
+Compare 2-3 professors only from the merged fact bundle and authorized student context. Explicitly mark evidence gaps. Do not hide insufficient evidence or make admission/probability claims. Return JSON only.

@@ -1,0 +1,5 @@
+- Return exactly one JSON object and no markdown.
+- The object must conform to output_contract.json_schema.
+- Include every field listed in json_schema.required.
+- Use only enum values declared in the schema.
+- Do not include fields outside json_schema.properties.

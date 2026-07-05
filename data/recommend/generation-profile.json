@@ -1,10 +1,11 @@
 {
   "version": "generation-v1",
   "grounded_rules_manifest_hash": "23531ed9edf058fedff7c7d8e04cdad046a163481dee0b0d81b6e7d07996b625",
+  "output_contract_prompt_path": "prompts/output_contract_instructions.md",
   "operations": {
     "query_understanding": {
       "system_prompt_id": "dext_recommend.query_understanding.v1",
-      "system_prompt": "Extract the student's mentor-search constraints. Return only JSON matching the supplied schema. Do not invent professor facts or infer sensitive attributes.",
+      "system_prompt_path": "prompts/query_understanding.md",
       "json_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -26,7 +27,7 @@
     },
     "implicit_intent": {
       "system_prompt_id": "dext_recommend.implicit_intent.v1",
-      "system_prompt": "Classify the follow-up intent using only the supplied context. Return only JSON matching the supplied schema. Never reveal rationale outside the structured field.",
+      "system_prompt_path": "prompts/implicit_intent.md",
       "json_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -45,7 +46,7 @@
     },
     "detail_followup": {
       "system_prompt_id": "dext_recommend.detail_followup.v1",
-      "system_prompt": "Answer only from the supplied fact bundle. Every factual claim must cite the supporting fact indices and refs. Do not provide contacts or probability claims.",
+      "system_prompt_path": "prompts/detail_followup.md",
       "json_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -72,7 +73,7 @@
     },
     "match_analysis": {
       "system_prompt_id": "dext_recommend.match_analysis.v1",
-      "system_prompt": "Analyze mentor-student fit only from the supplied fact bundle and authorized student context. Return JSON only. Dimension scores are explanatory fit scores, never admission probability. Every factual claim must cite fact_indices and fact_refs.",
+      "system_prompt_path": "prompts/match_analysis.md",
       "json_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -97,12 +98,12 @@
           }
         }
       },
-      "timeout": 15.0,
+      "timeout": 30.0,
       "token_budget": 2048
     },
     "outreach_email": {
       "system_prompt_id": "dext_recommend.outreach_email.v1",
-      "system_prompt": "Draft an editable outreach email from the supplied fact bundle and authorized student context. Do not send email, invent experience, include contacts, or make admission/probability claims. Return JSON only.",
+      "system_prompt_path": "prompts/outreach_email.md",
       "json_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -131,7 +132,7 @@
     },
     "professor_comparison": {
       "system_prompt_id": "dext_recommend.professor_comparison.v1",
-      "system_prompt": "Compare 2-3 professors only from the merged fact bundle and authorized student context. Explicitly mark evidence gaps. Do not hide insufficient evidence or make admission/probability claims. Return JSON only.",
+      "system_prompt_path": "prompts/professor_comparison.md",
       "json_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -161,7 +162,7 @@
     },
     "quick_actions": {
       "system_prompt_id": "dext_recommend.quick_actions.v1",
-      "system_prompt": "Generate short Chinese quick-action chip labels for a mentor-recommendation chat composer. Use only the supplied follow_up and last_recommendations context. Return JSON only. Labels must be operation phrases, not full questions; each label must be no more than 8 Chinese/ASCII characters. Produce 1-4 useful next actions, or [] if no useful action exists. Few-shots: follow_up='' with no recommendations -> {\"quick_actions\":[\"找导师\",\"筛方向\",\"看城市\"]}; follow_up='只看上海的导师' -> {\"quick_actions\":[\"换城市\",\"只看985\",\"偏应用\",\"招生要求\"]}; follow_up='想读博士' -> {\"quick_actions\":[\"适合硕士\",\"论文方向\",\"招生要求\",\"联系建议\"]}.",
+      "system_prompt_path": "prompts/quick_actions.md",
       "json_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -177,6 +178,62 @@
       },
       "timeout": 8.0,
       "token_budget": 256
+    },
+    "conversation_title": {
+      "system_prompt_id": "dext_recommend.conversation_title.v1",
+      "system_prompt_path": "prompts/conversation_title.md",
+      "json_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title"],
+        "properties": {
+          "title": {"type": "string", "maxLength": 32}
+        }
+      },
+      "timeout": 8.0,
+      "token_budget": 128
+    },
+    "achievement_extraction": {
+      "system_prompt_id": "dext_recommend.achievement_extraction.v1",
+      "system_prompt_path": "prompts/achievement_extraction.md",
+      "json_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["competitions", "research"],
+        "properties": {
+          "competitions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "level", "award", "year"],
+              "properties": {
+                "name": {"type": "string"},
+                "level": {"type": "string"},
+                "award": {"type": "string"},
+                "year": {"type": "string"}
+              }
+            }
+          },
+          "research": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "title", "role", "venue_or_status", "year"],
+              "properties": {
+                "type": {"type": "string", "enum": ["paper", "project", "patent", "other"]},
+                "title": {"type": "string"},
+                "role": {"type": "string"},
+                "venue_or_status": {"type": "string"},
+                "year": {"type": "string"}
+              }
+            }
+          }
+        }
+      },
+      "timeout": 8.0,
+      "token_budget": 768
     }
   }
 }
