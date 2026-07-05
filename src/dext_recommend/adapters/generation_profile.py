@@ -1,4 +1,4 @@
-"""Live generation-profile port backed by the checked-in JSON artifact."""
+"""Generation-profile adapters."""
 from __future__ import annotations
 
 import asyncio
@@ -12,4 +12,14 @@ class LiveGenerationProfileAdapter:
         return await asyncio.to_thread(RecommendGenerationProfile.from_file, Path(path))
 
 
-__all__ = ["LiveGenerationProfileAdapter"]
+class StaticGenerationProfileAdapter:
+    """Return the already-validated runtime generation profile."""
+
+    def __init__(self, profile: RecommendGenerationProfile) -> None:
+        self._profile = profile
+
+    async def read_profile(self, path: Path) -> RecommendGenerationProfile:
+        return self._profile
+
+
+__all__ = ["LiveGenerationProfileAdapter", "StaticGenerationProfileAdapter"]

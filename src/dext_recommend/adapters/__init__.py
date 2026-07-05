@@ -12,7 +12,9 @@ from dext_recommend.adapters.catalog_professor_facts import (
 )
 from dext_recommend.adapters.catalog_release import CatalogReleaseAdapter
 from dext_recommend.adapters.graph_release import GraphReleaseAdapter
-from dext_recommend.adapters.generation_profile import LiveGenerationProfileAdapter
+from dext_recommend.adapters.generation_profile import (
+    LiveGenerationProfileAdapter, StaticGenerationProfileAdapter,
+)
 from dext_recommend.adapters.ranking_profile import RankingProfileAdapter
 from dext_recommend.adapters.vector_release import VectorReleaseAdapter
 from dext_recommend.adapters.llm_generation import OpenAICompatibleLLMGenerationAdapter
@@ -32,5 +34,6 @@ __all__ = [
     "LiveVectorSearchAdapter",
     "OpenAICompatibleLLMGenerationAdapter",
     "RankingProfileAdapter",
+    "StaticGenerationProfileAdapter",
     "VectorReleaseAdapter",
 ]
