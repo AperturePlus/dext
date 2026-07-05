@@ -801,6 +801,73 @@ def _fail_promotion(
     )
 
 
+def _prepare_promotion_rollback(
+    connection: sqlite3.Connection, build_id: str
+) -> tuple[str, str]:
+    promotion = connection.execute(
+        "SELECT status,previous_active_build_id FROM promotion_runs WHERE build_id=?",
+        (build_id,),
+    ).fetchone()
+    if promotion is None:
+        raise CatalogError(f"build {build_id} has no promotion run")
+    status = str(promotion["status"])
+    if status not in {"FAILED", "ROLLED_BACK"}:
+        raise CatalogError(
+            f"build {build_id} promotion cannot be rolled back from status {status}"
+        )
+    previous_id = promotion["previous_active_build_id"]
+    if previous_id is None or not str(previous_id).strip():
+        raise CatalogError(f"build {build_id} promotion has no previous active build")
+    previous_id = str(previous_id)
+    previous = connection.execute(
+        "SELECT id FROM graph_builds WHERE id=?", (previous_id,)
+    ).fetchone()
+    if previous is None:
+        raise CatalogError(f"previous active build does not exist: {previous_id}")
+    vector = connection.execute(
+        "SELECT status,collection_name FROM vector_runs WHERE build_id=?",
+        (previous_id,),
+    ).fetchone()
+    if (
+        vector is None
+        or str(vector["status"]) != "COMPLETED"
+        or not str(vector["collection_name"]).strip()
+    ):
+        raise CatalogError(
+            f"previous active build {previous_id} has no completed vector collection"
+        )
+    return previous_id, str(vector["collection_name"])
+
+
+def _finish_promotion_rollback(
+    connection: sqlite3.Connection, build_id: str, previous_id: str
+) -> None:
+    now = utcnow_iso()
+    connection.execute(
+        "UPDATE graph_builds SET status='READY' WHERE status='ACTIVE' AND id<>?",
+        (previous_id,),
+    )
+    connection.execute(
+        "UPDATE graph_builds SET status='ACTIVE',last_error=NULL WHERE id=?",
+        (previous_id,),
+    )
+    connection.execute(
+        "UPDATE promotion_runs SET status='ROLLED_BACK',readback_done=1,"
+        "updated_at=?,finished_at=?,last_error=NULL WHERE build_id=?",
+        (now, now, build_id),
+    )
+
+
+def _record_promotion_rollback_failure(
+    connection: sqlite3.Connection, build_id: str, error: str
+) -> None:
+    connection.execute(
+        "UPDATE promotion_runs SET status='FAILED',updated_at=?,last_error=? "
+        "WHERE build_id=?",
+        (utcnow_iso(), f"rollback failed: {error}", build_id),
+    )
+
+
 async def run_promotion(
     writer: CatalogWriter,
     build_id: str,
@@ -860,6 +927,52 @@ async def run_promotion(
     return build_status(writer.path, build_id)
 
 
+async def run_promotion_rollback(
+    writer: CatalogWriter,
+    build_id: str,
+    settings: GraphSettings,
+    *,
+    qdrant_sink: Any | None = None,
+    neo4j_setter: Neo4jSetter | None = None,
+    neo4j_reader: Neo4jReader | None = None,
+) -> dict[str, Any]:
+    previous_id, collection_name = await writer.execute(
+        lambda connection: _prepare_promotion_rollback(connection, build_id)
+    )
+    owns_qdrant = qdrant_sink is None
+    qdrant_sink = qdrant_sink or ProfessorQdrant(settings.qdrant_url)
+    setter = neo4j_setter or set_active_build
+    reader = neo4j_reader or get_active_build
+    try:
+        await setter(previous_id, settings)
+        await qdrant_sink.switch_current_alias(collection_name)
+        neo4j_active = await reader(settings)
+        qdrant_active = await qdrant_sink.resolve_current_alias()
+        if neo4j_active != previous_id or qdrant_active != collection_name:
+            raise CatalogError(
+                "promotion rollback readback mismatch: "
+                f"neo4j={neo4j_active!r}, qdrant={qdrant_active!r}"
+            )
+        await writer.execute(
+            lambda connection: _finish_promotion_rollback(
+                connection, build_id, previous_id
+            )
+        )
+    except Exception as exc:
+        await writer.execute(
+            lambda connection: _record_promotion_rollback_failure(
+                connection, build_id, _safe_error(exc)
+            )
+        )
+        raise
+    finally:
+        if owns_qdrant:
+            await qdrant_sink.close()
+    from dext_graph.catalog.workflow import build_status
+
+    return build_status(writer.path, build_id)
+
+
 async def promote_build(
     build_id: str,
     settings: GraphSettings | None = None,
@@ -884,10 +997,36 @@ async def promote_build(
             )
 
 
+async def rollback_promotion(
+    build_id: str,
+    settings: GraphSettings | None = None,
+    *,
+    qdrant_sink: Any | None = None,
+    neo4j_setter: Neo4jSetter | None = None,
+    neo4j_reader: Neo4jReader | None = None,
+) -> dict[str, Any]:
+    settings = settings or GraphSettings()
+    path = Path(settings.catalog_path).expanduser().resolve()
+    with catalog_write_lock(path):
+        backup_existing_catalog(path, retention=settings.catalog_backup_retention)
+        initialize_catalog(path)
+        async with CatalogWriter(path, max_queue=settings.build_write_queue) as writer:
+            return await run_promotion_rollback(
+                writer,
+                build_id,
+                settings,
+                qdrant_sink=qdrant_sink,
+                neo4j_setter=neo4j_setter,
+                neo4j_reader=neo4j_reader,
+            )
+
+
 __all__ = [
     "VALIDATION_VERSION",
     "promote_build",
+    "rollback_promotion",
     "run_promotion",
+    "run_promotion_rollback",
     "run_validation",
     "validate_build",
 ]

@@ -28,6 +28,35 @@ from dext_graph.catalog.models import (
     TOPIC_SCHEMA_SQL,
 )
 
+PROMOTION_RUNS_V7_MIGRATION_SQL = """
+DROP INDEX IF EXISTS ix_promotion_runs_status;
+ALTER TABLE promotion_runs RENAME TO promotion_runs_v6;
+CREATE TABLE promotion_runs (
+    build_id TEXT PRIMARY KEY REFERENCES graph_builds(id),
+    validation_manifest_hash TEXT NOT NULL,
+    previous_active_build_id TEXT REFERENCES graph_builds(id),
+    status TEXT NOT NULL CHECK (status IN ('PENDING','RUNNING','COMPLETED','FAILED','ROLLED_BACK')),
+    neo4j_done INTEGER NOT NULL DEFAULT 0 CHECK (neo4j_done IN (0,1)),
+    qdrant_done INTEGER NOT NULL DEFAULT 0 CHECK (qdrant_done IN (0,1)),
+    readback_done INTEGER NOT NULL DEFAULT 0 CHECK (readback_done IN (0,1)),
+    started_at TEXT,
+    updated_at TEXT,
+    finished_at TEXT,
+    last_error TEXT
+);
+INSERT INTO promotion_runs(
+  build_id,validation_manifest_hash,previous_active_build_id,status,
+  neo4j_done,qdrant_done,readback_done,started_at,updated_at,finished_at,last_error
+)
+SELECT
+  build_id,validation_manifest_hash,previous_active_build_id,status,
+  neo4j_done,qdrant_done,readback_done,started_at,updated_at,finished_at,last_error
+FROM promotion_runs_v6;
+DROP TABLE promotion_runs_v6;
+CREATE INDEX IF NOT EXISTS ix_promotion_runs_status
+ON promotion_runs(status, build_id);
+"""
+
 T = TypeVar("T")
 
 _BACKUP_FREE_SPACE_RESERVE = 64 * 1024 * 1024
@@ -237,7 +266,7 @@ def initialize_catalog(path: str | Path) -> Path:
                 (str(CATALOG_SCHEMA_VERSION),),
             )
             connection.execute(f"PRAGMA user_version={CATALOG_SCHEMA_VERSION}")
-        elif version in {1, 2, 3, 4, 5} and CATALOG_SCHEMA_VERSION == 6:
+        elif version in {1, 2, 3, 4, 5, 6} and CATALOG_SCHEMA_VERSION == 7:
             # Public mutating workflows take a verified online backup before
             # reaching this migration. Keep all schema additions and the
             # version bump in one SQLite transaction.
@@ -250,7 +279,10 @@ def initialize_catalog(path: str | Path) -> Path:
                 migration_sql += SEMANTIC_VECTOR_SCHEMA_SQL + "\n"
             if version in {1, 2, 3, 4}:
                 migration_sql += TOPIC_SCHEMA_SQL + "\n"
-            migration_sql += RELEASE_SCHEMA_SQL
+            if version in {1, 2, 3, 4, 5}:
+                migration_sql += RELEASE_SCHEMA_SQL
+            if version == 6:
+                migration_sql += PROMOTION_RUNS_V7_MIGRATION_SQL
             migration_sql += (
                 f"\nUPDATE catalog_meta SET value='{CATALOG_SCHEMA_VERSION}' "
                 "WHERE key='schema_version';\n"

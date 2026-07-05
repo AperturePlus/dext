@@ -614,6 +614,27 @@ def promote_command(build_id: str, json_output: bool) -> None:
     )
 
 
+@graph.command("rollback-promotion")
+@click.argument("build_id")
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Emit full JSON details instead of the concise summary.",
+)
+def rollback_promotion_command(build_id: str, json_output: bool) -> None:
+    """Restore the previous ACTIVE build after a failed promotion."""
+    from dext_graph.catalog.lifecycle import rollback_promotion
+    from dext_graph.config import GraphSettings
+
+    settings = GraphSettings()
+    _guard_catalog(
+        lambda: rollback_promotion(build_id, settings),
+        asynchronous=True,
+        json_output=json_output,
+    )
+
+
 @graph.group("topics")
 def topics_group() -> None:
     """Build, review, and evaluate the versioned Topic taxonomy."""

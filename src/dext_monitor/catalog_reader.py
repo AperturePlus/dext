@@ -9,8 +9,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-SUPPORTED_SCHEMA_VERSIONS = frozenset({3, 4, 5, 6})
-SUPPORTED_SCHEMA_VERSION = 6
+SUPPORTED_SCHEMA_VERSIONS = frozenset({3, 4, 5, 6, 7})
+SUPPORTED_SCHEMA_VERSION = 7
 
 
 class MonitorCatalogError(RuntimeError):

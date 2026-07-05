@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-CATALOG_SCHEMA_VERSION = 6
+CATALOG_SCHEMA_VERSION = 7
 
 BUILD_STATUSES = (
     "CREATED",
@@ -616,7 +616,7 @@ CREATE TABLE IF NOT EXISTS promotion_runs (
     build_id TEXT PRIMARY KEY REFERENCES graph_builds(id),
     validation_manifest_hash TEXT NOT NULL,
     previous_active_build_id TEXT REFERENCES graph_builds(id),
-    status TEXT NOT NULL CHECK (status IN ('PENDING','RUNNING','COMPLETED','FAILED')),
+    status TEXT NOT NULL CHECK (status IN ('PENDING','RUNNING','COMPLETED','FAILED','ROLLED_BACK')),
     neo4j_done INTEGER NOT NULL DEFAULT 0 CHECK (neo4j_done IN (0,1)),
     qdrant_done INTEGER NOT NULL DEFAULT 0 CHECK (qdrant_done IN (0,1)),
     readback_done INTEGER NOT NULL DEFAULT 0 CHECK (readback_done IN (0,1)),

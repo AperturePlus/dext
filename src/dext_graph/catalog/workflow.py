@@ -1338,15 +1338,41 @@ async def _run_topic_and_vector(
     return await run_vector_stage(writer, build_id, settings, progress=progress)
 
 
-async def create_build(
-    university_names: list[str] | tuple[str, ...],
+def _normalize_build_sources(
+    sources: list[BuildSource] | tuple[BuildSource, ...],
+) -> list[BuildSource]:
+    if not sources:
+        raise CatalogError("no source databases were selected")
+    normalized: list[BuildSource] = []
+    seen: set[str] = set()
+    for ordinal, source in enumerate(sources):
+        if source.university_id in seen:
+            raise CatalogError(
+                f"duplicate source university_id selected: {source.university_id}"
+            )
+        seen.add(source.university_id)
+        normalized.append(
+            BuildSource(
+                university_id=source.university_id,
+                university_name=source.university_name,
+                abbr=source.abbr,
+                source_path=source.source_path,
+                ordinal=ordinal,
+            )
+        )
+    return normalized
+
+
+async def create_build_from_sources(
+    sources: list[BuildSource] | tuple[BuildSource, ...],
     settings: GraphSettings | None = None,
     *,
     progress: ProgressCallback | None = None,
+    backup_catalog: bool = True,
 ) -> dict[str, Any]:
     settings = settings or GraphSettings()
     _reset_peak_rss()
-    sources = resolve_build_sources(university_names, settings)
+    sources = _normalize_build_sources(sources)
     build_id = uuid7()
     emit_progress(
         progress,
@@ -1359,31 +1385,32 @@ async def create_build(
     )
     with catalog_write_lock(settings.catalog_path):
         _preflight_build_storage(sources, settings)
-        emit_progress(
-            progress,
-            "catalog_backup",
-            "started",
-            build_id=build_id,
-            message="catalog backup",
-        )
-        backup_existing_catalog(
-            settings.catalog_path,
-            retention=settings.catalog_backup_retention,
-            progress_hook=_backup_progress(
-                settings,
+        if backup_catalog:
+            emit_progress(
                 progress,
+                "catalog_backup",
+                "started",
                 build_id=build_id,
-                stage="catalog_backup",
                 message="catalog backup",
-            ),
-        )
-        emit_progress(
-            progress,
-            "catalog_backup",
-            "completed",
-            build_id=build_id,
-            message="catalog backup",
-        )
+            )
+            backup_existing_catalog(
+                settings.catalog_path,
+                retention=settings.catalog_backup_retention,
+                progress_hook=_backup_progress(
+                    settings,
+                    progress,
+                    build_id=build_id,
+                    stage="catalog_backup",
+                    message="catalog backup",
+                ),
+            )
+            emit_progress(
+                progress,
+                "catalog_backup",
+                "completed",
+                build_id=build_id,
+                message="catalog backup",
+            )
         path = initialize_catalog(settings.catalog_path)
         async with CatalogWriter(path, max_queue=settings.build_write_queue) as writer:
             await writer.execute(
@@ -1414,6 +1441,17 @@ async def create_build(
             return result
 
 
+async def create_build(
+    university_names: list[str] | tuple[str, ...],
+    settings: GraphSettings | None = None,
+    *,
+    progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    settings = settings or GraphSettings()
+    sources = resolve_build_sources(university_names, settings)
+    return await create_build_from_sources(sources, settings, progress=progress)
+
+
 def _assert_resume_compatible(build: dict[str, Any], settings: GraphSettings) -> None:
     current = _settings_snapshot(settings)
     frozen = build["settings_json"]
@@ -1433,6 +1471,7 @@ def _assert_resume_compatible(build: dict[str, Any], settings: GraphSettings) ->
         3,
         4,
         5,
+        6,
         CATALOG_SCHEMA_VERSION,
     }:
         raise CatalogError("build catalog schema version is incompatible")
@@ -1634,7 +1673,7 @@ def _serializable_row(row: sqlite3.Row) -> dict[str, Any]:
 def build_status(catalog_path: str | Path, build_id: str | None = None) -> dict[str, Any]:
     with closing(connect_catalog_read_only(catalog_path)) as connection:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version not in {1, 2, 3, 4, 5, CATALOG_SCHEMA_VERSION}:
+        if version not in {1, 2, 3, 4, 5, 6, CATALOG_SCHEMA_VERSION}:
             raise CatalogError(
                 f"catalog schema version {version} is incompatible with "
                 f"{CATALOG_SCHEMA_VERSION}"
@@ -1758,6 +1797,7 @@ __all__ = [
     "CURATION_VERSION",
     "build_status",
     "create_build",
+    "create_build_from_sources",
     "get_status",
     "resolve_build_sources",
     "resume_build",
