@@ -1,0 +1,64 @@
+{
+  "version": "competition.assistant.v1",
+  "safety_domain": "competition",
+  "operation": {
+    "id": "competition_plan_assistant",
+    "system_prompt_id": "dext_competition.assistant.change_cards.v1",
+    "timeout_seconds": 10.0,
+    "max_cards": 5,
+    "json_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reply": { "type": "string" },
+        "cards": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "type": {
+                "type": "string",
+                "enum": ["move_task", "add_task", "delete_task", "reschedule_phase", "append_advice"]
+              },
+              "target_task_id": { "type": "string" },
+              "target_phase_key": { "type": "string" },
+              "new_date": { "type": "string", "format": "date" },
+              "new_task": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "title": { "type": "string", "minLength": 1 },
+                  "estimated_hours": { "type": "integer", "minimum": 1, "maximum": 200 },
+                  "due_date": { "type": "string", "format": "date" },
+                  "note": { "type": "string" }
+                },
+                "required": ["title", "estimated_hours", "due_date"]
+              },
+              "phase_schedule": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "phase_key": { "type": "string" },
+                    "start_date": { "type": "string", "format": "date" },
+                    "end_date": { "type": "string", "format": "date" }
+                  },
+                  "required": ["phase_key", "start_date", "end_date"]
+                }
+              },
+              "advice_text": { "type": "string" },
+              "summary": { "type": "string" },
+              "rationale": { "type": "string" }
+            },
+            "required": ["id", "type", "summary", "rationale"]
+          }
+        }
+      },
+      "required": ["reply", "cards"]
+    }
+  }
+}

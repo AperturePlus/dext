@@ -1,0 +1,26 @@
+{
+  "version": "competition.query-understanding.v1",
+  "safety_domain": "competition",
+  "operation": {
+    "id": "competition_query_understanding",
+    "system_prompt_id": "competition_query_understanding_v1",
+    "timeout_seconds": 8.0,
+    "json_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "interests": {"type": "array", "items": {"type": "string"}},
+        "major_fit": {"type": ["string", "null"]},
+        "grade_fit": {"type": ["string", "null"]},
+        "experience_level": {"type": ["string", "null"]},
+        "weekly_hours": {"type": ["integer", "null"]},
+        "target_goal": {"type": ["string", "null"]},
+        "team_preference": {"type": ["string", "null"]},
+        "missing_information": {"type": "array", "items": {"type": "string"}},
+        "needs_clarification": {"type": "boolean"},
+        "confidence": {"type": "number"}
+      },
+      "required": ["needs_clarification", "confidence"]
+    }
+  }
+}

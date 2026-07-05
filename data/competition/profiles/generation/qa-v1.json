@@ -1,0 +1,29 @@
+{
+  "version": "competition.qa.v1",
+  "safety_domain": "competition",
+  "operations": [
+    {
+      "id": "competition_qa_answer",
+      "system_prompt_id": "dext_competition.qa.answer.v1",
+      "output_schema": "answer_with_claims",
+      "support_map_required": true,
+      "freshness_notice_required_for": [
+        "eligibility",
+        "schedule",
+        "fee",
+        "track",
+        "ai_compliance",
+        "school_recognition"
+      ]
+    },
+    {
+      "id": "competition_compare",
+      "system_prompt_id": "dext_competition.qa.compare.v1",
+      "output_schema": "comparison_with_claims",
+      "support_map_required": true,
+      "min_competitions": 2,
+      "max_competitions": 4
+    }
+  ]
+}
+

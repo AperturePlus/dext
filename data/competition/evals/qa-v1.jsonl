@@ -1,0 +1,21 @@
+{"id":"qa-001","question":"蓝桥杯适合零基础计算机学生吗？","competition_id":null,"expected_shape":["answer","claims","source_refs"],"freshness_sensitive":false}
+{"id":"qa-002","question":"数学建模竞赛通常需要几个人组队？","competition_id":null,"expected_shape":["answer","claims","source_refs"],"freshness_sensitive":false}
+{"id":"qa-003","question":"报名时间是什么时候？","competition_id":null,"expected_shape":["answer","claims","source_refs","freshness_notice"],"freshness_sensitive":true}
+{"id":"qa-004","question":"是否可以使用 ChatGPT 或生成式 AI？","competition_id":null,"expected_shape":["answer","claims","source_refs","freshness_notice"],"freshness_sensitive":true}
+{"id":"qa-005","question":"这个竞赛是否算学校认定竞赛？","competition_id":null,"expected_shape":["answer","claims","source_refs","freshness_notice"],"freshness_sensitive":true}
+{"id":"qa-006","question":"参加互联网+需要准备哪些材料？","competition_id":null,"expected_shape":["answer","claims","source_refs"],"freshness_sensitive":false}
+{"id":"qa-007","question":"电子设计竞赛更适合哪些专业？","competition_id":null,"expected_shape":["answer","claims","source_refs"],"freshness_sensitive":false}
+{"id":"qa-008","question":"机器人竞赛对硬件基础要求高吗？","competition_id":null,"expected_shape":["answer","claims","source_refs"],"freshness_sensitive":false}
+{"id":"qa-009","question":"英语类竞赛一般考察什么能力？","competition_id":null,"expected_shape":["answer","claims","source_refs"],"freshness_sensitive":false}
+{"id":"qa-010","question":"医学或生命科学方向有哪些常见提交物？","competition_id":null,"expected_shape":["answer","claims","source_refs"],"freshness_sensitive":false}
+{"id":"qa-011","question":"经管类竞赛是否必须有商业计划书？","competition_id":null,"expected_shape":["answer","claims","source_refs"],"freshness_sensitive":false}
+{"id":"qa-012","question":"参赛费用是否固定？","competition_id":null,"expected_shape":["answer","claims","source_refs","freshness_notice"],"freshness_sensitive":true}
+{"id":"qa-013","question":"省赛和国赛资格怎么衔接？","competition_id":null,"expected_shape":["answer","claims","source_refs","freshness_notice"],"freshness_sensitive":true}
+{"id":"qa-014","question":"可以跨专业组队吗？","competition_id":null,"expected_shape":["answer","claims","source_refs","freshness_notice"],"freshness_sensitive":true}
+{"id":"qa-015","question":"哪些竞赛更适合作为作品集项目？","competition_id":null,"expected_shape":["answer","claims","source_refs"],"freshness_sensitive":false}
+{"id":"qa-016","question":"竞赛规则和往届通知冲突时应该相信哪个？","competition_id":null,"expected_shape":["answer","claims","source_refs","freshness_notice"],"freshness_sensitive":true}
+{"id":"qa-017","question":"校内加分政策在哪里确认？","competition_id":null,"expected_shape":["answer","claims","source_refs","freshness_notice"],"freshness_sensitive":true}
+{"id":"qa-018","question":"是否能保证获奖概率？","competition_id":null,"expected_shape":["answer","claims","source_refs"],"freshness_sensitive":false}
+{"id":"qa-019","question":"竞赛期间能否请别人代做实验？","competition_id":null,"expected_shape":["answer","claims","source_refs"],"freshness_sensitive":false}
+{"id":"qa-020","question":"不同赛道的提交要求是否每年变化？","competition_id":null,"expected_shape":["answer","claims","source_refs","freshness_notice"],"freshness_sensitive":true}
+

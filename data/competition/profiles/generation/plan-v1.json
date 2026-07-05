@@ -1,0 +1,43 @@
+{
+  "version": "competition.plan.v1",
+  "safety_domain": "competition",
+  "operation": {
+    "id": "competition_plan_personalization",
+    "system_prompt_id": "dext_competition.plan.personalization.v1",
+    "timeout_seconds": 10.0,
+    "max_optional_tasks_per_phase": 3,
+    "json_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "phases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "key": {"type": "string"},
+              "optional_tasks": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "title": {"type": "string", "minLength": 1},
+                    "estimated_hours": {"type": "number", "exclusiveMinimum": 0}
+                  },
+                  "required": ["title", "estimated_hours"]
+                }
+              },
+              "personalized_advice": {"type": "string"}
+            },
+            "required": ["key", "optional_tasks"]
+          }
+        },
+        "global_advice": {"type": "string"}
+      },
+      "required": ["phases"]
+    }
+  }
+}

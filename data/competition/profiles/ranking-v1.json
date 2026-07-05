@@ -1,0 +1,24 @@
+{
+  "version": "competition.ranking.v1",
+  "weights": {
+    "interest_match_score": 0.3,
+    "eligibility_score": 0.2,
+    "effort_fit_score": 0.18,
+    "timeline_fit_score": 0.12,
+    "goal_fit_score": 0.1,
+    "provenance_score": 0.1
+  },
+  "fit_thresholds": {
+    "strong": 0.78,
+    "good": 0.62,
+    "exploratory": 0.42
+  },
+  "tie_break": [
+    "score_desc",
+    "in_2024_catalog_desc",
+    "display_name_asc",
+    "competition_id_asc"
+  ],
+  "recall_top_k": 24,
+  "freshness_notice": "报名日期、赛道、费用、AI 规则和学校认定以当届官方通知与本校文件为准。"
+}

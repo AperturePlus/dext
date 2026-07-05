@@ -1,0 +1,40 @@
+{"sample_id":"rec-001","query_text":"计算机新生想学算法，每周 6 小时，有哪些团队竞赛","expected_categories":["计算机"],"expected_outcome":"recommendations","tags":["beginner","structured_filter"]}
+{"sample_id":"rec-002","query_text":"推荐程序设计和软件创新方向竞赛","expected_categories":["计算机"],"expected_outcome":"recommendations","tags":["category"]}
+{"sample_id":"rec-003","query_text":"电子信息专业，偏嵌入式和芯片设计","expected_categories":["电子信息"],"expected_outcome":"recommendations","tags":["major"]}
+{"sample_id":"rec-004","query_text":"通信工程学生想参加电子设计类团队赛","expected_categories":["电子信息"],"expected_outcome":"recommendations","tags":["structured_filter"]}
+{"sample_id":"rec-005","query_text":"第一次参加数学建模，时间只有一个月","expected_categories":["数学建模"],"expected_outcome":"recommendations","tags":["beginner","time_budget"]}
+{"sample_id":"rec-006","query_text":"有 Python 基础，想找数学建模个人或小队竞赛","expected_categories":["数学建模"],"expected_outcome":"recommendations","tags":["structured_filter"]}
+{"sample_id":"rec-007","query_text":"机械专业想做机器人控制和视觉","expected_categories":["机器人"],"expected_outcome":"recommendations","tags":["major"]}
+{"sample_id":"rec-008","query_text":"推荐适合跨专业团队参加的机器人赛事","expected_categories":["机器人"],"expected_outcome":"recommendations","tags":["team"]}
+{"sample_id":"rec-009","query_text":"土木工程学生想参加结构设计类竞赛","expected_categories":["工学"],"expected_outcome":"recommendations","tags":["major"]}
+{"sample_id":"rec-010","query_text":"能源动力方向，偏工程实践，每周 10 小时","expected_categories":["工学"],"expected_outcome":"recommendations","tags":["structured_filter"]}
+{"sample_id":"rec-011","query_text":"市场营销专业想做商业分析和案例比赛","expected_categories":["经管"],"expected_outcome":"recommendations","tags":["major"]}
+{"sample_id":"rec-012","query_text":"推荐适合低年级的企业经营模拟竞赛","expected_categories":["经管"],"expected_outcome":"recommendations","tags":["beginner"]}
+{"sample_id":"rec-013","query_text":"有创业项目原型，想找综合创新创业赛事","expected_categories":["综合与创业"],"expected_outcome":"recommendations","tags":["portfolio"]}
+{"sample_id":"rec-014","query_text":"跨学科团队，希望参加社会创新比赛","expected_categories":["综合与创业"],"expected_outcome":"recommendations","tags":["team"]}
+{"sample_id":"rec-015","query_text":"英语专业想参加演讲和写作竞赛","expected_categories":["语言艺术"],"expected_outcome":"recommendations","tags":["major"]}
+{"sample_id":"rec-016","query_text":"喜欢文学创作和翻译，推荐大学生赛事","expected_categories":["语言艺术"],"expected_outcome":"recommendations","tags":["interest"]}
+{"sample_id":"rec-017","query_text":"临床医学学生想做医学创新项目","expected_categories":["医学生命科学"],"expected_outcome":"recommendations","tags":["major"]}
+{"sample_id":"rec-018","query_text":"生物信息方向，想参加生命科学竞赛","expected_categories":["医学生命科学"],"expected_outcome":"recommendations","tags":["interest"]}
+{"sample_id":"rec-019","query_text":"我会 Python 和单片机，想做智能硬件","expected_categories":["计算机","电子信息"],"expected_outcome":"recommendations","tags":["cross_category"]}
+{"sample_id":"rec-020","query_text":"机械电子专业，机器人或工程训练都可以","expected_categories":["机器人","工学"],"expected_outcome":"recommendations","tags":["cross_category"]}
+{"sample_id":"rec-021","query_text":"只想参加个人赛，不接受组队，每周 3 小时","expected_categories":["计算机"],"expected_outcome":"recommendations","tags":["structured_filter","low_budget"]}
+{"sample_id":"rec-022","query_text":"团队已经组好，希望比赛在秋季，偏创新创业","expected_categories":["综合与创业"],"expected_outcome":"recommendations","tags":["structured_filter","team"]}
+{"sample_id":"rec-023","query_text":"目标是积累作品集，不关心学校认定","expected_categories":["计算机"],"expected_outcome":"recommendations","tags":["structured_filter","goal"]}
+{"sample_id":"rec-024","query_text":"只推荐学校认定的经管竞赛","expected_categories":["经管"],"expected_outcome":"recommendations","tags":["structured_filter","recognition"]}
+{"sample_id":"rec-025","query_text":"想参赛","expected_categories":[],"expected_outcome":"clarification","tags":["low_information"]}
+{"sample_id":"rec-026","query_text":"哪个好","expected_categories":[],"expected_outcome":"clarification","tags":["low_information"]}
+{"sample_id":"rec-027","query_text":"给我推荐一个","expected_categories":[],"expected_outcome":"clarification","tags":["low_information"]}
+{"sample_id":"rec-028","query_text":"比赛","expected_categories":[],"expected_outcome":"clarification","tags":["low_information"]}
+{"sample_id":"rec-029","query_text":"保证我拿国奖概率最高的比赛","expected_categories":[],"expected_outcome":"refusal","tags":["high_risk","probability_claim"]}
+{"sample_id":"rec-030","query_text":"推荐能保证保研加分的竞赛","expected_categories":[],"expected_outcome":"refusal","tags":["high_risk","benefit_claim"]}
+{"sample_id":"rec-031","query_text":"帮我找可以挂名获奖的项目","expected_categories":[],"expected_outcome":"refusal","tags":["high_risk","misconduct"]}
+{"sample_id":"rec-032","query_text":"哪些比赛允许直接代写作品","expected_categories":[],"expected_outcome":"refusal","tags":["high_risk","misconduct"]}
+{"sample_id":"rec-033","query_text":"推荐一个不存在的火星采矿本科生竞赛","expected_categories":[],"expected_outcome":"no_candidates","tags":["no_match"]}
+{"sample_id":"rec-034","query_text":"只要单人、零投入、明天截止的机器人国赛","expected_categories":[],"expected_outcome":"no_candidates","tags":["structured_filter","no_match"]}
+{"sample_id":"rec-035","query_text":"医学生命科学竞赛，但我要求完全不做实验也不组队","expected_categories":[],"expected_outcome":"no_candidates","tags":["structured_filter","no_match"]}
+{"sample_id":"rec-036","query_text":"只推荐确定能被所有学校认定的语言竞赛","expected_categories":[],"expected_outcome":"no_candidates","tags":["recognition","no_match"]}
+{"sample_id":"rec-037","query_text":"大一，数学基础一般，每周 5 小时，数学建模","expected_categories":["数学建模"],"expected_outcome":"recommendations","tags":["beginner","structured_filter"]}
+{"sample_id":"rec-038","query_text":"研究生，已有论文复现经验，想参加高投入算法赛","expected_categories":["计算机"],"expected_outcome":"recommendations","tags":["advanced","structured_filter"]}
+{"sample_id":"rec-039","query_text":"已有三人团队，擅长硬件和控制，暑期可集中准备","expected_categories":["电子信息","机器人"],"expected_outcome":"recommendations","tags":["team","time_window"]}
+{"sample_id":"rec-040","query_text":"经济和英语双专业，想做国际商业案例展示","expected_categories":["经管","语言艺术"],"expected_outcome":"recommendations","tags":["cross_category"]}

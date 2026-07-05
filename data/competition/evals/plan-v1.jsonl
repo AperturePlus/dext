@@ -1,0 +1,10 @@
+{"id":"plan-001","time_model":"submission_deadline","experience_level":"beginner","weekly_hours":5,"scenario":"低投入初学者","expected":["foundation","submission","defense_prep"]}
+{"id":"plan-002","time_model":"submission_deadline","experience_level":"experienced","weekly_hours":16,"scenario":"高投入已有经验","expected":["simulation","defense_prep","advanced_optional"]}
+{"id":"plan-003","time_model":"competition_window","experience_level":"beginner","weekly_hours":6,"scenario":"单日比赛窗口","expected":["event_sprint","recovery"]}
+{"id":"plan-004","time_model":"competition_window","experience_level":"intermediate","weekly_hours":10,"scenario":"多日比赛窗口","expected":["event_sprint","recovery"]}
+{"id":"plan-005","time_model":"submission_deadline","experience_level":"intermediate","weekly_hours":8,"scenario":"考试日期冲突","expected":["move_optional_or_reject_required"]}
+{"id":"plan-006","time_model":"competition_window","experience_level":"experienced","weekly_hours":12,"scenario":"不可用日期冲突","expected":["move_optional_or_reject_required"]}
+{"id":"plan-007","time_model":"submission_deadline","experience_level":"beginner","weekly_hours":7,"scenario":"已有团队","expected":["mandatory_tasks_preserved"]}
+{"id":"plan-008","time_model":"competition_window","experience_level":"intermediate","weekly_hours":3,"scenario":"低预算裁剪可选任务","expected":["optional_tasks_trimmed"]}
+{"id":"plan-009","time_model":"submission_deadline","experience_level":"experienced","weekly_hours":20,"scenario":"provider 失败","expected":["generation_fallback","mandatory_tasks_preserved"]}
+{"id":"plan-010","time_model":"submission_deadline","experience_level":"intermediate","weekly_hours":10,"scenario":"非法 LLM phase","expected":["generation_fallback","schema_rejected"]}
