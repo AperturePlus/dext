@@ -1287,6 +1287,94 @@ async def test_new_turn_completed_idempotency_replay_does_not_dispatch_again():
 
 
 @pytest.mark.asyncio
+async def test_completed_latest_turn_attempt_regenerates_and_non_latest_conflicts():
+    runtime = FakeRuntime()
+
+    async def runtime_factory(*args, **kwargs):
+        return runtime
+
+    app = create_recommendation_app(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
+        runtime_factory=runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        identity = await (await client.post("/api/v1/identity/anonymous")).json()
+        headers = {"Authorization": f"Bearer {identity['data']['access_token']}"}
+        session = await (await client.post("/api/v1/chat/sessions", headers=headers, json={})).json()
+        session_id = session["data"]["id"]
+        first_request_id = "00000000-0000-0000-0000-0000000001a0"
+        first = await client.post(
+            f"/api/v1/chat/sessions/{session_id}/turns",
+            headers={**headers, "Idempotency-Key": first_request_id},
+            json={
+                "text": "推荐医学影像和机器学习方向的导师。上海",
+                "request_id": first_request_id,
+                "expected_revision": 0,
+            },
+        )
+        first_events = _parse_sse(await first.text())
+        assert [name for name, _ in first_events] == ["ack", "route", "delta", "completed"]
+        _assert_sse_sequence(first_events)
+        first_turn_id = first_events[-1][1]["turn_id"]
+
+        retry_request_id = "00000000-0000-0000-0000-0000000001a1"
+        retry = await client.post(
+            f"/api/v1/chat/turns/{first_turn_id}/attempts",
+            headers={**headers, "Idempotency-Key": retry_request_id},
+            json={
+                "session_id": session_id,
+                "request_id": retry_request_id,
+                "expected_revision": 1,
+            },
+        )
+        assert retry.status == 200
+        retry_events = _parse_sse(await retry.text())
+        assert [name for name, _ in retry_events] == ["ack", "route", "delta", "completed"]
+        _assert_sse_sequence(retry_events)
+        assert retry_events[0][1]["turn_id"] == first_turn_id
+        assert runtime.conversation.calls == 2
+
+        aggregate = await (await client.get(
+            f"/api/v1/chat/sessions/{session_id}",
+            headers=headers,
+        )).json()
+        assistant_messages = [
+            message for message in aggregate["data"]["messages"]
+            if message["role"] == "assistant"
+        ]
+        assert len(assistant_messages) == 1
+
+        second_request_id = "00000000-0000-0000-0000-0000000001a2"
+        second = await client.post(
+            f"/api/v1/chat/sessions/{session_id}/turns",
+            headers={**headers, "Idempotency-Key": second_request_id},
+            json={
+                "text": "再推荐一轮",
+                "request_id": second_request_id,
+                "expected_revision": 1,
+            },
+        )
+        assert [name for name, _ in _parse_sse(await second.text())] == [
+            "ack", "route", "delta", "completed",
+        ]
+
+        stale_retry_request_id = "00000000-0000-0000-0000-0000000001a3"
+        stale_retry = await client.post(
+            f"/api/v1/chat/turns/{first_turn_id}/attempts",
+            headers={**headers, "Idempotency-Key": stale_retry_request_id},
+            json={
+                "session_id": session_id,
+                "request_id": stale_retry_request_id,
+                "expected_revision": 2,
+            },
+        )
+        assert stale_retry.status == 409
+        body = await stale_retry.json()
+        assert body["error_code"] == "conflict"
+        assert body["message"] == "completed turn cannot be retried"
+
+
+@pytest.mark.asyncio
 async def test_new_turn_cancel_interrupts_registered_dispatch_task():
     hanging = HangingConversation()
 
