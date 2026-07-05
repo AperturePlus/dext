@@ -171,6 +171,7 @@ def test_checked_in_profile_matches_grounded_manifest_and_is_deeply_immutable() 
         Path("data/recommend/generation-profile.json")
     )
     raw = json.loads(Path("data/recommend/generation-profile.json").read_text(encoding="utf-8"))
+    assert profile.version == "generation-v2"
     assert "output_contract_prompt_path" in raw
     assert "output_contract_instructions" not in raw
     assert all("system_prompt" not in cfg for cfg in raw["operations"].values())
@@ -192,12 +193,44 @@ def test_checked_in_profile_matches_grounded_manifest_and_is_deeply_immutable() 
     assert set(profile.operations["match_analysis"].json_schema["required"]) == {
         "summary", "dimension_scores", "next_steps", "claims",
     }
+    dimension_schema = (
+        profile.operations["match_analysis"]
+        .json_schema["properties"]["dimension_scores"]
+    )
+    expected_dimension_keys = {
+        "research_fit",
+        "method_match",
+        "location_fit",
+        "degree_goal",
+        "publication_activity",
+    }
+    assert dimension_schema["additionalProperties"] is False
+    assert set(dimension_schema["required"]) == expected_dimension_keys
+    assert set(dimension_schema["properties"]) == expected_dimension_keys
+    for child in dimension_schema["properties"].values():
+        assert child["type"] == "number"
+        assert child["minimum"] == 0.0
+        assert child["maximum"] == 100.0
     assert set(profile.operations["outreach_email"].json_schema["required"]) == {
         "subject", "body", "claims",
     }
+    outreach = profile.operations["outreach_email"]
+    assert outreach.timeout == 30.0
+    assert outreach.token_budget == 1024
+    assert outreach.fact_limit == 8
     assert set(profile.operations["professor_comparison"].json_schema["required"]) == {
         "summary", "professor_notes", "evidence_gaps", "claims",
     }
+    for operation_id in (
+        "detail_followup", "match_analysis", "outreach_email", "professor_comparison",
+    ):
+        claim_schema = (
+            profile.operations[operation_id].json_schema["properties"]["claims"]["items"]
+        )
+        assert set(claim_schema["required"]) == {
+            "text", "content_class", "fact_indices",
+        }
+        assert "fact_refs" in claim_schema["properties"]
     assert set(profile.operations["quick_actions"].json_schema["required"]) == {
         "quick_actions",
     }
@@ -258,6 +291,7 @@ def test_loader_rejects_inline_and_path_output_contract_together(tmp_path: Path)
     ({"operations": {"implicit_intent": {"system_prompt_id": ""}}}, "empty prompt id"),
     ({"operations": {"implicit_intent": {"timeout": -1.0}}}, "negative timeout"),
     ({"operations": {"implicit_intent": {"token_budget": 0}}}, "non-positive budget"),
+    ({"operations": {"implicit_intent": {"fact_limit": 0}}}, "non-positive fact limit"),
     ({"operations": {"implicit_intent": {"confidence_threshold": 1.5}}}, "threshold out of range"),
     ({"operations": {}}, "missing operations"),
     ({}, "missing operations key"),

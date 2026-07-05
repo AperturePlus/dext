@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -190,6 +191,17 @@ def settings(catalog_path: Path, **overrides):
     return RecommendSettings(**values)
 
 
+def write_generation_profile_tree(tmp_path: Path, payload: dict | None = None) -> Path:
+    source_dir = Path("data/recommend")
+    profile_dir = tmp_path / "recommend-profile"
+    profile_dir.mkdir()
+    shutil.copytree(source_dir / "prompts", profile_dir / "prompts")
+    raw = payload or json.loads((source_dir / "generation-profile.json").read_text("utf-8"))
+    profile_path = profile_dir / "generation-profile.json"
+    profile_path.write_text(json.dumps(raw), encoding="utf-8")
+    return profile_path
+
+
 async def test_live_runtime_composes_all_services_and_closes_in_reverse_order(tmp_path):
     events = []
     injected = clients(events)
@@ -200,10 +212,37 @@ async def test_live_runtime_composes_all_services_and_closes_in_reverse_order(tm
     assert runtime.conversation.core is runtime.core
     assert runtime.auxiliary_generation._core is runtime.core
     assert runtime.generation_profile.version
+    assert runtime._core_llm._request_max_retries is None
+    assert runtime._aux_llm._request_max_retries == 0
     assert runtime.readiness._refresh_task is not None
     await runtime.aclose()
     await runtime.aclose()
     assert events == ["llm_aux", "llm_core", "embedding", "qdrant", "neo4j"]
+
+
+async def test_live_runtime_pins_generation_profile_after_startup(tmp_path):
+    raw = json.loads(Path("data/recommend/generation-profile.json").read_text("utf-8"))
+    profile_path = write_generation_profile_tree(tmp_path, raw)
+    runtime = await build_live_recommendation_runtime(
+        settings(
+            build_catalog(tmp_path),
+            generation_profile_path=profile_path,
+        ),
+        clients=clients([]),
+    )
+    try:
+        pinned_version = runtime.generation_profile.version
+        raw["version"] = "generation-v2-drift"
+        profile_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        current = await runtime.core.deps.generation_profile_port.read_profile(
+            profile_path,
+        )
+
+        assert current.version == pinned_version
+        assert current.version != "generation-v2-drift"
+    finally:
+        await runtime.aclose()
 
 
 async def test_readiness_failure_closes_all_injected_clients(tmp_path):
@@ -242,8 +281,7 @@ async def test_runtime_rejects_embedding_config_mismatch_and_closes(
 async def test_manifest_mismatch_fails_before_any_client_or_network_use(tmp_path):
     raw = json.loads(Path("data/recommend/generation-profile.json").read_text("utf-8"))
     raw["grounded_rules_manifest_hash"] = "stale"
-    profile_path = tmp_path / "generation.json"
-    profile_path.write_text(json.dumps(raw), encoding="utf-8")
+    profile_path = write_generation_profile_tree(tmp_path, raw)
     events = []
     injected = clients(events)
     with pytest.raises(RecommendationRuntimeError) as raised:

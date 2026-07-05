@@ -99,7 +99,7 @@ async def test_new_search_happy_path():
     assert isinstance(resp, RecommendResponse)
     assert resp.build_id == "b-1"
     assert resp.ranking_profile_version == "r1"
-    assert resp.generation_profile_version == "generation-v1"
+    assert resp.generation_profile_version == "generation-v2"
     assert resp.embedding_fingerprint == "fp-x"
     assert len(resp.results) >= 1
     ids = [r.entity_id for r in resp.results]

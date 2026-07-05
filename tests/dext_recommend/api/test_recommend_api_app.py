@@ -13,6 +13,7 @@ from dext_recommend.generation.achievement_extraction import fallback_achievemen
 from dext_recommend.models import (
     AuxiliaryGenerationResult,
     ConversationDispatchResult,
+    MatchAnalysis,
     QueryDiagnostics,
     QueryUnderstanding,
     RecommendResponse,
@@ -236,6 +237,54 @@ class ErrorAuxiliaryGeneration:
                 message=self.message,
                 severity="error",
             ),),
+            generation_profile_version="gen-v1",
+        )
+
+
+class FakeMatchAuxiliaryGeneration:
+    def __init__(self):
+        self.calls = []
+
+    async def analyze_match(
+        self,
+        entity_id,
+        student_context,
+        evidence_policy,
+        *,
+        viewer_permissions=None,
+        request_id=None,
+    ):
+        self.calls.append({
+            "entity_id": entity_id,
+            "student_context": student_context,
+            "evidence_policy": evidence_policy,
+            "request_id": request_id,
+            "viewer_permissions": viewer_permissions,
+        })
+        return AuxiliaryGenerationResult(
+            kind="match_analysis",
+            match_analysis=MatchAnalysis(
+                build_id="build-1",
+                ranking_profile_version="rank-v1",
+                generation_profile_version="gen-v1",
+                grounded_rules_manifest_hash="hash",
+                embedding_fingerprint="fp",
+                taxonomy_version="tax-v1",
+                entity_id=entity_id,
+                display_name="张老师",
+                summary="方向较契合，但仍需补充项目和成果信息。",
+                dimension_scores={
+                    "research_fit": 82,
+                    "method_match": 70,
+                    "location_fit": 60,
+                    "degree_goal": 68,
+                    "publication_activity": 75,
+                },
+                next_steps=("优先阅读导师近三年论文",),
+                claims=(),
+                cited_refs=(),
+                warnings=(),
+            ),
             generation_profile_version="gen-v1",
         )
 
@@ -485,8 +534,59 @@ async def test_professor_detail_readiness_error_returns_503():
 
 
 @pytest.mark.asyncio
+async def test_match_analysis_returns_fixed_chinese_dimensions():
+    auxiliary = FakeMatchAuxiliaryGeneration()
+
+    async def runtime_factory(*args, **kwargs):
+        runtime = FakeRuntime()
+        runtime.auxiliary_generation = auxiliary
+        return runtime
+
+    app = create_recommendation_app(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
+        runtime_factory=runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        identity = await (await client.post("/api/v1/identity/anonymous")).json()
+        token = identity["data"]["access_token"]
+        resp = await client.post(
+            "/api/v1/professors/p1/match-analysis",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"profile": {"research_interests": ["NLP"]}},
+        )
+        body = await resp.json()
+
+    assert resp.status == 200
+    data = body["data"]
+    dimensions = data["dimensions"]
+    expected_labels = ["方向契合", "方法匹配", "地域", "学历目标", "产出活跃"]
+    assert [item["label"] for item in dimensions] == expected_labels
+    assert all(set(item) == {"label", "score", "comment"} for item in dimensions)
+    assert all(isinstance(item["score"], int) for item in dimensions)
+    assert all(0 <= item["score"] <= 100 for item in dimensions)
+    assert all(item["comment"].strip() for item in dimensions)
+    assert all(any("\u4e00" <= char <= "\u9fff" for char in item["comment"]) for item in dimensions)
+    assert not {
+        "research_alignment",
+        "academic_background",
+        "supervision_capacity",
+    }.intersection({item["label"] for item in dimensions})
+    scores = {item["label"]: item["score"] for item in dimensions}
+    assert scores["方向契合"] == 82
+    assert scores["方法匹配"] == 70
+    assert scores["地域"] == 60
+    assert scores["学历目标"] == 68
+    assert scores["产出活跃"] == 75
+    assert all(score != 50 for score in scores.values())
+    assert "补充" in dimensions[1]["comment"]
+    assert "补充" in dimensions[2]["comment"]
+    assert auxiliary.calls[0]["entity_id"] == "p1"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("code", "message", "status"), [
     ("llm_unavailable", "match_analysis provider unavailable", 503),
+    ("no_grounded_output", "all generated claims failed grounding", 503),
     ("request_timeout", "match_analysis generation timed out", 504),
 ])
 async def test_match_analysis_generation_errors_map_http_and_pass_request_id(

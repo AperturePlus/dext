@@ -51,6 +51,18 @@ def _bundle(entity_id: str, *, build_id: str = "b-1", empty: bool = False) -> Fa
     return FactBundle(build_id=build_id, subject_id=entity_id, facts=(fact,), source_refs=(ref,))
 
 
+def _match_scores(**overrides) -> dict[str, float]:
+    scores = {
+        "research_fit": 82.0,
+        "method_match": 70.0,
+        "location_fit": 60.0,
+        "degree_goal": 68.0,
+        "publication_activity": 75.0,
+    }
+    scores.update(overrides)
+    return scores
+
+
 def _detail(entity_id: str, *, build_id: str = "b-1", contacts=None,
             empty_bundle: bool = False) -> ProfessorDetail:
     bundle = _bundle(entity_id, build_id=build_id, empty=empty_bundle)
@@ -120,6 +132,13 @@ class _ProviderError(RuntimeError):
 _ProviderError.__module__ = "openai"
 
 
+class _HttpCoreError(RuntimeError):
+    pass
+
+
+_HttpCoreError.__module__ = "httpcore"
+
+
 @pytest.mark.asyncio
 async def test_analyze_match_returns_grounded_payload_and_pins_snapshot_once():
     detail = _detail("e1")
@@ -127,7 +146,7 @@ async def test_analyze_match_returns_grounded_payload_and_pins_snapshot_once():
     llm = FakeLLMGenerationPort(preset=_result(
         {
             "summary": "Strong NLP fit.",
-            "dimension_scores": {"research_fit": 0.8, "preparation": 0.6},
+            "dimension_scores": _match_scores(),
             "next_steps": ["Read two recent papers"],
             "claims": [{
                 "text": "Strong NLP fit.",
@@ -153,7 +172,7 @@ async def test_analyze_match_returns_grounded_payload_and_pins_snapshot_once():
     assert isinstance(result.match_analysis, MatchAnalysis)
     assert result.issues == ()
     assert result.match_analysis.summary == "Strong NLP fit."
-    assert result.match_analysis.dimension_scores["research_fit"] == 0.8
+    assert result.match_analysis.dimension_scores["research_fit"] == 82.0
     assert snap_port.get_snapshot_calls == 1
     assert len(llm.calls) == 1
     assert llm.calls[0]["fact_bundle"].subject_id == "e1"
@@ -205,6 +224,64 @@ async def test_outreach_contacts_require_permission_and_stay_out_of_llm_bundle()
 
 
 @pytest.mark.asyncio
+async def test_outreach_email_applies_profile_fact_limit_and_rebuilds_refs():
+    detail = _detail("e1")
+    refs = tuple(_ref("e1", f"e1 NLP fact {idx}", chunk=f"h{idx}") for idx in range(12))
+    facts = tuple(
+        FactItem(
+            field=f"research_{idx}",
+            value=f"e1 NLP fact {idx}",
+            content_class=ContentClass.FACT,
+            source_refs=(ref,),
+        )
+        for idx, ref in enumerate(refs)
+    )
+    detail = replace(
+        detail,
+        fact_bundle=FactBundle(
+            build_id=detail.build_id,
+            subject_id=detail.entity_id,
+            facts=facts,
+            source_refs=refs,
+        ),
+        provenance_refs=refs,
+    )
+    ref = refs[0]
+    llm = FakeLLMGenerationPort(preset=_result(
+        {
+            "subject": "Prospective student interested in NLP",
+            "body": "I read your NLP work.",
+            "claims": [{
+                "text": "I read your NLP work.",
+                "content_class": "fact",
+                "fact_indices": [0],
+                "fact_refs": [{
+                    "doc_path": ref.doc_path,
+                    "heading_path": ref.heading_path,
+                    "chunk_hash": ref.chunk_hash,
+                    "quote_or_summary": ref.quote_or_summary,
+                }],
+            }],
+        },
+        Claim(text="I read your NLP work.", content_class=ContentClass.FACT, fact_refs=(ref,)),
+    ))
+    service, _ = _service(llm, details={"e1": detail})
+
+    result = await service.draft_outreach_email(
+        "e1",
+        StudentContext(research_interests=["NLP"]),
+        tone="formal",
+        language="zh",
+    )
+
+    assert result.kind == "outreach_email"
+    bundle = llm.calls[0]["fact_bundle"]
+    assert len(bundle.facts) == 8
+    assert bundle.facts == facts[:8]
+    assert bundle.source_refs == refs[:8]
+
+
+@pytest.mark.asyncio
 async def test_compare_professors_merges_two_or_three_fact_bundles_only():
     d1 = _detail("e1")
     d2 = _detail("e2")
@@ -247,7 +324,37 @@ async def test_compare_professors_merges_two_or_three_fact_bundles_only():
 
 
 @pytest.mark.asyncio
-async def test_auxiliary_support_map_blocks_unrelated_fact_refs():
+async def test_auxiliary_support_map_derives_refs_when_fact_refs_empty():
+    detail = _detail("e1")
+    ref = detail.fact_bundle.source_refs[0]
+    llm = FakeLLMGenerationPort(preset=_result(
+        {
+            "summary": "Indexed support.",
+            "dimension_scores": _match_scores(),
+            "next_steps": [],
+            "claims": [{
+                "text": "Indexed support.",
+                "content_class": "fact",
+                "fact_indices": [0],
+                "fact_refs": [],
+            }],
+        },
+        Claim(text="Indexed support.", content_class=ContentClass.FACT, fact_refs=()),
+    ))
+    service, _ = _service(llm, details={"e1": detail})
+
+    result = await service.analyze_match(
+        "e1", StudentContext(research_interests=["NLP"]), evidence_policy="default",
+    )
+
+    assert result.kind == "match_analysis"
+    assert result.match_analysis is not None
+    assert result.match_analysis.claims[0].fact_refs == (ref,)
+    assert result.match_analysis.cited_refs == (ref,)
+
+
+@pytest.mark.asyncio
+async def test_auxiliary_support_map_uses_indices_over_unrelated_fact_refs():
     detail = _detail("e1")
     ref0 = detail.fact_bundle.source_refs[0]
     ref1 = _ref("e1", "unrelated robotics", chunk="h2")
@@ -267,7 +374,7 @@ async def test_auxiliary_support_map_blocks_unrelated_fact_refs():
     llm = FakeLLMGenerationPort(preset=_result(
         {
             "summary": "Bad support.",
-            "dimension_scores": {"research_fit": 0.8},
+            "dimension_scores": _match_scores(),
             "next_steps": [],
             "claims": [{
                 "text": "Bad support.",
@@ -289,8 +396,126 @@ async def test_auxiliary_support_map_blocks_unrelated_fact_refs():
         "e1", StudentContext(research_interests=["NLP"]), evidence_policy="default",
     )
 
+    assert result.kind == "match_analysis"
+    assert result.match_analysis is not None
+    assert result.match_analysis.claims[0].fact_refs == (ref0,)
+    assert result.match_analysis.cited_refs == (ref0,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fact_indices", ([], [99], ["0"]))
+async def test_auxiliary_support_map_blocks_invalid_fact_indices(fact_indices):
+    detail = _detail("e1")
+    ref = detail.fact_bundle.source_refs[0]
+    llm = FakeLLMGenerationPort(preset=_result(
+        {
+            "summary": "Bad support.",
+            "dimension_scores": _match_scores(),
+            "next_steps": [],
+            "claims": [{
+                "text": "Bad support.",
+                "content_class": "fact",
+                "fact_indices": fact_indices,
+                "fact_refs": [{
+                    "doc_path": ref.doc_path,
+                    "heading_path": ref.heading_path,
+                    "chunk_hash": ref.chunk_hash,
+                    "quote_or_summary": ref.quote_or_summary,
+                }],
+            }],
+        },
+        Claim(text="Bad support.", content_class=ContentClass.FACT, fact_refs=(ref,)),
+    ))
+    service, _ = _service(llm, details={"e1": detail})
+
+    result = await service.analyze_match(
+        "e1", StudentContext(research_interests=["NLP"]), evidence_policy="default",
+    )
+
     assert result.kind == "error"
     assert result.issues[0].code == "no_grounded_output"
+
+
+@pytest.mark.asyncio
+async def test_auxiliary_support_map_blocks_fact_indices_without_source_refs():
+    detail = _detail("e1")
+    uncited_fact = FactItem(
+        field="research_statement",
+        value="e1 works on NLP",
+        content_class=ContentClass.UNCERTAIN,
+        source_refs=(),
+    )
+    detail = replace(
+        detail,
+        fact_bundle=FactBundle(
+            build_id=detail.build_id,
+            subject_id=detail.entity_id,
+            facts=(uncited_fact,),
+            source_refs=(),
+        ),
+        provenance_refs=(),
+    )
+    llm = FakeLLMGenerationPort(preset=_result(
+        {
+            "summary": "Bad support.",
+            "dimension_scores": _match_scores(),
+            "next_steps": [],
+            "claims": [{
+                "text": "Bad support.",
+                "content_class": "fact",
+                "fact_indices": [0],
+                "fact_refs": [],
+            }],
+        },
+        Claim(text="Bad support.", content_class=ContentClass.FACT, fact_refs=()),
+    ))
+    service, _ = _service(llm, details={"e1": detail})
+
+    result = await service.analyze_match(
+        "e1", StudentContext(research_interests=["NLP"]), evidence_policy="default",
+    )
+
+    assert result.kind == "error"
+    assert result.issues[0].code == "no_grounded_output"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dimension_scores", [
+    {key: value for key, value in _match_scores().items() if key != "method_match"},
+    _match_scores(method_match="high"),
+    {},
+])
+async def test_analyze_match_rejects_unusable_dimension_scores(dimension_scores):
+    detail = _detail("e1")
+    ref = detail.fact_bundle.source_refs[0]
+    llm = FakeLLMGenerationPort(preset=_result(
+        {
+            "summary": "Strong NLP fit.",
+            "dimension_scores": dimension_scores,
+            "next_steps": ["Read recent papers"],
+            "claims": [{
+                "text": "Strong NLP fit.",
+                "content_class": "fact",
+                "fact_indices": [0],
+                "fact_refs": [{
+                    "doc_path": ref.doc_path,
+                    "heading_path": ref.heading_path,
+                    "chunk_hash": ref.chunk_hash,
+                    "quote_or_summary": ref.quote_or_summary,
+                }],
+            }],
+        },
+        Claim(text="Strong NLP fit.", content_class=ContentClass.FACT, fact_refs=(ref,)),
+    ))
+    service, _ = _service(llm, details={"e1": detail})
+
+    result = await service.analyze_match(
+        "e1", StudentContext(research_interests=["NLP"]), evidence_policy="default",
+    )
+
+    assert result.kind == "error"
+    assert result.issues[0].code == "generation_parse_error"
+    assert result.issues[0].message == "match analysis dimension_scores are not usable"
 
 
 @pytest.mark.asyncio
@@ -337,7 +562,7 @@ async def test_auxiliary_outer_timeout_adds_provider_grace(monkeypatch):
     llm = FakeLLMGenerationPort(preset=_result(
         {
             "summary": "Strong NLP fit.",
-            "dimension_scores": {"research_fit": 0.8},
+            "dimension_scores": _match_scores(),
             "next_steps": ["Read recent papers"],
             "claims": [{
                 "text": "Strong NLP fit.",
@@ -417,6 +642,53 @@ async def test_auxiliary_provider_exception_is_llm_unavailable():
         StudentContext(research_interests=["NLP"]),
         evidence_policy="default",
         request_id="req-provider",
+    )
+
+    assert result.kind == "error"
+    assert result.issues[0].code == "llm_unavailable"
+    assert result.issues[0].message == "match_analysis provider unavailable"
+
+
+@pytest.mark.asyncio
+async def test_auxiliary_wrapped_provider_exception_is_llm_unavailable():
+    detail = _detail("e1")
+    wrapped = RuntimeError("wrapped provider error")
+    wrapped.__cause__ = _ProviderError("provider down")
+    llm = FakeLLMGenerationPort(preset=GenerationResult(output={}))
+    service, _ = _service(
+        llm,
+        details={"e1": detail},
+        pipeline=_ExplodingPipeline(wrapped),
+    )
+
+    result = await service.draft_outreach_email(
+        "e1",
+        StudentContext(research_interests=["NLP"]),
+        tone="formal",
+        language="zh",
+        request_id="req-provider-wrapped",
+    )
+
+    assert result.kind == "error"
+    assert result.issues[0].code == "llm_unavailable"
+    assert result.issues[0].message == "outreach_email provider unavailable"
+
+
+@pytest.mark.asyncio
+async def test_auxiliary_httpcore_exception_is_llm_unavailable():
+    detail = _detail("e1")
+    llm = FakeLLMGenerationPort(preset=GenerationResult(output={}))
+    service, _ = _service(
+        llm,
+        details={"e1": detail},
+        pipeline=_ExplodingPipeline(_HttpCoreError("transport down")),
+    )
+
+    result = await service.analyze_match(
+        "e1",
+        StudentContext(research_interests=["NLP"]),
+        evidence_policy="default",
+        request_id="req-httpcore",
     )
 
     assert result.kind == "error"
