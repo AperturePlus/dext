@@ -178,6 +178,10 @@ fork.
   fork sessions and deleted sessions.
 - `GET /chat/sessions/{id}` returns `{ session, turns, messages }`.
 - `GET /chat/sessions/{id}/turns` returns `{ turns, messages }`.
+- `title` is nullable before the first successful turn and for legacy rows. After
+  the first user turn completes successfully, the backend generates and persists
+  a short session title; the SSE `completed.session`, session list, and session
+  detail responses then expose the same value.
 - For a `fork`, both read endpoints return only turns and messages created in
   that fork. The inherited source prefix remains server-side model context and
   is never projected into the fork's visible history.

@@ -8,7 +8,18 @@ __pycache__/
 .venv/
 
 # Runtime data (per-university SQLite DBs + backups)
-/data/
+/data/*
+!/data/competition/
+/data/competition/*
+!/data/competition/evals/
+!/data/competition/evals/*.jsonl
+!/data/competition/profiles/
+!/data/competition/profiles/generation/
+!/data/competition/profiles/generation/*.json
+!/data/competition/profiles/*.json
+!/data/recommend/
+!/data/recommend/prompts/
+!/data/recommend/prompts/*.md
 
 # Local compose data volumes (postgres / neo4j / qdrant) — see docker/compose.yaml
 /docker/data/

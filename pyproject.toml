@@ -32,6 +32,8 @@ crawl = "dext.cli:main"
 dext = "dext_graph.cli:main"
 monitor = "dext_graph.cli:monitor"
 recommend = "dext_recommend.api.cli:main"
+dext-competition = "dext_competition.cli:main"
+dext-api = "dext_app.api.cli:main"
 
 [dependency-groups]
 dev = [
@@ -44,7 +46,7 @@ requires = ["hatchling>=1.25.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/dext", "src/dext_graph", "src/dext_monitor", "src/dext_grounded", "src/dext_recommend"]
+packages = ["src/dext", "src/dext_graph", "src/dext_monitor", "src/dext_grounded", "src/dext_recommend", "src/dext_competition", "src/dext_app"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
