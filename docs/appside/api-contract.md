@@ -256,7 +256,14 @@ are authoritative and must not be discarded by the client.
 - `POST /chat/turns/{turnId}/attempts` regenerates an existing turn without
   adding another user message. Body:
   `{ "session_id": "...", "request_id": "...", "expected_revision": 4 }`.
-  It returns the same SSE event grammar as turn submission.
+  It returns the same SSE event grammar as turn submission. `failed` and
+  `interrupted` turns can be retried; `completed` turns can be regenerated only
+  when they are the latest turn and the route is `conversation` or
+  `recommendation`. Regenerating a completed turn replaces the visible assistant
+  answer on success. If the new attempt fails or is cancelled, the previous
+  completed answer remains visible and the latest failure is surfaced as an
+  error assistant message when available. Completed `forkReroute` turns and
+  non-latest completed turns return 409 `conflict`.
 - `POST /chat/attempts/{attemptId}/cancel` persists the active attempt as
   `interrupted`; partial text is not represented as completed.
 - `PATCH /chat/messages/{messageId}/feedback` persists
@@ -347,6 +354,10 @@ Request:
   "profile": {}
 }
 ```
+
+`session_id` and `profile` are optional. If `session_id` is omitted or blank,
+the backend returns a generated non-empty id with the `c_` prefix. If it is
+provided, the response echoes the provided id.
 
 Response data:
 
@@ -763,7 +774,9 @@ instead of asset templates.
 Query:
 
 - `timeline_type`: `eventWindow` or `submission`
-- `include_defense`: boolean
+- `include_defense`: boolean. `submission + true` includes `defense_prep`;
+  `submission + false` omits `defense_prep`; `eventWindow` must use `false`
+  and never returns `defense_prep`.
 - `category`: normalized category key
 - `competition_id`: competition catalog id
 
