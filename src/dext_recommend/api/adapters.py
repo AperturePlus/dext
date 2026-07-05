@@ -173,6 +173,61 @@ def auxiliary_result_to_public(result: AuxiliaryGenerationResult) -> dict[str, A
     }
 
 
+_MATCH_DIMENSION_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("方向契合", ("方向契合", "research_alignment", "research_fit")),
+    ("方法匹配", ("方法匹配", "method_match", "preparation")),
+    ("地域", ("地域", "location_fit", "geography")),
+    ("学历目标", ("学历目标", "academic_background", "degree_goal")),
+    ("产出活跃", ("产出活跃", "supervision_capacity", "publication_activity", "output_activity")),
+)
+
+_MATCH_DIMENSION_COMMENTS: dict[str, str] = {
+    "方向契合": "当前资料显示研究方向有一定重合，建议继续对照导师近三年论文确认细分主题。",
+    "方法匹配": "现有背景能支撑初步沟通，但还需要补充具体方法、工具或实验经历。",
+    "地域": "地域匹配度只能作为参考，建议补充目标城市、学校层级或就读偏好。",
+    "学历目标": "目标阶段与导师招生类型需要进一步核对，尤其要确认硕博名额和培养方向。",
+    "产出活跃": "导师近期产出可作为准备材料的依据，建议补充你自己的论文、项目或可展示成果。",
+}
+
+_MATCH_DIMENSION_MISSING_COMMENTS: dict[str, str] = {
+    "方向契合": "当前资料不足以判断研究方向契合度，建议补充具体研究兴趣、项目主题或论文阅读记录。",
+    "方法匹配": "当前资料不足以判断方法匹配，建议补充常用技术栈、实验方法或数据分析经历。",
+    "地域": "当前资料未体现地域偏好，建议补充目标城市、学校层级或是否接受异地。",
+    "学历目标": "当前资料不足以判断学历目标匹配，建议补充申请硕士、博士或联培等具体目标。",
+    "产出活跃": "当前资料不足以判断产出活跃匹配，建议补充论文、项目、专利或竞赛成果。",
+}
+
+
+def _match_score_to_public(value: float) -> int:
+    score = float(value)
+    if score <= 1.0:
+        score *= 100
+    return int(round(max(0.0, min(100.0, score))))
+
+
+def _match_dimensions_to_public(scores: dict[str, float]) -> list[dict[str, Any]]:
+    dimensions: list[dict[str, Any]] = []
+    for label, aliases in _MATCH_DIMENSION_ALIASES:
+        matched_score = None
+        for alias in aliases:
+            if alias in scores:
+                matched_score = scores[alias]
+                break
+        if matched_score is None:
+            dimensions.append({
+                "label": label,
+                "score": 50,
+                "comment": _MATCH_DIMENSION_MISSING_COMMENTS[label],
+            })
+        else:
+            dimensions.append({
+                "label": label,
+                "score": _match_score_to_public(matched_score),
+                "comment": _MATCH_DIMENSION_COMMENTS[label],
+            })
+    return dimensions
+
+
 def match_analysis_to_public(value: MatchAnalysis) -> dict[str, Any]:
     return {
         "professor_id": value.entity_id,
@@ -180,14 +235,7 @@ def match_analysis_to_public(value: MatchAnalysis) -> dict[str, Any]:
         "strengths": value.next_steps[:2],
         "gaps": [],
         "suggestions": list(value.next_steps),
-        "dimensions": [
-            {
-                "label": key,
-                "score": int(max(0, min(100, float(score) * 100))),
-                "comment": key,
-            }
-            for key, score in value.dimension_scores.items()
-        ],
+        "dimensions": _match_dimensions_to_public(dict(value.dimension_scores)),
     }
 
 

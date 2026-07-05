@@ -15,7 +15,7 @@ from dext_recommend.adapters._vector_reader import QdrantReader
 from dext_recommend.adapters.active_snapshot import LiveActiveSnapshotProvider
 from dext_recommend.adapters.catalog_professor_facts import CatalogProfessorFactAdapter
 from dext_recommend.adapters.catalog_release import CatalogReleaseAdapter
-from dext_recommend.adapters.generation_profile import LiveGenerationProfileAdapter
+from dext_recommend.adapters.generation_profile import StaticGenerationProfileAdapter
 from dext_recommend.adapters.graph_release import GraphReleaseAdapter
 from dext_recommend.adapters.llm_generation import OpenAICompatibleLLMGenerationAdapter
 from dext_recommend.adapters.qdrant_search import LiveVectorSearchAdapter
@@ -232,7 +232,7 @@ async def build_live_recommendation_runtime(
             Neo4jReader(live_clients.neo4j_driver, database=settings.neo4j_database)
         )
         ranking_port = RankingProfileAdapter()
-        generation_profile_port = LiveGenerationProfileAdapter()
+        generation_profile_port = StaticGenerationProfileAdapter(profile)
 
         readiness_service = ReadinessService(
             ReadinessDeps(
@@ -314,6 +314,7 @@ async def build_live_recommendation_runtime(
             client=live_clients.openai_llm_aux,
             model=settings.llm_model,
             profile=profile,
+            request_max_retries=0,
         )
         deps = RecommendDeps(
             snapshot_port=provider,

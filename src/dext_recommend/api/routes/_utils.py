@@ -49,7 +49,14 @@ def raise_if_domain_error(warnings: tuple | list) -> None:
         status = 422
     elif code.startswith("unauthorized"):
         status = 403
-    elif code in {"active_build_unavailable", "generation_unavailable", "llm_unavailable"}:
+    elif code in {
+        "active_build_unavailable",
+        "generation_parse_error",
+        "generation_unavailable",
+        "llm_unavailable",
+        "no_grounded_output",
+        "schema_validation_failed",
+    }:
         status = 503
     elif code in {"anchor_not_in_active_build", "no_candidates_after_filters"}:
         status = 404

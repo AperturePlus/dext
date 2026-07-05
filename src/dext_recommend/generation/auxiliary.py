@@ -26,8 +26,15 @@ from dext_recommend.readiness import ActiveBuildSnapshot
 
 logger = logging.getLogger(__name__)
 
-_PROVIDER_EXCEPTION_ROOT_MODULES = {"openai", "httpx"}
+_PROVIDER_EXCEPTION_ROOT_MODULES = {"openai", "httpx", "httpcore"}
 _OUTER_TIMEOUT_GRACE_SECONDS = 5.0
+_MATCH_DIMENSION_SCORE_KEYS = (
+    "research_fit",
+    "method_match",
+    "location_fit",
+    "degree_goal",
+    "publication_activity",
+)
 _PROVIDER_EXCEPTION_NAMES = {
     "APIConnectionError",
     "APIError",
@@ -45,17 +52,40 @@ _PROVIDER_EXCEPTION_NAMES = {
 }
 
 
+def _exception_chain(exc: BaseException):
+    seen: set[int] = set()
+    stack = [exc]
+    while stack:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        cause = getattr(current, "__cause__", None)
+        context = getattr(current, "__context__", None)
+        if cause is not None:
+            stack.append(cause)
+        if context is not None and context is not cause:
+            stack.append(context)
+
+
 def _is_timeout_exception(exc: Exception) -> bool:
-    return isinstance(exc, asyncio.TimeoutError) or "Timeout" in type(exc).__name__
+    return any(
+        isinstance(item, asyncio.TimeoutError) or "Timeout" in type(item).__name__
+        for item in _exception_chain(exc)
+    )
 
 
 def _is_provider_exception(exc: Exception) -> bool:
-    exc_type = type(exc)
-    root_module = exc_type.__module__.split(".", 1)[0]
-    return (
-        root_module in _PROVIDER_EXCEPTION_ROOT_MODULES
-        or exc_type.__name__ in _PROVIDER_EXCEPTION_NAMES
-    )
+    for item in _exception_chain(exc):
+        exc_type = type(item)
+        root_module = exc_type.__module__.split(".", 1)[0]
+        if (
+            root_module in _PROVIDER_EXCEPTION_ROOT_MODULES
+            or exc_type.__name__ in _PROVIDER_EXCEPTION_NAMES
+        ):
+            return True
+    return False
 
 
 def _elapsed_ms(started_at: float) -> float:
@@ -149,6 +179,20 @@ def _trim_bundle(bundle: FactBundle, query_terms: Sequence[str]) -> FactBundle:
     )
 
 
+def _match_dimension_scores(value) -> dict[str, float] | None:
+    if not isinstance(value, dict):
+        return None
+    if set(value) != set(_MATCH_DIMENSION_SCORE_KEYS):
+        return None
+    scores: dict[str, float] = {}
+    for key in _MATCH_DIMENSION_SCORE_KEYS:
+        raw = value.get(key)
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+            return None
+        scores[key] = float(raw)
+    return scores
+
+
 def _ref_identity(ref) -> tuple[str, str, str, str, str | None]:
     return (
         ref.doc_path,
@@ -156,6 +200,24 @@ def _ref_identity(ref) -> tuple[str, str, str, str, str | None]:
         ref.chunk_hash,
         ref.quote_or_summary,
         ref.official_url,
+    )
+
+
+def _limit_bundle_facts(bundle: FactBundle, fact_limit: int | None) -> FactBundle:
+    if fact_limit is None or len(bundle.facts) <= fact_limit:
+        return bundle
+    facts = tuple(bundle.facts[:fact_limit])
+    used_refs = {
+        _ref_identity(ref)
+        for item in facts
+        for ref in item.source_refs
+    }
+    refs = tuple(ref for ref in bundle.source_refs if _ref_identity(ref) in used_refs)
+    return FactBundle(
+        build_id=bundle.build_id,
+        subject_id=bundle.subject_id,
+        facts=facts,
+        source_refs=refs,
     )
 
 
@@ -319,11 +381,17 @@ class AuxiliaryGenerationService:
         result, mapped_warnings = result_or_error
         output = result.output if isinstance(result.output, dict) else {}
         summary = output.get("summary")
-        scores = output.get("dimension_scores")
-        if not isinstance(summary, str) or not summary.strip() or not isinstance(scores, dict):
+        scores = _match_dimension_scores(output.get("dimension_scores"))
+        if not isinstance(summary, str) or not summary.strip():
             return _error(
                 RecommendationErrorCode.GENERATION_PARSE_ERROR,
                 "match analysis output is not usable",
+                generation_profile_version=gen_profile.version,
+            )
+        if scores is None:
+            return _error(
+                RecommendationErrorCode.GENERATION_PARSE_ERROR,
+                "match analysis dimension_scores are not usable",
                 generation_profile_version=gen_profile.version,
             )
         payload = MatchAnalysis(
@@ -336,11 +404,7 @@ class AuxiliaryGenerationService:
             entity_id=entity_id,
             display_name=detail.display_name,
             summary=summary,
-            dimension_scores={
-                str(key): float(value)
-                for key, value in scores.items()
-                if isinstance(value, (int, float)) and not isinstance(value, bool)
-            },
+            dimension_scores=scores,
             next_steps=_string_tuple(output.get("next_steps")),
             claims=tuple(result.claims),
             cited_refs=tuple(result.cited_refs),
@@ -390,6 +454,7 @@ class AuxiliaryGenerationService:
                 generation_profile_version=gen_profile.version,
             )
         op = gen_profile.operations["outreach_email"]
+        bundle = _limit_bundle_facts(bundle, op.fact_limit)
         result_or_error = await self._generate(
             op=op,
             operation_id="outreach_email",
