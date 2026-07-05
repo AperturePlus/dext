@@ -148,6 +148,7 @@ class OperationConfig:
     confidence_threshold: float | None = None
     query_max_chars: int | None = None
     summary_max_chars: int | None = None
+    fact_limit: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.system_prompt_id, str) or not self.system_prompt_id:
@@ -168,6 +169,15 @@ class OperationConfig:
             raise ValueError("query_max_chars must be positive")
         if self.summary_max_chars is not None and self.summary_max_chars <= 0:
             raise ValueError("summary_max_chars must be positive")
+        if (
+            self.fact_limit is not None
+            and (
+                not isinstance(self.fact_limit, int)
+                or isinstance(self.fact_limit, bool)
+                or self.fact_limit <= 0
+            )
+        ):
+            raise ValueError("fact_limit must be positive int")
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +238,7 @@ class RecommendGenerationProfile:
                 confidence_threshold=cfg.get("confidence_threshold"),
                 query_max_chars=cfg.get("query_max_chars"),
                 summary_max_chars=cfg.get("summary_max_chars"),
+                fact_limit=cfg.get("fact_limit"),
             )
         return cls(
             version=payload["version"],

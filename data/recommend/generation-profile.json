@@ -1,5 +1,5 @@
 {
-  "version": "generation-v1",
+  "version": "generation-v2",
   "grounded_rules_manifest_hash": "23531ed9edf058fedff7c7d8e04cdad046a163481dee0b0d81b6e7d07996b625",
   "output_contract_prompt_path": "prompts/output_contract_instructions.md",
   "operations": {
@@ -57,7 +57,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["text", "content_class", "fact_indices", "fact_refs"],
+              "required": ["text", "content_class", "fact_indices"],
               "properties": {
                 "text": {"type": "string"},
                 "content_class": {"enum": ["fact", "advice", "uncertain"]},
@@ -80,13 +80,30 @@
         "required": ["summary", "dimension_scores", "next_steps", "claims"],
         "properties": {
           "summary": {"type": "string"},
-          "dimension_scores": {"type": "object"},
+          "dimension_scores": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "research_fit",
+              "method_match",
+              "location_fit",
+              "degree_goal",
+              "publication_activity"
+            ],
+            "properties": {
+              "research_fit": {"type": "number", "minimum": 0.0, "maximum": 100.0},
+              "method_match": {"type": "number", "minimum": 0.0, "maximum": 100.0},
+              "location_fit": {"type": "number", "minimum": 0.0, "maximum": 100.0},
+              "degree_goal": {"type": "number", "minimum": 0.0, "maximum": 100.0},
+              "publication_activity": {"type": "number", "minimum": 0.0, "maximum": 100.0}
+            }
+          },
           "next_steps": {"type": "array", "items": {"type": "string"}},
           "claims": {
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["text", "content_class", "fact_indices", "fact_refs"],
+              "required": ["text", "content_class", "fact_indices"],
               "properties": {
                 "text": {"type": "string"},
                 "content_class": {"enum": ["fact", "advice", "uncertain"]},
@@ -115,7 +132,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["text", "content_class", "fact_indices", "fact_refs"],
+              "required": ["text", "content_class", "fact_indices"],
               "properties": {
                 "text": {"type": "string"},
                 "content_class": {"enum": ["fact", "advice", "uncertain"]},
@@ -127,8 +144,9 @@
           }
         }
       },
-      "timeout": 15.0,
-      "token_budget": 2048
+      "timeout": 30.0,
+      "token_budget": 1024,
+      "fact_limit": 8
     },
     "professor_comparison": {
       "system_prompt_id": "dext_recommend.professor_comparison.v1",
@@ -145,7 +163,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["text", "content_class", "fact_indices", "fact_refs"],
+              "required": ["text", "content_class", "fact_indices"],
               "properties": {
                 "text": {"type": "string"},
                 "content_class": {"enum": ["fact", "advice", "uncertain"]},

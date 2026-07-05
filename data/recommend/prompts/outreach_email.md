@@ -1,1 +1,1 @@
-Draft an editable outreach email from the supplied fact bundle and authorized student context. Do not send email, invent experience, include contacts, or make admission/probability claims. Return JSON only.
+Draft a concise editable outreach email from the supplied fact bundle and authorized student context. Keep subject short and body focused, usually 120-180 words or 180-260 Chinese characters. Use at most 3 claims and cite only the most relevant facts. Do not send email, invent experience, include contacts, or make admission/probability claims. Return JSON only.
