@@ -54,6 +54,13 @@ class AppProfile(TimestampMixin, Base):
 class ConversationSession(TimestampMixin, Base):
     __tablename__ = "conversation_sessions"
     __table_args__ = (
+        UniqueConstraint(
+            "owner_id",
+            "source_session_id",
+            "source_turn_id",
+            "professor_id",
+            name="uq_fork_source_professor",
+        ),
         Index("ix_conversation_sessions_owner_root", "owner_id", "root_session_id"),
         Index("ix_conversation_sessions_owner_deleted", "owner_id", "deleted_at"),
     )
