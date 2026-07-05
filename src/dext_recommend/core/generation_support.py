@@ -97,6 +97,11 @@ def map_generation_warnings(
             code, severity = RecommendationErrorCode.GENERATION_PARSE_ERROR.value, "error"
         elif code == "generation_unavailable":
             code, severity = generation_unavailable_code.value, "error"
+        elif code in {
+            RecommendationErrorCode.LLM_UNAVAILABLE.value,
+            RecommendationErrorCode.REQUEST_TIMEOUT.value,
+        }:
+            severity = "error"
         elif code in {"no_grounded_output", "unsafe_advice"} | _CONTENT_POLICY_ERROR_CODES:
             severity = "error"
         mapped.append(RecommendationWarning(code=code, message=warning.message, severity=severity))

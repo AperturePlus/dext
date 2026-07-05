@@ -5,7 +5,7 @@ import inspect
 
 from dext_recommend import ActiveBuildSnapshot, ReadinessService, RecommendationCore
 from dext_recommend.ports import (
-    ActiveSnapshotProvider, CatalogReleasePort, EmbeddingResult, GraphReleasePort,
+    ActiveSnapshotProvider, BatchProfessorDetailPort, CatalogReleasePort, EmbeddingResult, GraphReleasePort,
     ProfessorFactPort, ProfessorDetail, QueryEmbeddingPort, RankingProfilePort,
     VectorHit, VectorReleasePort, VectorSearchPort,
 )
@@ -44,6 +44,14 @@ def test_professor_fact_hydrate_takes_snapshot():
     params = _sig_params(ProfessorFactPort.hydrate)
     assert params[1] == "snapshot"
     assert "entity_ids" in params
+
+
+def test_optional_batch_professor_detail_port_takes_snapshot():
+    params = _sig_params(BatchProfessorDetailPort.get_details)
+    assert params[1] == "snapshot"
+    assert "entity_ids" in params
+    assert "include_contacts" in params
+    assert "viewer_permissions" in params
 
 
 def test_query_embedding_embed_takes_snapshot():
@@ -86,6 +94,7 @@ def test_blocking_io_port_methods_are_async():
         VectorSearchPort.count_readback,
         ProfessorFactPort.get_detail,
         ProfessorFactPort.hydrate,
+        BatchProfessorDetailPort.get_details,
     )
     assert all(inspect.iscoroutinefunction(method) for method in methods)
 

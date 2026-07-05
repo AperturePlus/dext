@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -270,11 +272,12 @@ async def test_response_validation_runs():
 
 
 async def test_recommend_refine_direction_merge():
-    """spec §8.1 #11: refine_direction merges QU preferred_* into effective
-    filters when request.filters leaves them empty."""
+    """refine_direction merges only safe QU city preferences into filters."""
     core = _core(
         llm_output=_output(
-            preferred_universities=["u_demo"],
+            preferred_cities=["北京市"],
+            preferred_universities=["清华"],
+            preferred_org_units=["计算机学院"],
             mentor_eligibility_requirement="confirmed",
         ),
     )
@@ -283,13 +286,208 @@ async def test_recommend_refine_direction_merge():
         filters=RecommendationFilters(),  # all defaults: empty + any
         conversation_context=ConversationContext(intent="refine_direction", intent_source="explicit"),
     ))
-    # the merge happened: hybrid_recall saw the merged filters
+    # Only the city preference is safe to hard-filter from QU. University and
+    # org-unit preferences are names here, not internal IDs.
     assert core._deps.vector_port.hybrid_recall_calls
     eff = core._deps.vector_port.hybrid_recall_calls[0]["filters"]
-    assert eff.university_ids == ("u_demo",)
-    assert eff.master_eligibility == "confirmed"
+    assert eff.city_names == ("北京",)
+    assert eff.university_ids == ()
+    assert eff.org_unit_ids == ()
+    assert eff.master_eligibility == "any"
     # response is well-formed (success or clean no_candidates)
     assert isinstance(resp, RecommendResponse)
+
+
+async def test_qu_university_name_is_not_used_as_university_id_filter():
+    core = _core(llm_output=_output(preferred_universities=["清华"]))
+    resp = await core.recommend(RecommendRequest(query_text="清华 NLP 导师"))
+
+    assert isinstance(resp, RecommendResponse)
+    assert core._deps.vector_port.hybrid_recall_calls
+    assert all(
+        call["filters"].university_ids == ()
+        for call in core._deps.vector_port.hybrid_recall_calls
+    )
+
+
+async def test_new_search_merges_location_preferences_without_relaxing_when_enough():
+    from dext_recommend import VectorHit
+
+    hits = [
+        VectorHit("e_bj_1", 0.92, {"city": "北京", "role_status": "included"}),
+        VectorHit("e_bj_2", 0.90, {"city": "北京市", "role_status": "included"}),
+        VectorHit("e_wh", 0.99, {"city": "武汉", "role_status": "included"}),
+    ]
+    base = professor_facts_case("happy")["e_cv_strong"]
+    detail = professor_details_case("happy")["e_cv_strong"]
+    facts = {
+        "e_bj_1": dataclasses.replace(base, entity_id="e_bj_1", city_name="北京"),
+        "e_bj_2": dataclasses.replace(base, entity_id="e_bj_2", city_name="北京市"),
+        "e_wh": dataclasses.replace(base, entity_id="e_wh", city_name="武汉"),
+    }
+    details = {
+        eid: dataclasses.replace(
+            detail, entity_id=eid,
+            fact_bundle=_empty_fact_bundle(build_id="b-1", entity_id=eid),
+        )
+        for eid in facts
+    }
+    core = _core(
+        hits=hits, facts=facts, details=details,
+        llm_output=_output(preferred_cities=["北京"]),
+    )
+    resp = await core.recommend(RecommendRequest(query_text="NLP", limit=2))
+
+    assert [r.entity_id for r in resp.results] == ["e_bj_1", "e_bj_2"]
+    assert "preference_relaxed" not in [w.code for w in resp.warnings]
+    assert len(core._deps.vector_port.hybrid_recall_calls) == 1
+    eff = core._deps.vector_port.hybrid_recall_calls[0]["filters"]
+    assert eff.city_names == ("北京",)
+
+
+async def test_recommend_direction_evidence_beats_semantic_neighbor():
+    from dext_recommend import VectorHit
+
+    hits = [
+        VectorHit("e_visual", 0.99, {"city": "上海", "role_status": "included"}),
+        VectorHit("e_cv", 0.80, {"city": "上海", "role_status": "included"}),
+        VectorHit("e_other", 0.60, {"city": "上海", "role_status": "included"}),
+    ]
+    base = professor_facts_case("happy")["e_cv_strong"]
+    base_detail = professor_details_case("happy")["e_cv_strong"]
+    facts = {
+        "e_visual": dataclasses.replace(
+            base, entity_id="e_visual", display_name="Visual Neighbor",
+            city_name="上海", research_summary="数据可视化、人机交互、智能传播",
+            topic_ids=(),
+        ),
+        "e_cv": dataclasses.replace(
+            base, entity_id="e_cv", display_name="CV Mentor",
+            city_name="上海", research_summary="计算机视觉与医学影像分析",
+            topic_ids=(),
+        ),
+        "e_other": dataclasses.replace(
+            base, entity_id="e_other", display_name="Other Neighbor",
+            city_name="上海", research_summary="智能传播与用户体验",
+            topic_ids=(),
+        ),
+    }
+    details = {
+        "e_visual": dataclasses.replace(
+            base_detail, entity_id="e_visual", display_name="Visual Neighbor",
+            research_statements=("关注用户体验与信息传达设计",),
+            approved_topics=("数据可视化", "人机交互"),
+            selected_publication_mentions=("计算机视觉邻域的可视化论文",),
+            source_urls=("http://example/visual",),
+            fact_bundle=_empty_fact_bundle(build_id="b-1", entity_id="e_visual"),
+        ),
+        "e_cv": dataclasses.replace(
+            base_detail, entity_id="e_cv", display_name="CV Mentor",
+            research_statements=("开展计算机视觉方向研究",),
+            approved_topics=("计算机视觉",),
+            selected_publication_mentions=("computer vision paper",),
+            source_urls=("http://example/cv",),
+            fact_bundle=_empty_fact_bundle(build_id="b-1", entity_id="e_cv"),
+        ),
+        "e_other": dataclasses.replace(
+            base_detail, entity_id="e_other", display_name="Other Neighbor",
+            research_statements=("关注智能传播与用户体验",),
+            approved_topics=("智能传播",),
+            selected_publication_mentions=("CHI paper",),
+            source_urls=("http://example/other",),
+            fact_bundle=_empty_fact_bundle(build_id="b-1", entity_id="e_other"),
+        ),
+    }
+    core = _core(
+        hits=hits, facts=facts, details=details,
+        llm_output=_output(
+            research_interests=["计算机视觉"], preferred_cities=["上海"],
+        ),
+    )
+
+    resp = await core.recommend(RecommendRequest(
+        query_text="上海 计算机视觉", limit=2,
+    ))
+
+    assert [r.entity_id for r in resp.results][0] == "e_cv"
+    visual = next(r for r in resp.results if r.entity_id == "e_visual")
+    assert visual.score_components["direction_evidence_score"] == 0.0
+    assert visual.match_level == "weak"
+    assert any(w.code == "weak_explanation" for w in resp.warnings)
+
+
+async def test_new_search_relaxes_location_when_preferred_city_underfills():
+    from dext_recommend import VectorHit
+
+    hits = [
+        VectorHit("e_bj", 0.90, {"city": "北京", "role_status": "included"}),
+        VectorHit("e_wh", 0.99, {"city": "武汉", "role_status": "included"}),
+    ]
+    base = professor_facts_case("happy")["e_cv_strong"]
+    detail = professor_details_case("happy")["e_cv_strong"]
+    facts = {
+        "e_bj": dataclasses.replace(base, entity_id="e_bj", city_name="北京"),
+        "e_wh": dataclasses.replace(base, entity_id="e_wh", city_name="武汉"),
+    }
+    details = {
+        eid: dataclasses.replace(
+            detail, entity_id=eid,
+            fact_bundle=_empty_fact_bundle(build_id="b-1", entity_id=eid),
+        )
+        for eid in facts
+    }
+    core = _core(
+        hits=hits, facts=facts, details=details,
+        llm_output=_output(preferred_cities=["北京"]),
+    )
+    resp = await core.recommend(RecommendRequest(query_text="NLP", limit=2))
+
+    assert [r.entity_id for r in resp.results] == ["e_bj", "e_wh"]
+    assert "preference_relaxed" in [w.code for w in resp.warnings]
+    relaxed = next(r for r in resp.results if r.entity_id == "e_wh")
+    assert "location_relaxed" in relaxed.risk_flags
+    assert core._deps.vector_port.hybrid_recall_calls[0]["filters"].city_names == ("北京",)
+    assert core._deps.vector_port.hybrid_recall_calls[-1]["filters"].city_names == ()
+
+
+async def test_batch_detail_failure_marks_warning_without_single_fetch_fanout():
+    from dext_recommend import VectorHit
+
+    class FailingBatchPort(FakeProfessorFactPort):
+        def __init__(self, *, facts):
+            super().__init__(facts=facts, details={})
+            self.get_details_calls = []
+
+        async def get_details(self, snapshot, entity_ids, include_contacts, viewer_permissions):
+            self.get_details_calls.append(list(entity_ids))
+            raise sqlite3.OperationalError("database is locked")
+
+        async def get_detail(self, snapshot, entity_id, include_contacts, viewer_permissions):
+            raise AssertionError("batch failure must not fall back to concurrent single fetch")
+
+    base = professor_facts_case("happy")["e_cv_strong"]
+    facts = {
+        "e1": dataclasses.replace(base, entity_id="e1"),
+        "e2": dataclasses.replace(base, entity_id="e2"),
+    }
+    hits = [
+        VectorHit("e1", 0.90, {"city": "北京", "role_status": "included"}),
+        VectorHit("e2", 0.88, {"city": "北京", "role_status": "included"}),
+    ]
+    core = _core(hits=hits, facts=facts)
+    failing_port = FailingBatchPort(facts=facts)
+    core = RecommendationCore(
+        dataclasses.replace(core._deps, facts_port=failing_port),
+        RecommendSettings(),
+    )
+
+    resp = await core.recommend(RecommendRequest(query_text="NLP", limit=2))
+
+    assert len(failing_port.get_details_calls) == 2
+    assert failing_port.get_detail_calls == []
+    warnings = [w for w in resp.warnings if w.code == "details_unavailable"]
+    assert warnings
+    assert warnings[-1].message == "2 detail(s) unavailable; degraded"
 
 
 def _fact(eid: str, *, topic_ids: tuple[str, ...] = ("topic_cv",),

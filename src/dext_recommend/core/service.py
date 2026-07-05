@@ -38,6 +38,7 @@ from dext_recommend.core.cards import assemble_card
 from dext_recommend.core.detail_fetch import fetch_details
 from dext_recommend.core.explanation import build_explanation
 from dext_recommend.core.intent import resolve_recommend_route
+from dext_recommend.core.location import normalize_city_names
 from dext_recommend.core.query_understanding import understand_query
 from dext_recommend.core.ranking_profile import RankingProfile
 from dext_recommend.core.recall import normalize_rrf, recall_loop
@@ -367,8 +368,9 @@ class RecommendationCore:
             validate(resp)
             return resp
 
-        # spec §6.2: refine_direction merges QU preferred_* into the effective
-        # filters used downstream. Explicit request.filters always win.
+        # Report hotfix: only city preferences are safe to hard-filter from QU.
+        # University preferences are display names today, while filters expect
+        # internal university_id values.
         effective_filters = _effective_filters(request, qu, route)
 
         anchor_topics: tuple[str, ...] = ()
@@ -429,6 +431,9 @@ class RecommendationCore:
                 prior_warnings=tuple(route_warnings),
             )
 
+        relaxed_filters = _relaxed_preference_filters(
+            request, qu, route, effective_filters
+        )
         coverage_flags = self._deps.coverage_flags_by_build_id.get(snapshot.build_id, {})
         recall = await recall_loop(
             snapshot, self._deps.vector_port, list(embedding.vector),
@@ -446,6 +451,34 @@ class RecommendationCore:
         filter_diag = recall.filter_diagnostics
         recall_count = recall.step_diags[-1].raw_hits if recall.step_diags else 0
         steps_used = recall.steps_used
+        strict_entity_ids = {hit.entity_id for hit in survivors}
+        relaxed_result_ids: set[str] = set()
+        relaxed_filter_degraded = False
+
+        if relaxed_filters is not None and len(survivors) < request.limit:
+            relaxed_recall = await recall_loop(
+                snapshot, self._deps.vector_port, list(embedding.vector),
+                relaxed_filters, profile,
+                facts_port=self._deps.facts_port,
+                route=route, coverage_flags=coverage_flags,
+                review_policy=request.review_policy,
+                embedding_sparse_vector=embedding.sparse_vector,
+                oversample_max=self._settings.oversample_max,
+                request_oversample=request.oversample, limit=request.limit,
+                ctx=ctx,
+            )
+            relaxed_filter_degraded = relaxed_recall.filter_diagnostics.org_unit_degraded
+            fact_map.update(relaxed_recall.fact_map)
+            extras = [
+                hit for hit in relaxed_recall.survivors
+                if hit.entity_id not in strict_entity_ids
+            ]
+            if extras:
+                relaxed_result_ids = {hit.entity_id for hit in extras}
+                survivors.extend(extras)
+            if relaxed_recall.step_diags:
+                recall_count = max(recall_count, relaxed_recall.step_diags[-1].raw_hits)
+            steps_used += relaxed_recall.steps_used
 
         if not survivors:
             resp = _error_response(
@@ -485,6 +518,12 @@ class RecommendationCore:
             request.student_context, profile, route, query_terms=query_terms,
             anchor_topics=anchor_topics,
         )
+        if relaxed_result_ids:
+            ranked = [
+                entry for entry in ranked if entry.entity_id in strict_entity_ids
+            ] + [
+                entry for entry in ranked if entry.entity_id not in strict_entity_ids
+            ]
         top = ranked[: request.limit]
         results = []
         weak_explanation = False
@@ -497,12 +536,27 @@ class RecommendationCore:
             card = assemble_card(
                 entry, fact, detail, expl, qu, include_contacts=effective_include_contacts,
             )
+            if entry.entity_id in relaxed_result_ids:
+                card = dataclasses.replace(
+                    card,
+                    risk_flags=tuple(dict.fromkeys(
+                        (*card.risk_flags, "location_relaxed")
+                    )),
+                )
             results.append(card)
 
         warnings = list(route_warnings)
-        if filter_diag.org_unit_degraded and effective_filters.org_unit_ids:
+        if (
+            (filter_diag.org_unit_degraded or relaxed_filter_degraded)
+            and effective_filters.org_unit_ids
+        ):
             warnings.append(_warn(RecommendationErrorCode.ORG_UNIT_FILTER_UNAVAILABLE,
                                   "org_unit hard filter degraded (coverage unavailable)"))
+        if relaxed_result_ids:
+            warnings.append(_warn(
+                RecommendationErrorCode.PREFERENCE_RELAXED,
+                "preferred location filters were relaxed to fill results",
+            ))
         if weak_explanation:
             warnings.append(_warn(RecommendationErrorCode.WEAK_EXPLANATION,
                                   "one or more results lack traceable evidence"))
@@ -566,43 +620,49 @@ def _filter_summary(filters) -> str:
 def _effective_filters(
     request: RecommendRequest, qu: QueryUnderstanding, route,
 ) -> RecommendationFilters:
-    """spec §6.2: refine_direction merges QU preferred_* into the effective
-    filters used by recall_loop / payload_prefilter / final_filter. Explicit
-    request.filters always win — preferred_* only fill empty slots.
+    """Merge safe QU city preferences into recall filters.
+
+    Explicit request.filters always win. QU university preferences are names
+    today, so they must not be copied into university_id filters.
     """
     f = request.filters
-    if not getattr(route, "refine_merge", False):
-        return f
+    merge_preferences = route.intent in {"new_search", "refine_direction"}
 
-    university_ids = f.university_ids
-    if not university_ids and qu.preferred_universities:
-        university_ids = tuple(qu.preferred_universities)
-
-    city_names = f.city_names
-    if not city_names and qu.preferred_cities:
-        city_names = tuple(qu.preferred_cities)
-
-    org_unit_ids = f.org_unit_ids
-    if not org_unit_ids and qu.preferred_org_units:
-        org_unit_ids = tuple(qu.preferred_org_units)
-
-    master_eligibility = f.master_eligibility
-    phd_eligibility = f.phd_eligibility
-    if qu.mentor_eligibility_requirement == "confirmed":
-        if master_eligibility == "any":
-            master_eligibility = "confirmed"
-        if phd_eligibility == "any":
-            phd_eligibility = "confirmed"
+    city_names = normalize_city_names(f.city_names)
+    if merge_preferences and not city_names and qu.preferred_cities:
+        city_names = normalize_city_names(qu.preferred_cities)
 
     return RecommendationFilters(
-        university_ids=university_ids,
+        university_ids=f.university_ids,
         city_names=city_names,
-        org_unit_ids=org_unit_ids,
+        org_unit_ids=f.org_unit_ids,
         title_families=f.title_families,
-        master_eligibility=master_eligibility,
-        phd_eligibility=phd_eligibility,
+        master_eligibility=f.master_eligibility,
+        phd_eligibility=f.phd_eligibility,
         topic_ids=f.topic_ids,
         topic_filter_mode=f.topic_filter_mode,
+    )
+
+
+def _relaxed_preference_filters(
+    request: RecommendRequest,
+    qu: QueryUnderstanding,
+    route,
+    effective_filters: RecommendationFilters,
+) -> RecommendationFilters | None:
+    if route.intent not in {"new_search", "refine_direction"}:
+        return None
+    explicit = request.filters
+    relax_city = (
+        not explicit.city_names
+        and bool(qu.preferred_cities)
+        and bool(effective_filters.city_names)
+    )
+    if not relax_city:
+        return None
+    return dataclasses.replace(
+        effective_filters,
+        city_names=(),
     )
 
 

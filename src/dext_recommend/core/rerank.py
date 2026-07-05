@@ -1,5 +1,5 @@
 # src/dext_recommend/core/rerank.py
-"""6 score components, weighted sum, tie-break, match_level derivation.
+"""6 weighted score components, diagnostics, tie-break, match_level derivation.
 
 Components are computed from whatever data is available: detail rerank window
 candidates have ProfessorDetail (full 6 components); missing detail degrades
@@ -44,6 +44,33 @@ def _topic_statement(detail: ProfessorDetail | None, query_terms: tuple[str, ...
         return 0.0
     hits = sum(1 for t in query_terms if t and t.lower() in hay.lower())
     return min(1.0, hits / max(1, len(query_terms)))
+
+
+def _query_terms(query_terms: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(t.strip().lower() for t in query_terms if t and t.strip())
+
+
+def _direction_evidence(
+    fact: ProfessorFact | None,
+    detail: ProfessorDetail | None,
+    query_terms: tuple[str, ...],
+) -> float:
+    terms = _query_terms(query_terms)
+    if not terms:
+        return 0.0
+
+    hay_parts = []
+    if fact is not None and fact.research_summary:
+        hay_parts.append(fact.research_summary)
+    if detail is not None:
+        hay_parts.extend(detail.research_statements)
+        hay_parts.extend(detail.approved_topics)
+    hay = " ".join(hay_parts).lower()
+    if not hay:
+        return 0.0
+
+    hits = sum(1 for term in terms if term in hay)
+    return min(1.0, hits / len(terms))
 
 
 def _student_fit(student: StudentContext | None, detail: ProfessorDetail | None,
@@ -164,6 +191,7 @@ def rerank(
         elig = _eligibility(fact)
         prov, evidence_count = _provenance(detail)
         comp = _completeness(fact, detail)
+        direction = _direction_evidence(fact, detail, query_terms)
         score = (
             w["semantic_score"] * sem
             + w["topic_statement_score"] * topic
@@ -185,12 +213,31 @@ def rerank(
             "completeness_score": comp,
             "same_field_overlap": sf_overlap,
             "same_field_boost": sf_boost,
+            "direction_evidence_score": direction,
         }
         entries.append(RerankEntry(
             entity_id=eid, score=score, score_components=components,
             match_level=_match_level(score, profile.match_level_thresholds),
             evidence_count=evidence_count,
         ))
+    if _query_terms(query_terms) and any(
+        e.score_components["direction_evidence_score"] > 0.0 for e in entries
+    ):
+        cap = profile.match_level_thresholds["possible"] - 0.01
+        capped: list[RerankEntry] = []
+        for entry in entries:
+            if entry.score_components["direction_evidence_score"] <= 0.0:
+                score = min(entry.score, cap)
+                score = min(1.0, max(0.0, score))
+                entry = RerankEntry(
+                    entity_id=entry.entity_id,
+                    score=score,
+                    score_components=entry.score_components,
+                    match_level=_match_level(score, profile.match_level_thresholds),
+                    evidence_count=entry.evidence_count,
+                )
+            capped.append(entry)
+        entries = capped
     # tie-break driven by profile.tie_break (validated to be a complete
     # permutation of {score, semantic_score, evidence_count, entity_id})
     entries.sort(key=lambda e: _tie_break_key(e, profile.tie_break))

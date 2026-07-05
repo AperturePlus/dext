@@ -36,6 +36,12 @@ def assemble_card(
     role_status = fact.role_status if fact is not None else (detail.role_status if detail else "included")
     profile_url = fact.profile_url if fact is not None else (detail.profile_url if detail else None)
     research_summary = fact.research_summary if fact is not None else None
+    matched_topics = explanation.matched_topics
+    matched_statements = explanation.matched_statements
+    if detail is not None and not matched_topics and not matched_statements:
+        matched_topics = tuple(detail.approved_topics[:3])
+        if not matched_topics:
+            matched_statements = tuple(detail.research_statements[:3])
 
     return RecommendedProfessor(
         entity_id=entry.entity_id,
@@ -53,8 +59,8 @@ def assemble_card(
         short_reasons=explanation.short_reasons,
         score=entry.score,
         score_components=entry.score_components,
-        matched_topics=explanation.matched_topics,
-        matched_statements=explanation.matched_statements,
+        matched_topics=matched_topics,
+        matched_statements=matched_statements,
         matched_publications=explanation.matched_publications,
         evidence_refs=explanation.evidence_refs,
         risk_flags=tuple(risk_flags),

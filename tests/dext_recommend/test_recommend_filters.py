@@ -64,6 +64,17 @@ def test_payload_prefilter_passes_when_payload_field_missing():
     assert len(out) == 1  # field missing -> skip condition, leave to final filter
 
 
+def test_payload_prefilter_accepts_city_payload_aliases():
+    hits = [
+        VectorHit("e1", 0.9, {"city": "北京市"}),
+        VectorHit("e2", 0.8, {"city_name": "上海市"}),
+        VectorHit("e3", 0.7, {"city": "广州"}),
+    ]
+    filters = RecommendationFilters(city_names=("北京", "上海"))
+    out = payload_prefilter(hits, filters)
+    assert [h.entity_id for h in out] == ["e1", "e2"]
+
+
 def test_final_filter_drops_excluded_role():
     hits = vector_hits_case("happy")
     facts = professor_facts_case("happy")
@@ -155,6 +166,21 @@ def test_final_filter_fact_authority_overrides_payload():
     filters = RecommendationFilters(org_unit_ids=("ou_cs",))
     out, diag = final_filter(hits, facts, filters, _route_for(), {"org_unit_ids": True})
     assert out == []  # fact authority wins
+
+
+def test_final_filter_matches_city_aliases_by_authority():
+    hit = VectorHit("e1", 0.9, {"city": "北京"})
+    fact = ProfessorFact(
+        entity_id="e1", display_name="N", university="U", org_units=("CS",),
+        title="Prof", title_family="professor", master_eligibility="confirmed",
+        phd_eligibility="confirmed", role_status="included", profile_url=None,
+        profile_hash=None, research_summary=None, city_name="北京市",
+    )
+    out, _diag = final_filter(
+        [hit], {"e1": fact}, RecommendationFilters(city_names=("北京",)),
+        _route_for(), {"org_unit_ids": True},
+    )
+    assert out == [hit]
 
 
 def test_final_filter_org_unit_degraded_when_coverage_false():

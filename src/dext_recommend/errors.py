@@ -41,6 +41,7 @@ class RecommendationErrorCode(str, Enum):
     VECTOR_UNAVAILABLE = "vector_unavailable"
     HYDRATE_UNAVAILABLE = "hydrate_unavailable"
     DETAILS_UNAVAILABLE = "details_unavailable"
+    PREFERENCE_RELAXED = "preference_relaxed"
     INVALID_CONVERSATION_STATE = "invalid_conversation_state"
     MORE_MENTORS_REQUIRES_PRIOR = "more_mentors_requires_prior"
     SAME_FIELD_REQUIRES_ANCHOR = "same_field_requires_anchor"

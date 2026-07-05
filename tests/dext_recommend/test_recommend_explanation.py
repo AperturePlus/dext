@@ -57,6 +57,21 @@ def test_explanation_detail_none_has_qualified_reason():
     assert "score=" not in expl.short_reasons[0]
 
 
+def test_build_explanation_no_direction_evidence_is_weak_semantic_neighbor():
+    fact = professor_facts_case("happy")["e_cv_strong"]
+    detail = professor_details_case("happy")["e_cv_strong"]
+    entry = _entry("e_cv_strong", score=0.34)
+
+    result = build_explanation(entry, fact, detail, query_terms=("计算机视觉",))
+
+    assert result.short_reasons == (
+        "未找到与查询方向直接对应的研究证据，仅作为语义近邻参考",
+    )
+    assert len(result.evidence_refs) >= 1
+    assert result.weak_explanation is True
+    assert result.missing_reason == "no direct direction evidence for query terms"
+
+
 def test_build_explanation_reasons_traceable_to_evidence():
     fact = professor_facts_case("happy")["e_cv_strong"]
     detail = professor_details_case("happy")["e_cv_strong"]

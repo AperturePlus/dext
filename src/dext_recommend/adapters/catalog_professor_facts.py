@@ -384,5 +384,22 @@ class CatalogProfessorFactAdapter:
             contacts=contacts,
         )
 
+    async def get_details(
+        self,
+        snapshot: ActiveBuildSnapshot,
+        entity_ids: list[str],
+        include_contacts: bool,
+        viewer_permissions: ViewerPermissions,
+    ) -> dict[str, ProfessorDetail | None]:
+        out: dict[str, ProfessorDetail | None] = {}
+        for entity_id in dedupe_entity_ids(entity_ids):
+            try:
+                out[entity_id] = await self.get_detail(
+                    snapshot, entity_id, include_contacts, viewer_permissions,
+                )
+            except ProfessorFactNotFound:
+                out[entity_id] = None
+        return out
+
 
 __all__ = ["CatalogProfessorFactAdapter"]

@@ -124,8 +124,19 @@ class ProfessorFactPort(Protocol):
     ) -> dict[str, ProfessorFact]: ...
 
 
+@runtime_checkable
+class BatchProfessorDetailPort(Protocol):
+    async def get_details(
+        self,
+        snapshot: ActiveBuildSnapshot,
+        entity_ids: list[str],
+        include_contacts: bool,
+        viewer_permissions: ViewerPermissions,
+    ) -> dict[str, ProfessorDetail | None]: ...
+
+
 __all__ = [
-    "ContentClass", "FactBundle", "FactItem", "ProfessorDetail",
+    "BatchProfessorDetailPort", "ContentClass", "FactBundle", "FactItem", "ProfessorDetail",
     "ProfessorFact", "ProfessorFactNotFound", "ProfessorFactPort",
     "ViewerPermissions",
 ]

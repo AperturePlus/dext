@@ -61,3 +61,14 @@ def test_assemble_card_review_role_adds_risk_flag():
     expl = build_explanation(entry, fact, detail, query_terms=("NLP",))
     card = assemble_card(entry, fact, detail, expl, _qu(), include_contacts=False)
     assert "role_status_review" in card.risk_flags
+
+
+def test_assemble_card_research_fields_fall_back_to_detail_topics():
+    fact = professor_facts_case("happy")["e_cv_strong"]
+    detail = professor_details_case("happy")["e_cv_strong"]
+    entry = _entry()
+    expl = build_explanation(entry, fact, detail, query_terms=("医学影像",))
+    assert expl.matched_topics == ()
+    assert expl.matched_statements == ()
+    card = assemble_card(entry, fact, detail, expl, _qu(), include_contacts=False)
+    assert card.matched_topics == ("topic_cv",)

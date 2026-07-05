@@ -13,6 +13,7 @@ from dext_recommend.models import RecommendationFilters
 from dext_recommend.ports.vector_search import VectorHit
 from dext_recommend.ports.professor_facts import ProfessorFact
 from dext_recommend.core.intent import RecommendRoute
+from dext_recommend.core.location import city_name_matches
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +36,15 @@ def _payload_match(payload: Mapping, key: str, requested: tuple[str, ...]) -> bo
     return val in requested
 
 
+def _payload_city_match(payload: Mapping, requested: tuple[str, ...]) -> bool | None:
+    if not requested:
+        return True
+    value = payload.get("city")
+    if value is None:
+        value = payload.get("city_name")
+    return city_name_matches(value, requested)
+
+
 def payload_prefilter(
     hits: list[VectorHit] | tuple[VectorHit, ...],
     filters: RecommendationFilters,
@@ -46,13 +56,16 @@ def payload_prefilter(
         keep = True
         for key, req in (
             ("university_id", filters.university_ids),
-            ("city_name", filters.city_names),
             ("title_family", filters.title_families),
         ):
             m = _payload_match(h.payload, key, tuple(req))
             if m is False:
                 keep = False
                 break
+        if keep:
+            m = _payload_city_match(h.payload, tuple(filters.city_names))
+            if m is False:
+                keep = False
         if keep and not org_unit_degraded:
             m = _payload_match(h.payload, "org_unit_ids", tuple(filters.org_unit_ids))
             if m is False:
@@ -79,6 +92,13 @@ def _fact_authority_match(fact: ProfessorFact, key: str, requested: tuple[str, .
     if isinstance(val, (list, tuple)):
         return any(v in requested for v in val)
     return val in requested
+
+
+def _fact_city_match(fact: ProfessorFact, requested: tuple[str, ...]) -> bool:
+    if not requested:
+        return True
+    matched = city_name_matches(fact.city_name, requested)
+    return bool(matched)
 
 
 def final_filter(
@@ -119,7 +139,7 @@ def final_filter(
         if not _fact_authority_match(fact, "university_id", tuple(filters.university_ids)):
             hard += 1
             continue
-        if not _fact_authority_match(fact, "city_name", tuple(filters.city_names)):
+        if not _fact_city_match(fact, tuple(filters.city_names)):
             hard += 1
             continue
         if org_unit_hard and not _fact_authority_match(fact, "org_unit_ids", org_unit_hard):

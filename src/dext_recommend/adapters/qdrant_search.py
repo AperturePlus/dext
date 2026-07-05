@@ -7,6 +7,7 @@ from typing import Any
 
 from dext_recommend.adapters._vector_reader import parse_build_id_from_collection
 from dext_recommend.config import RecommendSettings
+from dext_recommend.core.location import expand_city_names
 from dext_recommend.errors import RecommendationRuntimeError
 from dext_recommend.models import RecommendationFilters
 from dext_recommend.ports.vector_search import AliasReadback, VectorHit
@@ -47,7 +48,7 @@ def _build_filter(
         pairs.append(("university_id", filters.university_ids))
     if filters.city_names:
         # The current publisher writes ``city``. Final filtering remains in core.
-        pairs.append(("city", filters.city_names))
+        pairs.append(("city", expand_city_names(filters.city_names)))
     if filters.title_families:
         pairs.append(("title_family", filters.title_families))
     if filters.master_eligibility == "confirmed":

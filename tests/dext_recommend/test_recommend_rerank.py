@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from dext_recommend import ProfessorFact, VectorHit
+from dext_recommend import ProfessorDetail, ProfessorFact, VectorHit
 from dext_recommend.core.intent import resolve_recommend_route
 from dext_recommend.core.ranking_profile import RankingProfile
 from dext_recommend.core.rerank import rerank
@@ -39,6 +39,28 @@ def _fact(eid: str, **over) -> ProfessorFact:
     )
     base.update(over)
     return ProfessorFact(**base)
+
+
+def _detail(
+    eid: str,
+    *,
+    topics: tuple[str, ...] = (),
+    statements: tuple[str, ...] = (),
+    publications: tuple[str, ...] = ("paper A",),
+    source_urls: tuple[str, ...] = ("http://example/p",),
+) -> ProfessorDetail:
+    return ProfessorDetail(
+        build_id="b-1", profile_hash=None, entity_id=eid,
+        display_name=eid, university="U", org_units=("ou_cs",),
+        title="Prof", title_family="professor",
+        master_eligibility="confirmed", phd_eligibility="confirmed",
+        role_status="included", profile_url=None,
+        research_statements=statements, approved_topics=topics,
+        selected_publication_mentions=publications, bio_snippets=(),
+        source_urls=source_urls, provenance_refs=(),
+        quality_findings=(), risk_flags=(),
+        fact_bundle=_empty_fact_bundle(build_id="b-1", entity_id=eid),
+    )
 
 
 def test_rerank_single_candidate_score_one():
@@ -118,6 +140,49 @@ def test_rerank_detail_present_increases_score():
     with_score = next(e for e in out if e.entity_id == "e_with")
     without_score = next(e for e in out if e.entity_id == "e_without")
     assert with_score.score >= without_score.score
+
+
+def test_rerank_gates_semantic_neighbor_without_direction_evidence():
+    hits = [VectorHit("e_visual", 0.99, {}), VectorHit("e_cv", 0.60, {})]
+    facts = {
+        "e_visual": _fact(
+            "e_visual", research_summary="数据可视化、人机交互、智能传播",
+            topic_ids=(),
+        ),
+        "e_cv": _fact(
+            "e_cv", research_summary="计算机视觉与医学影像分析",
+            topic_ids=(),
+        ),
+    }
+    details = {
+        "e_visual": _detail(
+            "e_visual",
+            topics=("数据可视化", "人机交互"),
+            statements=("关注用户体验与信息传达设计",),
+            publications=("计算机视觉邻域的可视化论文",),
+        ),
+        "e_cv": _detail(
+            "e_cv",
+            topics=("计算机视觉",),
+            statements=("开展计算机视觉方向研究",),
+        ),
+    }
+    semantic = {"e_visual": 1.0, "e_cv": 0.2}
+    profile = _profile()
+    route = resolve_recommend_route(RecommendRequest(query_text="上海 计算机视觉"))
+
+    ranked = rerank(
+        hits, facts, details, semantic, None, profile, route,
+        query_terms=("计算机视觉",),
+    )
+
+    visual = next(e for e in ranked if e.entity_id == "e_visual")
+    cv = next(e for e in ranked if e.entity_id == "e_cv")
+    assert ranked[0].entity_id == "e_cv"
+    assert visual.score_components["direction_evidence_score"] == 0.0
+    assert cv.score_components["direction_evidence_score"] > 0.0
+    assert visual.score < profile.match_level_thresholds["possible"]
+    assert visual.match_level == "weak"
 
 
 def resolve_recommend_request(request):

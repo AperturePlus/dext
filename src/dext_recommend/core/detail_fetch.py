@@ -14,12 +14,17 @@ CancelledError is re-raised so asyncio.wait_for / gather can propagate it.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import time
 
 from dext_recommend.ports.professor_facts import ProfessorDetail, ProfessorFactPort, ViewerPermissions
 from dext_recommend.readiness import ActiveBuildSnapshot
 
 from dext_recommend.core._resilience import RecommendExecutionContext
+
+
+def _retryable_detail_error(exc: Exception) -> bool:
+    return isinstance(exc, (TimeoutError, sqlite3.OperationalError, OSError))
 
 
 async def _fetch_one(
@@ -34,26 +39,80 @@ async def _fetch_one(
     """Return (entity_id, detail_or_None, failed). `failed` is True only for
     operational failures (not KeyError/LookupError)."""
     async with semaphore:
+        for attempt in (1, 2):
+            start = time.perf_counter()
+            try:
+                detail = await facts_port.get_detail(
+                    snapshot, entity_id, include_contacts, viewer_permissions,
+                )
+            except (KeyError, LookupError):
+                elapsed = (time.perf_counter() - start) * 1000
+                ctx.record("details", elapsed, None, attempt=attempt)
+                return entity_id, None, False
+            except asyncio.CancelledError:
+                elapsed = (time.perf_counter() - start) * 1000
+                ctx.record("details", elapsed, "cancelled", attempt=attempt)
+                raise
+            except Exception as exc:
+                elapsed = (time.perf_counter() - start) * 1000
+                if attempt == 1 and _retryable_detail_error(exc):
+                    ctx.record("details", elapsed, "details_retry", attempt=attempt)
+                    await asyncio.sleep(0)
+                    continue
+                ctx.record("details", elapsed, "details_unavailable", attempt=attempt)
+                ctx.record(
+                    f"details:{entity_id}",
+                    elapsed,
+                    f"details_unavailable:{type(exc).__name__}",
+                    attempt=attempt,
+                )
+                return entity_id, None, True
+            elapsed = (time.perf_counter() - start) * 1000
+            ctx.record("details", elapsed, None, attempt=attempt)
+            return entity_id, detail, False
+    return entity_id, None, True
+
+
+async def _fetch_batch(
+    facts_port: ProfessorFactPort,
+    snapshot: ActiveBuildSnapshot,
+    entity_ids: list[str],
+    include_contacts: bool,
+    viewer_permissions: ViewerPermissions,
+    ctx: RecommendExecutionContext,
+) -> tuple[dict[str, ProfessorDetail | None], set[str]] | None:
+    getter = getattr(facts_port, "get_details", None)
+    if not callable(getter):
+        return None
+    for attempt in (1, 2):
         start = time.perf_counter()
         try:
-            detail = await facts_port.get_detail(
-                snapshot, entity_id, include_contacts, viewer_permissions,
+            details = await getter(
+                snapshot, entity_ids, include_contacts, viewer_permissions,
             )
         except (KeyError, LookupError):
             elapsed = (time.perf_counter() - start) * 1000
-            ctx.record("details", elapsed, None, attempt=None)
-            return entity_id, None, False
+            ctx.record("details_batch", elapsed, None, attempt=attempt)
+            return {eid: None for eid in entity_ids}, set()
         except asyncio.CancelledError:
             elapsed = (time.perf_counter() - start) * 1000
-            ctx.record("details", elapsed, "cancelled", attempt=None)
+            ctx.record("details_batch", elapsed, "cancelled", attempt=attempt)
             raise
-        except Exception:
+        except Exception as exc:
             elapsed = (time.perf_counter() - start) * 1000
-            ctx.record("details", elapsed, "details_unavailable", attempt=None)
-            return entity_id, None, True
+            if attempt == 1 and _retryable_detail_error(exc):
+                ctx.record("details_batch", elapsed, "details_retry", attempt=attempt)
+                await asyncio.sleep(0)
+                continue
+            error = f"details_unavailable:{type(exc).__name__}"
+            ctx.record("details_batch", elapsed, error, attempt=attempt)
+            for entity_id in entity_ids:
+                ctx.record(f"details:{entity_id}", elapsed, error, attempt=attempt)
+            return {eid: None for eid in entity_ids}, set(entity_ids)
         elapsed = (time.perf_counter() - start) * 1000
-        ctx.record("details", elapsed, None, attempt=None)
-        return entity_id, detail, False
+        ctx.record("details_batch", elapsed, None, attempt=attempt)
+        return {eid: details.get(eid) for eid in entity_ids}, set()
+    return {eid: None for eid in entity_ids}, set(entity_ids)
 
 
 async def fetch_details(
@@ -68,6 +127,13 @@ async def fetch_details(
 ) -> tuple[dict[str, ProfessorDetail | None], set[str]]:
     """Return (detail_map, failed_set). `failed_set` holds entity_ids whose
     get_detail raised an operational error (not missing)."""
+    batch = await _fetch_batch(
+        facts_port, snapshot, entity_ids, include_contacts,
+        viewer_permissions, ctx,
+    )
+    if batch is not None:
+        return batch
+
     semaphore = asyncio.Semaphore(max(1, concurrency))
 
     async def _guarded(eid: str) -> tuple[str, ProfessorDetail | None, bool]:

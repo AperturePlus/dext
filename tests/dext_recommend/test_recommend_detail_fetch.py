@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from dext_recommend import FakeProfessorFactPort, ProfessorDetail, ViewerPermissions
@@ -54,3 +56,65 @@ async def test_fetch_details_uses_single_entity_signature():
     # each call is for one entity_id, never a list
     for call in port.get_detail_calls:
         assert isinstance(call["entity_id"], str)
+
+
+async def test_fetch_details_prefers_optional_batch_getter():
+    detail = professor_details_case("happy")["e_cv_strong"]
+
+    class BatchPort:
+        def __init__(self):
+            self.get_detail_calls = []
+            self.get_details_calls = []
+
+        async def get_details(self, snapshot, entity_ids, include_contacts, viewer_permissions):
+            self.get_details_calls.append(list(entity_ids))
+            return {"e_cv_strong": detail}
+
+        async def get_detail(self, snapshot, entity_id, include_contacts, viewer_permissions):
+            self.get_detail_calls.append(entity_id)
+            raise AssertionError("single detail path should not be used")
+
+        async def hydrate(self, snapshot, entity_ids):
+            return {}
+
+    port = BatchPort()
+    out, failed = await fetch_details(
+        snapshot(), port, ["e_cv_strong", "e_missing"],
+        include_contacts=False, viewer_permissions=ViewerPermissions(),
+        concurrency=8, ctx=RecommendExecutionContext(),
+    )
+    assert out["e_cv_strong"] is detail
+    assert out["e_missing"] is None
+    assert failed == set()
+    assert port.get_details_calls == [["e_cv_strong", "e_missing"]]
+    assert port.get_detail_calls == []
+
+
+async def test_fetch_details_batch_retryable_failure_does_not_fall_back_to_single():
+    class FailingBatchPort:
+        def __init__(self):
+            self.get_details_calls = []
+            self.get_detail_calls = []
+
+        async def get_details(self, snapshot, entity_ids, include_contacts, viewer_permissions):
+            self.get_details_calls.append(list(entity_ids))
+            raise sqlite3.OperationalError("database is locked")
+
+        async def get_detail(self, snapshot, entity_id, include_contacts, viewer_permissions):
+            self.get_detail_calls.append(entity_id)
+            raise AssertionError("single detail path should not be used after batch failure")
+
+        async def hydrate(self, snapshot, entity_ids):
+            return {}
+
+    port = FailingBatchPort()
+    out, failed = await fetch_details(
+        snapshot(), port, ["e1", "e2"],
+        include_contacts=False, viewer_permissions=ViewerPermissions(),
+        concurrency=8, ctx=RecommendExecutionContext(),
+    )
+
+    assert out == {"e1": None, "e2": None}
+    assert failed == {"e1", "e2"}
+    assert port.get_details_calls == [["e1", "e2"], ["e1", "e2"]]
+    assert port.get_detail_calls == []

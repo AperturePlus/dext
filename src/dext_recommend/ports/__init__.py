@@ -9,6 +9,7 @@ from dext_recommend.ports.generation import FakeLLMGenerationPort, LLMGeneration
 from dext_recommend.ports.generation_profile import RecommendGenerationProfilePort
 from dext_recommend.ports.conversation_store import ConversationStorePort, TurnSnapshot
 from dext_recommend.ports.professor_facts import (
+    BatchProfessorDetailPort,
     ProfessorDetail,
     ProfessorFact,
     ProfessorFactNotFound,
@@ -44,6 +45,7 @@ from dext_recommend.ports._fakes import (
 __all__ = [
     "ActiveSnapshotProvider",
     "AliasReadback",
+    "BatchProfessorDetailPort",
     "CatalogReleaseObservation",
     "CatalogReleasePort",
     "ConversationStorePort",

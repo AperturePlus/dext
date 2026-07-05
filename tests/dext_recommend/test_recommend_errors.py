@@ -34,6 +34,7 @@ def test_error_code_enum_has_all_foundations_codes():
         "vector_unavailable",
         "hydrate_unavailable",
         "details_unavailable",
+        "preference_relaxed",
         "invalid_conversation_state",
         "more_mentors_requires_prior",
         "same_field_requires_anchor",
