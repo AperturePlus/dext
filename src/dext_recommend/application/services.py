@@ -17,6 +17,7 @@ from dext_recommend.app_state.repositories import (
     AppStateRepository,
     canonical_hash,
 )
+from dext_recommend.generation.conversation_title import fallback_title
 
 
 logger = logging.getLogger(__name__)
@@ -279,6 +280,16 @@ class ApplicationServices:
             diagnostics["build_id"],
         )
         session_obj = await self.repository.get_session(owner_id, session_id)
+        session_obj = await self._ensure_initial_session_title(
+            owner_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            status=status,
+            completed=completed,
+            session_obj=session_obj,
+            first_user_message=text,
+            assistant_answer=answer,
+        )
         return {
             **completed,
             "session": session_obj,
@@ -286,6 +297,60 @@ class ApplicationServices:
             "revision": session_obj.get("revision", 0),
             "quick_actions": [],
         }
+
+    async def _ensure_initial_session_title(
+        self,
+        owner_id: str,
+        *,
+        session_id: str,
+        turn_id: str,
+        status: str,
+        completed: dict[str, Any],
+        session_obj: dict[str, Any],
+        first_user_message: str,
+        assistant_answer: str,
+    ) -> dict[str, Any]:
+        turn = completed.get("turn") or {}
+        if (
+            status != "completed"
+            or turn.get("ordinal") != 0
+            or str(session_obj.get("title") or "").strip()
+        ):
+            return session_obj
+        generator = getattr(self.runtime, "conversation_titles", None)
+        title = fallback_title(first_user_message)
+        try:
+            if generator is None:
+                logger.warning(
+                    "chat title generator unavailable session_id=%s turn_id=%s",
+                    session_id,
+                    turn_id,
+                )
+            else:
+                title = await generator.generate(first_user_message, assistant_answer)
+        except Exception:
+            logger.warning(
+                "chat title generation failed session_id=%s turn_id=%s",
+                session_id,
+                turn_id,
+                exc_info=True,
+            )
+            title = fallback_title(first_user_message)
+        try:
+            return await self.repository.set_initial_session_title(
+                owner_id,
+                session_id,
+                turn_id,
+                title,
+            )
+        except Exception:
+            logger.warning(
+                "chat title persistence failed session_id=%s turn_id=%s",
+                session_id,
+                turn_id,
+                exc_info=True,
+            )
+            return session_obj
 
 
 __all__ = ["ApplicationServices", "AttemptRegistry"]

@@ -28,7 +28,9 @@ from dext_recommend.core.conversation import ConversationDispatcher
 from dext_recommend.core.generation_profile import RecommendGenerationProfile
 from dext_recommend.core.service import RecommendDeps, RecommendationCore
 from dext_recommend.errors import RecommendationRuntimeError
+from dext_recommend.generation.achievement_extraction import AchievementExtractionService
 from dext_recommend.generation.auxiliary import AuxiliaryGenerationService
+from dext_recommend.generation.conversation_title import ConversationTitleGenerationService
 from dext_recommend.generation.quick_actions import QuickActionGenerationService
 from dext_recommend.readiness import ReadinessDeps, ReadinessService
 
@@ -135,6 +137,8 @@ class LiveRecommendationRuntime:
     core: RecommendationCore
     conversation: ConversationDispatcher
     auxiliary_generation: AuxiliaryGenerationService
+    achievement_extraction: AchievementExtractionService
+    conversation_titles: ConversationTitleGenerationService
     quick_actions: QuickActionGenerationService
     readiness: LiveActiveSnapshotProvider
     generation_profile: RecommendGenerationProfile
@@ -331,6 +335,14 @@ async def build_live_recommendation_runtime(
             pipeline=ConstrainedGenerationPipeline(aux_llm),
             settings=settings,
         )
+        achievement_extraction = AchievementExtractionService(
+            pipeline=ConstrainedGenerationPipeline(aux_llm),
+            generation_profile=profile,
+        )
+        conversation_titles = ConversationTitleGenerationService(
+            pipeline=ConstrainedGenerationPipeline(aux_llm),
+            generation_profile=profile,
+        )
         quick_actions = QuickActionGenerationService(
             pipeline=ConstrainedGenerationPipeline(aux_llm),
             generation_profile=profile,
@@ -339,6 +351,8 @@ async def build_live_recommendation_runtime(
             core=core,
             conversation=conversation,
             auxiliary_generation=auxiliary,
+            achievement_extraction=achievement_extraction,
+            conversation_titles=conversation_titles,
             quick_actions=quick_actions,
             readiness=provider,
             generation_profile=profile,

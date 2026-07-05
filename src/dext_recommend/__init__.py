@@ -27,7 +27,7 @@ from dext_recommend.models import (
     RecommendationFilters, RecommendationWarning, RecommendedProfessor,
 )
 from dext_recommend.ports import (
-    ActiveSnapshotProvider, AliasReadback, CatalogReleaseObservation,
+    ActiveSnapshotProvider, AliasReadback, BatchProfessorDetailPort, CatalogReleaseObservation,
     CatalogReleasePort, EmbeddingResult, FakeActiveSnapshotProvider,
     ConversationStorePort, FakeCatalogReleasePort, FakeConversationStorePort,
     FakeGraphReleasePort, FakeLLMGenerationPort,
@@ -59,6 +59,7 @@ __all__: list[str] = [
     "ActiveBuildSnapshot",
     "ActiveSnapshotProvider",
     "AliasReadback",
+    "BatchProfessorDetailPort",
     "AuxiliaryGenerationResult",
     "AuxiliaryGenerationService",
     "CatalogProfessorFactAdapter",

@@ -9,7 +9,9 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from dext_recommend.api import AppSettings, create_recommendation_app
+from dext_recommend.generation.achievement_extraction import fallback_achievement_draft
 from dext_recommend.models import (
+    AuxiliaryGenerationResult,
     ConversationDispatchResult,
     QueryDiagnostics,
     QueryUnderstanding,
@@ -196,11 +198,70 @@ class FakeQuickActions:
         return ["动态筛选", "论文方向"] if follow_up else ["开始推荐"]
 
 
-class FakeRuntime:
+class FakeAchievementExtraction:
     def __init__(self):
+        self.calls = []
+
+    async def extract(self, raw_text):
+        self.calls.append(raw_text)
+        return fallback_achievement_draft(raw_text)
+
+
+class ErrorAuxiliaryGeneration:
+    def __init__(self, code: str, message: str):
+        self.code = code
+        self.message = message
+        self.calls = []
+
+    async def analyze_match(
+        self,
+        entity_id,
+        student_context,
+        evidence_policy,
+        *,
+        viewer_permissions=None,
+        request_id=None,
+    ):
+        self.calls.append({
+            "entity_id": entity_id,
+            "student_context": student_context,
+            "evidence_policy": evidence_policy,
+            "request_id": request_id,
+            "viewer_permissions": viewer_permissions,
+        })
+        return AuxiliaryGenerationResult(
+            kind="error",
+            issues=(RecommendationWarning(
+                code=self.code,
+                message=self.message,
+                severity="error",
+            ),),
+            generation_profile_version="gen-v1",
+        )
+
+
+class FakeConversationTitles:
+    def __init__(self, *, raise_error: bool = False):
+        self.calls = []
+        self.raise_error = raise_error
+
+    async def generate(self, first_user_message, assistant_answer=""):
+        self.calls.append({
+            "first_user_message": first_user_message,
+            "assistant_answer": assistant_answer,
+        })
+        if self.raise_error:
+            raise RuntimeError("title generation failed")
+        return "机器学习导师"
+
+
+class FakeRuntime:
+    def __init__(self, *, title_error: bool = False):
         self.core = FakeCore()
         self.conversation = FakeConversation()
         self.auxiliary_generation = SimpleNamespace()
+        self.achievement_extraction = FakeAchievementExtraction()
+        self.conversation_titles = FakeConversationTitles(raise_error=title_error)
         self.quick_actions = FakeQuickActions()
         self.readiness = SimpleNamespace(get_snapshot=lambda: None)
         self.closed = False
@@ -342,6 +403,45 @@ async def test_identity_profile_favorite_history_flow():
 
 
 @pytest.mark.asyncio
+async def test_extract_achievements_splits_competition_and_paper():
+    runtime = FakeRuntime()
+
+    async def runtime_factory(*args, **kwargs):
+        return runtime
+
+    app = create_recommendation_app(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
+        runtime_factory=runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        identity = await (await client.post("/api/v1/identity/anonymous")).json()
+        headers = {"Authorization": f"Bearer {identity['data']['access_token']}"}
+        resp = await client.post(
+            "/api/v1/profile/achievements/extract",
+            headers=headers,
+            json={"raw_text": "ACM区域赛银牌；一篇CCF-B论文"},
+        )
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["code"] == 0
+        assert runtime.achievement_extraction.calls == ["ACM区域赛银牌；一篇CCF-B论文"]
+
+        data = body["data"]
+        assert len(data["competitions"]) >= 1
+        competition = data["competitions"][0]
+        assert "ACM" in competition["name"]
+        assert "区域赛" in competition["name"]
+        assert competition["award"] == "银牌"
+        assert set(competition) >= {"name", "level", "award", "year"}
+
+        assert len(data["research"]) >= 1
+        paper = next(item for item in data["research"] if item["type"] == "paper")
+        assert "CCF-B" in paper["title"]
+        assert paper["title"] != "科研经历"
+        assert set(paper) >= {"type", "title", "role", "venue_or_status", "year"}
+
+
+@pytest.mark.asyncio
 async def test_recommendations_route_uses_fake_runtime():
     app = create_recommendation_app(
         AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
@@ -382,6 +482,75 @@ async def test_professor_detail_readiness_error_returns_503():
     assert body["error_code"] == "readiness_source_unavailable"
     assert body["message"] == "导师详情暂时不可用，请稍后重试"
     assert body["data"] == {"source": "catalog", "retryable": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("code", "message", "status"), [
+    ("llm_unavailable", "match_analysis provider unavailable", 503),
+    ("request_timeout", "match_analysis generation timed out", 504),
+])
+async def test_match_analysis_generation_errors_map_http_and_pass_request_id(
+    code: str,
+    message: str,
+    status: int,
+):
+    auxiliary = ErrorAuxiliaryGeneration(code, message)
+
+    async def runtime_factory(*args, **kwargs):
+        runtime = FakeRuntime()
+        runtime.auxiliary_generation = auxiliary
+        return runtime
+
+    app = create_recommendation_app(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
+        runtime_factory=runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        identity = await (await client.post("/api/v1/identity/anonymous")).json()
+        token = identity["data"]["access_token"]
+        request_id = "019f2e47-cf3c-7eb5-afce-e200d135fbe7"
+        resp = await client.post(
+            "/api/v1/professors/p1/match-analysis",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-Request-ID": request_id,
+            },
+            json={"profile": {"research_interests": ["NLP"]}},
+        )
+        body = await resp.json()
+
+    assert resp.status == status
+    assert resp.headers["X-Request-ID"] == request_id
+    assert body["code"] == status * 100 + 1
+    assert body["error_code"] == code
+    assert body["message"] == message
+    assert auxiliary.calls[0]["entity_id"] == "p1"
+    assert auxiliary.calls[0]["request_id"] == request_id
+
+
+@pytest.mark.asyncio
+async def test_home_config_supports_competition_mode():
+    app = create_recommendation_app(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
+        runtime_factory=fake_runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/v1/home/config?mode=competition")
+        body = await resp.json()
+        assert resp.status == 200
+        assert "竞赛" in body["data"]["taglines"][0]
+        assert "数学建模" in body["data"]["quick_tags"]
+        assert "导师" not in body["data"]["prompts"][0]["text"]
+
+        resp = await client.get("/api/v1/home/prompts?mode=competition")
+        body = await resp.json()
+        assert resp.status == 200
+        assert "竞赛" in body["data"][0]["text"] or "比赛" in body["data"][0]["text"]
+
+        resp = await client.get("/api/v1/home/config?mode=unknown")
+        body = await resp.json()
+        assert resp.status == 422
+        assert body["error_code"] == "invalid_mode"
 
 
 def test_public_profile_accepts_flutter_score_fields():
@@ -479,21 +648,73 @@ async def test_new_turn_sse_contract():
         _assert_sse_context(completed, session_id=session_id, turn_id=turn_id, attempt_id=attempt_id)
         assert completed["revision"] == 1
         assert completed["session"]["revision"] == 1
+        assert completed["session"]["title"] == "机器学习导师"
         assert completed["message"]["role"] == "assistant"
         assert completed["message"]["status"] == "done"
         assert completed["message"]["kind"] == "recommendation"
         assert completed["message"]["related_recommendations"][0]["professor_id"] == "p1"
+        listed = await (await client.get(
+            "/api/v1/chat/sessions",
+            headers=headers,
+        )).json()
+        assert listed["data"]["items"][0]["title"] == "机器学习导师"
 
         aggregate = await (await client.get(
             f"/api/v1/chat/sessions/{session_id}",
             headers=headers,
         )).json()
+        assert aggregate["data"]["session"]["title"] == "机器学习导师"
         assistant_messages = [
             message for message in aggregate["data"]["messages"]
             if message["role"] == "assistant"
         ]
         assert len(assistant_messages) == 1
         assert assistant_messages[0]["related_recommendations"][0]["professor_id"] == "p1"
+
+        second_request_id = "00000000-0000-0000-0000-0000000000ab"
+        second_resp = await client.post(
+            f"/api/v1/chat/sessions/{session_id}/turns",
+            headers={**headers, "Idempotency-Key": second_request_id, "X-Request-ID": second_request_id},
+            json={"text": "再推荐几个", "request_id": second_request_id, "expected_revision": 1},
+        )
+        assert second_resp.status == 200
+        second_events = _parse_sse(await second_resp.text())
+        second_completed = second_events[-1][1]
+        assert second_completed["session"]["revision"] == 2
+        assert second_completed["session"]["title"] == "机器学习导师"
+
+
+@pytest.mark.asyncio
+async def test_new_turn_sse_title_generation_failure_uses_message_fallback():
+    async def runtime_factory(*args, **kwargs):
+        return FakeRuntime(title_error=True)
+
+    app = create_recommendation_app(
+        AppSettings(database_url="sqlite+aiosqlite:///:memory:", schema_bootstrap=True),
+        runtime_factory=runtime_factory,
+    )
+    async with TestClient(TestServer(app)) as client:
+        identity = await (await client.post("/api/v1/identity/anonymous")).json()
+        headers = {"Authorization": f"Bearer {identity['data']['access_token']}"}
+        session = await (await client.post("/api/v1/chat/sessions", headers=headers, json={})).json()
+        assert session["data"]["title"] is None
+        session_id = session["data"]["id"]
+        request_id = "00000000-0000-0000-0000-0000000000ac"
+        resp = await client.post(
+            f"/api/v1/chat/sessions/{session_id}/turns",
+            headers={**headers, "Idempotency-Key": request_id},
+            json={"text": "  推荐\n南开大模型导师  ", "request_id": request_id, "expected_revision": 0},
+        )
+        assert resp.status == 200
+        events = _parse_sse(await resp.text())
+        completed = events[-1][1]
+        assert completed["session"]["title"] == "推荐 南开大模型导师"
+
+        listed = await (await client.get(
+            "/api/v1/chat/sessions",
+            headers=headers,
+        )).json()
+        assert listed["data"]["items"][0]["title"] == "推荐 南开大模型导师"
 
 
 @pytest.mark.asyncio

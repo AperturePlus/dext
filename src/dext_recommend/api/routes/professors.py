@@ -8,6 +8,7 @@ from dext_recommend.api.adapters import (
     student_context_from_profile,
 )
 from dext_recommend.api.auth import require_principal
+from dext_recommend.api.keys import REQUEST_ID_KEY
 from dext_recommend.api.middleware import ApiError, ok, read_json
 from dext_recommend.api.routes._utils import raise_if_domain_error, runtime
 from dext_recommend.api.schemas import (
@@ -54,6 +55,7 @@ async def handle_compare(request: web.Request) -> web.Response:
         None,
         "strict",
         viewer_permissions=principal.viewer_permissions(),
+        request_id=request.get(REQUEST_ID_KEY, ""),
     )
     raise_if_domain_error(result.issues)
     return ok(auxiliary_result_to_public(result))
@@ -67,6 +69,7 @@ async def handle_match(request: web.Request) -> web.Response:
         student_context_from_profile(dto.profile),
         "strict",
         viewer_permissions=principal.viewer_permissions(),
+        request_id=request.get(REQUEST_ID_KEY, ""),
     )
     raise_if_domain_error(result.issues)
     return ok(auxiliary_result_to_public(result))
@@ -82,6 +85,7 @@ async def handle_outreach(request: web.Request) -> web.Response:
         dto.locale or "zh",
         include_contacts=False,
         viewer_permissions=principal.viewer_permissions(),
+        request_id=request.get(REQUEST_ID_KEY, ""),
     )
     raise_if_domain_error(result.issues)
     return ok(auxiliary_result_to_public(result))

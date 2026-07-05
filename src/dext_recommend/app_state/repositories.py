@@ -325,6 +325,30 @@ class AppStateRepository:
                 raise NotFoundError("session not found")
             return _session_dict(row)
 
+    async def set_initial_session_title(
+        self,
+        owner_id: str,
+        session_id: str,
+        turn_id: str,
+        title: str,
+    ) -> dict[str, Any]:
+        normalized = " ".join(str(title or "").strip().split())[:256]
+        async with self.sessionmaker() as session, session.begin():
+            row = await session.get(ConversationSession, {"owner_id": owner_id, "id": session_id})
+            turn = await session.get(ConversationTurn, {"owner_id": owner_id, "id": turn_id})
+            if (
+                row is None
+                or turn is None
+                or row.deleted_at is not None
+                or turn.session_id != session_id
+            ):
+                raise NotFoundError("session not found")
+            if turn.ordinal != 0 or str(row.title or "").strip() or not normalized:
+                return _session_dict(row)
+            row.title = normalized
+            await session.flush()
+            return _session_dict(row)
+
     async def soft_delete_session_tree(self, owner_id: str, session_id: str) -> None:
         async with self.sessionmaker() as session, session.begin():
             row = await session.get(ConversationSession, {"owner_id": owner_id, "id": session_id})

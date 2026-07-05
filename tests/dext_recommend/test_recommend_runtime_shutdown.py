@@ -29,6 +29,8 @@ async def test_runtime_close_is_reverse_order_idempotent_and_failure_isolated():
         core=object(),
         conversation=object(),
         auxiliary_generation=object(),
+        achievement_extraction=object(),
+        conversation_titles=object(),
         quick_actions=object(),
         readiness=AsyncCloser("readiness", events),
         generation_profile=object(),
