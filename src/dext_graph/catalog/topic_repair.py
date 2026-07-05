@@ -17,6 +17,10 @@ from dext_graph.catalog.db import (
     utcnow_iso,
 )
 from dext_graph.catalog.evidence import rebuild_graph_partitions, set_graph_export_pruned
+from dext_graph.catalog.topic_workflow import (
+    _ensure_topic_link_jobs,
+    _reuse_topic_links_from_active_build,
+)
 from dext_graph.config import GraphSettings
 
 _TOPIC_RELATION_PARTITIONS = {
@@ -68,6 +72,13 @@ def _refresh_topic_summary(connection: sqlite3.Connection, build_id: str) -> Non
         connection.execute(
             "SELECT COUNT(*) FROM statement_topic_links "
             "WHERE build_id=? AND review_status='approved'",
+            (build_id,),
+        ).fetchone()[0]
+    )
+    summary["linked_statements"] = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM topic_link_jobs "
+            "WHERE build_id=? AND status='succeeded'",
             (build_id,),
         ).fetchone()[0]
     )
@@ -151,6 +162,59 @@ def _downgrade_incompatible_links(
     return int(cursor.rowcount), relation_types, vector_exists
 
 
+def _reset_topic_derived_stages(connection: sqlite3.Connection, build_id: str) -> bool:
+    vector_exists = (
+        connection.execute(
+            "SELECT 1 FROM vector_runs WHERE build_id=?", (build_id,)
+        ).fetchone()
+        is not None
+    )
+    if vector_exists:
+        connection.execute(
+            "UPDATE vector_runs SET status='PENDING',finished_at=NULL,last_error=NULL "
+            "WHERE build_id=?",
+            (build_id,),
+        )
+        connection.execute(
+            "DELETE FROM sink_checkpoints WHERE build_id=? AND sink='qdrant' "
+            "AND partition_key='professors'",
+            (build_id,),
+        )
+    connection.execute("DELETE FROM validation_runs WHERE build_id=?", (build_id,))
+    connection.execute("DELETE FROM promotion_runs WHERE build_id=?", (build_id,))
+    connection.execute(
+        "UPDATE graph_builds SET status='WRITING_VECTOR',last_error=NULL WHERE id=?",
+        (build_id,),
+    )
+    return vector_exists
+
+
+def _reuse_links_from_active_build(
+    connection: sqlite3.Connection, build_id: str
+) -> tuple[dict[str, Any], bool]:
+    build = connection.execute(
+        "SELECT status,taxonomy_version FROM graph_builds WHERE id=?", (build_id,)
+    ).fetchone()
+    if build is None:
+        raise CatalogError(f"unknown build ID: {build_id}")
+    if str(build["status"]) == "ACTIVE":
+        raise CatalogError("refusing to repair an ACTIVE build")
+    taxonomy_version = build["taxonomy_version"]
+    if taxonomy_version is None:
+        raise CatalogError("build has no taxonomy version")
+
+    _ensure_topic_link_jobs(connection, build_id)
+    reuse = _reuse_topic_links_from_active_build(
+        connection, build_id, str(taxonomy_version)
+    )
+    if reuse["reused_jobs"] or reuse["reused_links"]:
+        _refresh_topic_summary(connection, build_id)
+        vector_reset = _reset_topic_derived_stages(connection, build_id)
+    else:
+        vector_reset = False
+    return reuse, vector_reset
+
+
 async def repair_incompatible_topic_links(
     build_id: str, settings: GraphSettings | None = None
 ) -> dict[str, Any]:
@@ -190,4 +254,41 @@ async def repair_incompatible_topic_links(
     return result
 
 
-__all__ = ["repair_incompatible_topic_links"]
+async def reuse_topic_links_from_active_build(
+    build_id: str, settings: GraphSettings | None = None
+) -> dict[str, Any]:
+    settings = settings or GraphSettings()
+    path = Path(settings.catalog_path).expanduser().resolve()
+    with catalog_write_lock(path):
+        backup_existing_catalog(path, retention=settings.catalog_backup_retention)
+        initialize_catalog(path)
+        async with CatalogWriter(path, max_queue=settings.build_write_queue) as writer:
+            reuse, vector_reset = await writer.execute(
+                lambda connection: _reuse_links_from_active_build(connection, build_id)
+            )
+            rebuilt: dict[str, int] = {}
+            if reuse["reused_links"]:
+                rebuilt = await rebuild_graph_partitions(
+                    writer,
+                    build_id,
+                    settings,
+                    tuple(_TOPIC_RELATION_PARTITIONS.values()),
+                )
+                await writer.execute(
+                    lambda connection: set_graph_export_pruned(
+                        connection, build_id, False
+                    )
+                )
+            from dext_graph.catalog.workflow import build_status
+
+            result = build_status(writer.path, build_id)
+    result["topic_link_reuse"] = {
+        **reuse,
+        "rebuilt_partitions": list(rebuilt),
+        "rebuilt_rows": rebuilt,
+        "vector_reset": vector_reset,
+    }
+    return result
+
+
+__all__ = ["repair_incompatible_topic_links", "reuse_topic_links_from_active_build"]

@@ -11,6 +11,7 @@ from dext_graph.catalog.topic_workflow import (
     _claim_statement_batch,
     _ensure_topic_link_jobs,
     _link_statements,
+    _reuse_topic_links_from_active_build,
     run_topic_stage,
 )
 from dext_graph.catalog.topics import TopicConcept, import_taxonomy, load_taxonomy
@@ -301,6 +302,152 @@ def test_topic_link_jobs_initialize_idempotently_without_overwriting_existing_jo
     ]
 
 
+def test_reuse_topic_links_from_active_build_reuses_only_nonterminal_matching_jobs(
+    tmp_path,
+):
+    path, manifest = _prepare_link_catalog(
+        tmp_path,
+        [
+            ("statement-01", "statement-01 使用机器学习"),
+            ("statement-02", "statement-02 使用机器学习"),
+            ("statement-03", "statement-03 使用机器学习"),
+            ("statement-04", "statement-04 使用机器学习"),
+        ],
+    )
+    with sqlite3.connect(path) as connection:
+        topic_id = connection.execute(
+            "SELECT id FROM topics WHERE taxonomy_version=? AND kind='method' LIMIT 1",
+            (manifest.version,),
+        ).fetchone()[0]
+        connection.execute(
+            """
+            INSERT INTO graph_builds(
+              id,status,curation_version,graph_schema_version,vector_schema_version,
+              taxonomy_version,settings_json,summary_json,started_at,finished_at
+            ) VALUES ('old-active','ACTIVE','v1',1,1,?,'{}','{}','2026-01-01','2026-01-02')
+            """,
+            (manifest.version,),
+        )
+        for statement_id in ("statement-01", "statement-02", "statement-03"):
+            connection.execute(
+                """
+                INSERT INTO research_statements(
+                  id,build_id,entity_id,observation_id,raw_text,normalized_text,
+                  language,statement_hash
+                ) VALUES (?,'old-active','entity-old','observation-old',?,?,'zh',?)
+                """,
+                (statement_id, statement_id, statement_id, f"old-{statement_id}"),
+            )
+        connection.executemany(
+            """
+            INSERT INTO topic_link_jobs(
+              build_id,statement_id,status,candidate_ids_json,attempt_count,last_error,updated_at
+            ) VALUES ('old-active',?,?, ?, ?, ?, '2026-01-02')
+            """,
+            [
+                ("statement-01", "succeeded", '["old-candidate"]', 4, None),
+                ("statement-02", "terminal-invalid-input", "[]", 2, "empty"),
+                ("statement-03", "terminal-invalid-input", "[]", 9, "old"),
+            ],
+        )
+        connection.execute(
+            """
+            INSERT INTO statement_topic_links(
+              build_id,statement_id,taxonomy_version,topic_id,relation_type,
+              evidence_span,method,confidence,review_status,provenance_ref
+            ) VALUES (
+              'old-active','statement-01',?,?,'USES_METHOD',
+              '机器学习','topic_llm',0.9,'approved','old-ref'
+            )
+            """,
+            (manifest.version, topic_id),
+        )
+        _ensure_topic_link_jobs(connection, "build-1")
+        connection.execute(
+            """
+            UPDATE topic_link_jobs
+            SET status='succeeded',candidate_ids_json='["current"]',attempt_count=1
+            WHERE build_id='build-1' AND statement_id='statement-03'
+            """
+        )
+
+        reuse = _reuse_topic_links_from_active_build(
+            connection, "build-1", manifest.version
+        )
+        rows = connection.execute(
+            """
+            SELECT statement_id,status,candidate_ids_json,attempt_count,last_error
+            FROM topic_link_jobs WHERE build_id='build-1' ORDER BY statement_id
+            """
+        ).fetchall()
+        links = connection.execute(
+            """
+            SELECT statement_id,topic_id,relation_type,evidence_span,review_status
+            FROM statement_topic_links WHERE build_id='build-1' ORDER BY statement_id
+            """
+        ).fetchall()
+        checkpoint = connection.execute(
+            """
+            SELECT rows_written FROM sink_checkpoints
+            WHERE build_id='build-1' AND sink='topic_link' AND partition_key='statements'
+            """
+        ).fetchone()
+
+    assert reuse == {
+        "previous_build_id": "old-active",
+        "reused_links": 1,
+        "reused_jobs": 2,
+    }
+    assert rows == [
+        ("statement-01", "succeeded", '["old-candidate"]', 4, None),
+        ("statement-02", "terminal-invalid-input", "[]", 2, "empty"),
+        ("statement-03", "succeeded", '["current"]', 1, None),
+        ("statement-04", "pending", "[]", 0, None),
+    ]
+    assert links == [
+        ("statement-01", topic_id, "USES_METHOD", "机器学习", "approved")
+    ]
+    assert checkpoint[0] == 2
+
+
+def test_reuse_topic_links_from_active_build_requires_matching_taxonomy(tmp_path):
+    path, manifest = _prepare_link_catalog(
+        tmp_path,
+        [("statement-01", "statement-01 使用机器学习")],
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO graph_builds(
+              id,status,curation_version,graph_schema_version,vector_schema_version,
+              taxonomy_version,settings_json,summary_json,started_at,finished_at
+            ) VALUES ('old-active','ACTIVE','v1',1,1,'other-taxonomy','{}','{}','2026-01-01','2026-01-02')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO topic_link_jobs(
+              build_id,statement_id,status,candidate_ids_json,attempt_count,updated_at
+            ) VALUES ('old-active','statement-01','succeeded','[]',1,'2026-01-02')
+            """
+        )
+        _ensure_topic_link_jobs(connection, "build-1")
+
+        reuse = _reuse_topic_links_from_active_build(
+            connection, "build-1", manifest.version
+        )
+        row = connection.execute(
+            "SELECT status FROM topic_link_jobs WHERE build_id='build-1'"
+        ).fetchone()
+
+    assert reuse == {
+        "previous_build_id": None,
+        "reused_links": 0,
+        "reused_jobs": 0,
+    }
+    assert row[0] == "pending"
+
+
 def test_topic_claim_batch_uses_status_index_and_reclaims_retry(tmp_path):
     path, _manifest = _prepare_link_catalog(
         tmp_path,
@@ -478,7 +625,7 @@ async def test_topic_stage_preflight_fails_before_embedding_or_qdrant(tmp_path):
         ).fetchone()[0] == 0
         assert connection.execute(
             "SELECT COUNT(*) FROM topic_link_jobs WHERE build_id='build-1'"
-        ).fetchone()[0] == 0
+        ).fetchone()[0] == 1
 
 
 @pytest.mark.asyncio

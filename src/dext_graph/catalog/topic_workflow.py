@@ -43,6 +43,7 @@ from dext_graph.profiles import TransformersTokenizer, prefixed_input
 
 TOPIC_RUN_VERSION = "topic-dag-v1"
 _TERMINAL_TOPIC_LINK_STATUSES = frozenset({"succeeded", "terminal-invalid-input"})
+_TERMINAL_TOPIC_LINK_STATUS_SQL = "('succeeded','terminal-invalid-input')"
 
 
 class TopicLinkDeferredRetryError(RuntimeError):
@@ -78,6 +79,201 @@ def _has_pending_topic_link_work(connection: sqlite3.Connection, build_id: str) 
         ).fetchone()
         is not None
     )
+
+
+def _latest_active_topic_source_build(
+    connection: sqlite3.Connection,
+    build_id: str,
+    taxonomy_version: str,
+) -> str | None:
+    row = connection.execute(
+        """
+        SELECT id
+        FROM graph_builds
+        WHERE status='ACTIVE' AND id<>? AND taxonomy_version=?
+        ORDER BY COALESCE(finished_at, started_at) DESC, started_at DESC
+        LIMIT 1
+        """,
+        (build_id, taxonomy_version),
+    ).fetchone()
+    return None if row is None else str(row[0])
+
+
+def _checkpoint_reused_topic_jobs(
+    connection: sqlite3.Connection,
+    build_id: str,
+    *,
+    rows_delta: int,
+) -> None:
+    if rows_delta <= 0:
+        return
+    row = connection.execute(
+        f"""
+        SELECT MAX(statement_id)
+        FROM topic_link_jobs
+        WHERE build_id=? AND status IN {_TERMINAL_TOPIC_LINK_STATUS_SQL}
+        """,
+        (build_id,),
+    ).fetchone()
+    last_key = None if row is None else row[0]
+    connection.execute(
+        """
+        INSERT INTO sink_checkpoints(
+          build_id,sink,partition_key,last_key,last_batch_id,rows_written,updated_at
+        ) VALUES (?,'topic_link','statements',?,NULL,?,?)
+        ON CONFLICT(build_id,sink,partition_key) DO UPDATE SET
+          last_key=CASE
+            WHEN sink_checkpoints.last_key IS NULL
+              OR sink_checkpoints.last_key < excluded.last_key
+            THEN excluded.last_key
+            ELSE sink_checkpoints.last_key
+          END,
+          rows_written=sink_checkpoints.rows_written + excluded.rows_written,
+          updated_at=excluded.updated_at
+        """,
+        (build_id, last_key, rows_delta, utcnow_iso()),
+    )
+
+
+def _reuse_topic_links_from_active_build(
+    connection: sqlite3.Connection,
+    build_id: str,
+    taxonomy_version: str,
+) -> dict[str, Any]:
+    previous_build_id = _latest_active_topic_source_build(
+        connection, build_id, taxonomy_version
+    )
+    if previous_build_id is None:
+        return {
+            "previous_build_id": None,
+            "reused_links": 0,
+            "reused_jobs": 0,
+        }
+
+    now = utcnow_iso()
+    link_cursor = connection.execute(
+        f"""
+        INSERT OR IGNORE INTO statement_topic_links(
+          build_id,statement_id,taxonomy_version,topic_id,relation_type,
+          evidence_span,method,confidence,review_status,provenance_ref
+        )
+        SELECT
+          ?, old_link.statement_id, old_link.taxonomy_version, old_link.topic_id,
+          old_link.relation_type, old_link.evidence_span, old_link.method,
+          old_link.confidence, old_link.review_status, old_link.provenance_ref
+        FROM statement_topic_links old_link
+        JOIN topic_link_jobs current_job
+          ON current_job.build_id=? AND current_job.statement_id=old_link.statement_id
+         AND current_job.status NOT IN {_TERMINAL_TOPIC_LINK_STATUS_SQL}
+        JOIN topic_link_jobs old_job
+          ON old_job.build_id=old_link.build_id
+         AND old_job.statement_id=old_link.statement_id
+         AND old_job.status='succeeded'
+        JOIN research_statements current_statement
+          ON current_statement.build_id=current_job.build_id
+         AND current_statement.id=old_link.statement_id
+        JOIN topics topic
+          ON topic.taxonomy_version=old_link.taxonomy_version
+         AND topic.id=old_link.topic_id
+        WHERE old_link.build_id=? AND old_link.taxonomy_version=?
+          AND NOT EXISTS (
+            SELECT 1
+            FROM statement_topic_links incompatible
+            LEFT JOIN topics incompatible_topic
+              ON incompatible_topic.taxonomy_version=incompatible.taxonomy_version
+             AND incompatible_topic.id=incompatible.topic_id
+            WHERE incompatible.build_id=old_link.build_id
+              AND incompatible.statement_id=old_link.statement_id
+              AND (
+                incompatible.taxonomy_version<>?
+                OR incompatible_topic.id IS NULL
+              )
+          )
+        """,
+        (
+            build_id,
+            build_id,
+            previous_build_id,
+            taxonomy_version,
+            taxonomy_version,
+        ),
+    )
+    reused_links = max(int(link_cursor.rowcount), 0)
+
+    job_cursor = connection.execute(
+        f"""
+        UPDATE topic_link_jobs
+        SET
+          status=(
+            SELECT old_job.status
+            FROM topic_link_jobs old_job
+            WHERE old_job.build_id=? AND old_job.statement_id=topic_link_jobs.statement_id
+          ),
+          candidate_ids_json=(
+            SELECT old_job.candidate_ids_json
+            FROM topic_link_jobs old_job
+            WHERE old_job.build_id=? AND old_job.statement_id=topic_link_jobs.statement_id
+          ),
+          attempt_count=max(
+            attempt_count,
+            (
+              SELECT old_job.attempt_count
+              FROM topic_link_jobs old_job
+              WHERE old_job.build_id=? AND old_job.statement_id=topic_link_jobs.statement_id
+            )
+          ),
+          last_error=(
+            SELECT old_job.last_error
+            FROM topic_link_jobs old_job
+            WHERE old_job.build_id=? AND old_job.statement_id=topic_link_jobs.statement_id
+          ),
+          updated_at=?
+        WHERE build_id=?
+          AND status NOT IN {_TERMINAL_TOPIC_LINK_STATUS_SQL}
+          AND EXISTS (
+            SELECT 1
+            FROM topic_link_jobs old_job
+            WHERE old_job.build_id=?
+              AND old_job.statement_id=topic_link_jobs.statement_id
+              AND (
+                old_job.status='terminal-invalid-input'
+                OR (
+                  old_job.status='succeeded'
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM statement_topic_links old_link
+                    LEFT JOIN topics topic
+                      ON topic.taxonomy_version=old_link.taxonomy_version
+                     AND topic.id=old_link.topic_id
+                    WHERE old_link.build_id=old_job.build_id
+                      AND old_link.statement_id=old_job.statement_id
+                      AND (
+                        old_link.taxonomy_version<>?
+                        OR topic.id IS NULL
+                      )
+                  )
+                )
+              )
+          )
+        """,
+        (
+            previous_build_id,
+            previous_build_id,
+            previous_build_id,
+            previous_build_id,
+            now,
+            build_id,
+            previous_build_id,
+            taxonomy_version,
+        ),
+    )
+    reused_jobs = max(int(job_cursor.rowcount), 0)
+    _checkpoint_reused_topic_jobs(connection, build_id, rows_delta=reused_jobs)
+    return {
+        "previous_build_id": previous_build_id,
+        "reused_links": reused_links,
+        "reused_jobs": reused_jobs,
+    }
 
 
 async def _preflight_topic_llm(llm_client: Any) -> None:
@@ -615,6 +811,20 @@ async def _link_statements(
     deferred_statement_ids: set[str] = set()
     await writer.execute(lambda connection: _reset_running_jobs(connection, build_id))
     await writer.execute(lambda connection: _ensure_topic_link_jobs(connection, build_id))
+    reuse = await writer.execute(
+        lambda connection: _reuse_topic_links_from_active_build(
+            connection, build_id, taxonomy_version
+        )
+    )
+    if reuse["reused_jobs"] or reuse["reused_links"]:
+        emit_progress(
+            progress,
+            "topics",
+            "progress",
+            build_id=build_id,
+            message="statement linking reuse",
+            counters=reuse,
+        )
     total = await writer.execute(
         lambda connection: int(
             connection.execute(
@@ -946,6 +1156,24 @@ async def run_topic_stage(
             build_id=build_id,
             message="topic taxonomy/linking stage",
         )
+        reuse = await writer.execute(
+            lambda connection: (
+                _reset_running_jobs(connection, build_id),
+                _ensure_topic_link_jobs(connection, build_id),
+                _reuse_topic_links_from_active_build(
+                    connection, build_id, manifest.version
+                ),
+            )[2]
+        )
+        if reuse["reused_jobs"] or reuse["reused_links"]:
+            emit_progress(
+                progress,
+                "topics",
+                "progress",
+                build_id=build_id,
+                message="statement linking reuse",
+                counters=reuse,
+            )
         needs_llm = await writer.execute(
             lambda connection: _has_pending_topic_link_work(connection, build_id),
             transactional=False,
