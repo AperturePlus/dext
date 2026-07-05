@@ -265,7 +265,8 @@ Flutter 端需要导师推荐和竞赛接口共用同一个后端 origin 时，�
 uv run dext-api serve --dev-bootstrap-schema
 ~~~
 
-`dext-api serve` 会复用导师推荐接口，并额外注册竞赛接口。若竞赛 artifacts 不存在，启动会提示先构建：
+`dext-api serve` 会复用导师推荐接口，并额外注册竞赛接口。若竞赛 artifacts 缺失或与当前知识库版本不匹配，
+启动时会自动构建 `data/competition/index/` 和 `data/competition/catalog/`。也可以提前手动预构建：
 
 ~~~bash
 uv run dext-competition index build
