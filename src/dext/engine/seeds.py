@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from dext.bridge.redirect import BLOCKED, PROBE_FAILED, PROBE_TIMEOUT as REDIRECT_PROBE_TIMEOUT, RedirectGuard
 from dext.page.urls import normalize_url
 from dext.seed import OrgUnitSeed, UniversitySeed
 from dext.storage.dedup import node_key_for
@@ -16,8 +14,6 @@ from dext.url_policy import is_allowed_fetch_host
 from dext.engine.priorities import BASE_PRIORITY_BY_TYPE, priority_for as base_priority_for, subtree_priority_for
 
 PRIORITY_BY_TYPE: dict[NodeType, float] = BASE_PRIORITY_BY_TYPE
-
-_PROBE_CONCURRENCY = 16
 
 
 @dataclass
@@ -31,34 +27,9 @@ class SeedLoadSummary:
 
 async def resolve_discovered_url(
     url: str,
-    *,
-    redirect_guard: RedirectGuard | None = None,
 ) -> tuple[str | None, dict[str, object]]:
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https"):
-        final_url = url
-        metadata: dict[str, object] = {"source_url": url}
-    elif redirect_guard is None:
-        final_url = url
-        metadata = {"source_url": url}
-    else:
-        final_url = url
-        metadata = {"source_url": url}
-        verdict = await redirect_guard.probe_redirect(url)
-        if verdict.verdict == BLOCKED:
-            return None, {}
-        if verdict.verdict == PROBE_FAILED:
-            metadata["redirect_probe_failed"] = True
-        elif verdict.verdict == REDIRECT_PROBE_TIMEOUT:
-            # 探针超时 = 后端旁路够不到,不代表浏览器也够不到。不丢、不 defer,
-            # 仅留诊断标记;URL 照常入图 pending → 本 run 可被 claim → fetch。
-            metadata["redirect_probe_timeout"] = True
-        else:
-            final_url = verdict.final_url or url
-            if final_url != url:
-                metadata["redirect_verdict"] = verdict.verdict
-                if verdict.reason:
-                    metadata["redirect_reason"] = verdict.reason
+    final_url = url
+    metadata: dict[str, object] = {"source_url": url}
     if not is_allowed_fetch_host(final_url):
         return None, {}
     return final_url, metadata
@@ -66,28 +37,9 @@ async def resolve_discovered_url(
 
 async def resolve_discovered_urls(
     urls: list[str],
-    *,
-    redirect_guard: RedirectGuard | None = None,
 ) -> list[tuple[str | None, dict[str, object]]]:
-    """Batch parallel resolve for many discovered URLs.
-
-    Probes run concurrently under a semaphore (caps per-host WAF pressure);
-    upserts stay serial at the call site. ``None`` guards short-circuit to
-    the identity resolution for every URL (still respects the fetch host
-    allowlist).
-    """
-    if not urls:
-        return []
-    if redirect_guard is None:
-        return [await resolve_discovered_url(u, redirect_guard=None) for u in urls]
-
-    sem = asyncio.Semaphore(_PROBE_CONCURRENCY)
-
-    async def _one(u: str) -> tuple[str | None, dict[str, object]]:
-        async with sem:
-            return await resolve_discovered_url(u, redirect_guard=redirect_guard)
-
-    return await asyncio.gather(*(_one(u) for u in urls))
+    """Resolve many discovered URLs without backend network probing."""
+    return [await resolve_discovered_url(u) for u in urls]
 
 
 def node_spec(
@@ -183,21 +135,17 @@ async def _seed_org_unit(
     settings,
     run_id: int,
     summary: SeedLoadSummary,
-    *,
-    redirect_guard: RedirectGuard | None = None,
 ) -> tuple[int, int | None]:
     org_url = normalize_seed_url(unit.url, university_url) if unit.url else synthetic_org_url(unit.name)
     if not org_url:
         return 0, None
     if unit.url:
-        resolved_org_url, redirect_metadata = await resolve_discovered_url(
-            org_url, redirect_guard=redirect_guard
-        )
+        resolved_org_url, resolved_metadata = await resolve_discovered_url(org_url)
         if resolved_org_url is None:
             return 0, None
         org_url = resolved_org_url
     else:
-        redirect_metadata = {}
+        resolved_metadata = {}
     org_id = await storage.writer.upsert_org_unit(
         OrgUnitSpec(name=unit.name, url=org_url, kind=unit.kind, discovered_from_url=university_url)
     )
@@ -205,7 +153,7 @@ async def _seed_org_unit(
 
     org_node_id: int | None = None
     if unit.url:
-        node_metadata = _merge_metadata({"seeded": True}, redirect_metadata)
+        node_metadata = _merge_metadata({"seeded": True}, resolved_metadata)
         org_node_id = await storage.writer.upsert_node(
             org_node_spec(
                 org_unit_id=org_id,
@@ -239,15 +187,12 @@ async def _seed_org_unit(
         faculty_url = normalize_seed_url(raw_url, org_url)
         if faculty_url:
             faculty_entries.append((raw_url, faculty_url))
-    faculty_resolved = await resolve_discovered_urls(
-        [fu for _, fu in faculty_entries],
-        redirect_guard=redirect_guard,
-    )
-    for (_raw_url, faculty_url), (resolved_faculty_url, redirect_metadata) in zip(faculty_entries, faculty_resolved):
+    faculty_resolved = await resolve_discovered_urls([fu for _, fu in faculty_entries])
+    for (_raw_url, faculty_url), (resolved_faculty_url, resolved_metadata) in zip(faculty_entries, faculty_resolved):
         if resolved_faculty_url is None:
             continue
         faculty_node_url = resolved_faculty_url or faculty_url
-        node_metadata = _merge_metadata({"seeded": True, "source": "org_units[].faculty_urls"}, redirect_metadata)
+        node_metadata = _merge_metadata({"seeded": True, "source": "org_units[].faculty_urls"}, resolved_metadata)
         faculty_id = await storage.writer.upsert_node(
             node_spec(
                 NodeType.faculty_list_url,
@@ -275,8 +220,6 @@ async def load_seed_nodes(
     storage,
     settings,
     run_id: int,
-    *,
-    redirect_guard: RedirectGuard | None = None,
 ) -> SeedLoadSummary:
     summary = SeedLoadSummary()
     listing_urls: list[str] = []
@@ -284,14 +227,12 @@ async def load_seed_nodes(
         url = normalize_seed_url(raw_url, university.url)
         if url:
             listing_urls.append(url)
-    listing_resolved = await resolve_discovered_urls(
-        listing_urls, redirect_guard=redirect_guard
-    )
-    for listing_url, (resolved_url, redirect_metadata) in zip(listing_urls, listing_resolved):
+    listing_resolved = await resolve_discovered_urls(listing_urls)
+    for listing_url, (resolved_url, resolved_metadata) in zip(listing_urls, listing_resolved):
         if resolved_url is None:
             continue
         listing_node_url = resolved_url or listing_url
-        node_metadata = _merge_metadata({"seeded": True, "source": "org_unit_listing_urls"}, redirect_metadata)
+        node_metadata = _merge_metadata({"seeded": True, "source": "org_unit_listing_urls"}, resolved_metadata)
         listing_node_id = await storage.writer.upsert_node(
             node_spec(
                 NodeType.org_listing_url,
@@ -313,7 +254,6 @@ async def load_seed_nodes(
             settings,
             run_id,
             summary,
-            redirect_guard=redirect_guard,
         )
 
     return summary

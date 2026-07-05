@@ -3,7 +3,6 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 
-from dext.bridge.redirect import RedirectGuard
 from dext.engine.handlers import (
     HandlerDeps,
     handle_faculty_page,
@@ -140,7 +139,7 @@ async def test_cross_org_shared_detail_url_keeps_one_node_and_adds_edges(tmp_pat
         metadata=None,
     )
     deps = HandlerDeps(storage=h, llm_client=None, settings=settings, run_id=1, university_name="测试大学",
-                       extract_queue=asyncio.Queue(), raw_html="", redirect_guard=None)
+                       extract_queue=asyncio.Queue(), raw_html="")
     await _create_child(
         deps,
         parent_node1,
@@ -167,20 +166,13 @@ async def test_cross_org_shared_detail_url_keeps_one_node_and_adds_edges(tmp_pat
     await _close(h)
 
 
-async def test_create_child_uses_redirect_final_url_and_blocks_bad_redirects(tmp_path):
+async def test_create_child_uses_direct_url_and_blocks_bad_hosts(tmp_path):
     h = await _storage(tmp_path)
     org_id = await h.writer.upsert_org_unit(OrgUnitSpec(name="数学学院", url="https://x.edu.cn/math"))
     parent_id = await h.writer.upsert_node(
         node_spec(NodeType.org_unit, url="https://x.edu.cn/math", settings=_settings(), run_id=1,
                   org_unit_id=org_id, org_unit_name="数学学院")
     )
-
-    async def resolver(url):
-        if url == "https://x.edu.cn/t/1":
-            return "https://teacher.x.edu.cn/t/1"
-        return "https://mp.weixin.qq.com/s/bad"
-
-    from dext.bridge.redirect import RedirectGuard
 
     deps = HandlerDeps(
         storage=h,
@@ -190,7 +182,6 @@ async def test_create_child_uses_redirect_final_url_and_blocks_bad_redirects(tmp
         university_name="测试大学",
         extract_queue=asyncio.Queue(),
         raw_html="",
-        redirect_guard=RedirectGuard(resolver=resolver),
     )
     parent = ClaimedNode(
         id=parent_id,
@@ -217,14 +208,14 @@ async def test_create_child_uses_redirect_final_url_and_blocks_bad_redirects(tmp
         deps,
         parent,
         NodeType.detail_url,
-        url="https://x.edu.cn/block",
+        url="https://evil.com/block",
         edge_type=EdgeType.detail_candidate_of,
         metadata={"label": "detail"},
     )
 
     async with h.session_factory() as s:
         child = (await s.execute(select(GraphNode).where(GraphNode.id == child_id))).scalar_one()
-        assert child.url == "https://teacher.x.edu.cn/t/1"
+        assert child.url == "https://x.edu.cn/t/1"
         assert (child.metadata_json or {})["discovered_from_url"] == "https://x.edu.cn/t/1"
         assert blocked_id is None
         assert len((await s.execute(select(GraphNode).where(GraphNode.type == NodeType.detail_url))).scalars().all()) == 1

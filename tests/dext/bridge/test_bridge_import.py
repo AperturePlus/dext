@@ -9,8 +9,7 @@ def test_public_interface_is_reexported():
     import dext.bridge as b
     for name in ("HumanFetcherBridge", "FetchQueue", "FetchJob", "JobContext", "JobStatus",
                  "QueueStats", "DecisionCenter", "PendingDecision", "repair_mojibake_text",
-                 "RedirectGuard", "RedirectVerdict", "classify_redirect", "create_app",
-                 "run_server", "FetchResult"):
+                 "create_app", "run_server", "FetchResult"):
         assert hasattr(b, name), f"dext.bridge missing public export {name}"
 
 

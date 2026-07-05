@@ -98,7 +98,6 @@ class CrawlEngine:
         *,
         university_name: str = "",
         decision_center=None,
-        redirect_guard=None,
         rate_throttle: RateThrottle | None = None,
         org_unit_ids: set[int] | None = None,
     ) -> None:
@@ -109,7 +108,6 @@ class CrawlEngine:
         self.run_id = run_id
         self.university_name = university_name
         self.decision_center = decision_center
-        self.redirect_guard = redirect_guard
         self._throttle = rate_throttle or RateThrottle()
         self.org_unit_ids = set(org_unit_ids or set())
         self.decision_queue: asyncio.Queue = asyncio.Queue()
@@ -356,7 +354,6 @@ class CrawlEngine:
             reported_pagination_states=task.reported_pagination_states,
             raw_html=task.raw_html,
             decision_center=self.decision_center,
-            redirect_guard=self.redirect_guard,
         )
 
     async def _save_failed_page_cache(self, result) -> None:

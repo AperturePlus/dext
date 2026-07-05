@@ -12,7 +12,7 @@ from typing import Any, Callable
 import click
 from sqlalchemy import select
 
-from dext.bridge import DecisionCenter, HumanFetcherBridge, RedirectGuard, create_app, run_server
+from dext.bridge import DecisionCenter, HumanFetcherBridge, create_app, run_server
 from dext.config import Settings, get_settings
 from dext.engine import CrawlEngine, CrawlSummary, load_seed_nodes
 from dext.llm import LLMClient
@@ -33,7 +33,6 @@ class RuntimeFactories:
     run_server: Callable[..., Any] = run_server
     llm_client_factory: Callable[..., Any] = LLMClient
     load_seed_nodes: Callable[..., Any] = load_seed_nodes
-    redirect_guard_factory: Callable[..., Any] = RedirectGuard
     engine_factory: Callable[..., Any] = field(default=CrawlEngine)
 
 
@@ -165,12 +164,6 @@ async def run_university(
 
         bridge = factories.bridge_factory(settings)
         decision_center = factories.decision_center_factory()
-        # The RedirectGuard is an off-channel aiohttp side-probe (overview §7) that
-        # pre-drops wechat-redirect traps and normalizes offsite redirects. Its failures
-        # are diagnostic-only metadata (never defer), so it cannot block the crawl. The
-        # status probe was removed — a human browser does the fetching, so "backend can't
-        # connect" is not a signal to defer; dead/5xx URLs are handled post-fetch.
-        redirect_guard = factories.redirect_guard_factory() if settings.probe_redirect_enabled else None
         app = factories.create_app(bridge, decision_center)
         server = await factories.run_server(app, settings.bridge_host, settings.bridge_port)
         llm_client = factories.llm_client_factory(settings)
@@ -187,7 +180,6 @@ async def run_university(
             storage,
             settings,
             run_id,
-            redirect_guard=redirect_guard,
         )
 
         if reset and not target_org_unit_ids:
@@ -211,7 +203,6 @@ async def run_university(
             run_id,
             university_name=university.name,
             decision_center=decision_center,
-            redirect_guard=redirect_guard,
             org_unit_ids=target_org_unit_ids,
         )
         return await engine.run()

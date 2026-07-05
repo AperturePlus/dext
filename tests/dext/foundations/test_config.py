@@ -38,7 +38,6 @@ def test_defaults_are_sane():
     assert s.facet_node_budget == 150
     assert s.attempt_penalty == 5.0
     assert s.log_level == "INFO"
-    assert s.probe_redirect_enabled is True
 
 
 def test_missing_api_key_does_not_raise(monkeypatch):
@@ -63,12 +62,6 @@ def test_dext_prefixed_env_overrides_defaults(monkeypatch):
     assert s.decision_workers == 2
     assert s.extract_workers == 6
     assert s.bridge_port == 30000
-
-
-def test_probe_toggle_env_overrides_defaults(monkeypatch):
-    monkeypatch.setenv("DEXT_PROBE_REDIRECT_ENABLED", "false")
-    s = Settings(_env_file=None)
-    assert s.probe_redirect_enabled is False
 
 
 def test_get_settings_is_cached():

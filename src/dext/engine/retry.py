@@ -8,10 +8,9 @@ from dataclasses import dataclass
 from dext.page.links import PageSnapshot
 from dext.storage.models import NodeStatus
 
-# HTTP status-code sets used by post-fetch failure classification. These lived in
-# ``dext.bridge.probe`` (the now-removed status probe); they stay here as the sole
-# remaining home. ``DEAD`` is retained for taxonomy completeness even though 404/410
-# route to skipped via ``assess_terminal_unavailable_page`` rather than here.
+# HTTP status-code sets used by post-fetch failure classification. ``DEAD`` is
+# retained for taxonomy completeness even though 404/410 route to skipped via
+# ``assess_terminal_unavailable_page`` rather than here.
 DEAD = frozenset({404, 410})
 RATE_LIMITED = frozenset({429})
 GATEWAY = frozenset({502, 503, 504})

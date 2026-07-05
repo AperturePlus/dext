@@ -68,7 +68,6 @@ class HandlerDeps:
         reported_pagination_states: list[PaginationState] | None = None,
         raw_html: str = "",
         decision_center=None,
-        redirect_guard=None,
     ) -> None:
         self.storage = storage
         self.llm_client = llm_client
@@ -79,7 +78,6 @@ class HandlerDeps:
         self.reported_pagination_states = reported_pagination_states or []
         self.raw_html = raw_html
         self.decision_center = decision_center
-        self.redirect_guard = redirect_guard
 
 
 def fetch_action_from_metadata(metadata: dict | None) -> FetchAction | None:
@@ -294,11 +292,8 @@ async def handle_org_listing(node: ClaimedNode, snapshot: PageSnapshot, deps: Ha
         if not name:
             continue
         college_links.append((link, name))
-    resolved = await resolve_discovered_urls(
-        [link.url for link, _ in college_links],
-        redirect_guard=deps.redirect_guard,
-    )
-    for (link, name), (resolved_url, redirect_metadata) in zip(college_links, resolved):
+    resolved = await resolve_discovered_urls([link.url for link, _ in college_links])
+    for (link, name), (resolved_url, resolved_metadata) in zip(college_links, resolved):
         if resolved_url is None:
             continue
         college_url = resolved_url or link.url
@@ -307,7 +302,7 @@ async def handle_org_listing(node: ClaimedNode, snapshot: PageSnapshot, deps: Ha
         )
         node_metadata = _merge_metadata(
             {"discovered_from_url": snapshot.url, "identity_url": college_url, "source_url": link.url},
-            redirect_metadata,
+            resolved_metadata,
         )
         org_node_id = await deps.storage.writer.upsert_node(
             org_node_spec(
@@ -343,20 +338,18 @@ async def _create_child(
     precomputed_resolved: tuple[str | None, dict] | None = None,
 ) -> int | None:
     if precomputed_resolved is not None:
-        resolved_url, redirect_metadata = precomputed_resolved
+        resolved_url, resolved_metadata = precomputed_resolved
     else:
-        resolved_url, redirect_metadata = await resolve_discovered_url(
-            url, redirect_guard=deps.redirect_guard
-        )
+        resolved_url, resolved_metadata = await resolve_discovered_url(url)
     if resolved_url is None:
-        # BLOCKED redirect or allowlist-rejected host → drop (no node created).
+        # Allowlist-rejected host -> drop (no node created).
         return None
     child_url = resolved_url or url
     canonical_identity_url = child_url if child_url != url else (identity_url or url)
     node_metadata = _merge_metadata(
         metadata,
         {"identity_url": canonical_identity_url, "discovered_from_url": url},
-        redirect_metadata,
+        resolved_metadata,
     )
     spec = node_spec(
         node_type,
@@ -543,10 +536,7 @@ async def _materialize_decided(
     reslice_links.extend(query_reslices)
 
     materialize_links = [link for link in regular_links if link.label != "reslice"]
-    precomputed = await resolve_discovered_urls(
-        [link.url for link in materialize_links],
-        redirect_guard=deps.redirect_guard,
-    )
+    precomputed = await resolve_discovered_urls([link.url for link in materialize_links])
     resolved_by_url: dict[str, tuple[str | None, dict]] = {}
     for link, result in zip(materialize_links, precomputed):
         resolved_by_url[link.url] = result

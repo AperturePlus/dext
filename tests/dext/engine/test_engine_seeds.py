@@ -5,7 +5,6 @@ from sqlalchemy import select
 
 from dext.engine import PRIORITY_BY_TYPE, load_seed_nodes
 from dext.engine.seeds import node_spec, resolve_discovered_url, resolve_discovered_urls
-from dext.bridge.redirect import RedirectGuard
 from dext.seed import OrgUnitSeed, UniversitySeed
 from dext.storage.db import create_all, create_engine_for_path, make_session_factory
 from dext.storage.models import EdgeType, GraphEdge, GraphNode, NodeStatus, NodeType, OrgUnit
@@ -97,103 +96,39 @@ async def test_load_seed_nodes_skips_explicit_port_urls(tmp_path):
     await _close(h)
 
 
-async def test_load_seed_nodes_drops_blocked_redirect_urls(tmp_path):
-    h = await _writer(tmp_path)
-    university = UniversitySeed(
-        name="测试大学",
-        url="https://x.edu.cn",
-        org_unit_listing_urls=["/schools.htm"],
-        org_units=[OrgUnitSeed(name="数学学院", url="/math", faculty_urls=["/math/teachers.htm"])],
-    )
-
-    async def resolver(url):
-        return "https://mp.weixin.qq.com/s/abc"
-
-    guard = RedirectGuard(resolver=resolver)
-    summary = await load_seed_nodes(university, h, _settings(), run_id=1, redirect_guard=guard)
-
-    assert summary.org_listing_nodes == 0
-    assert summary.org_units == 0
-    assert summary.faculty_list_nodes == 0
-    async with h.session_factory() as s:
-        assert (await s.execute(select(GraphNode))).scalars().all() == []
-    await _close(h)
-
-
 async def test_resolve_discovered_url_blocks_disallowed_direct():
     resolved, metadata = await resolve_discovered_url("https://evil.com/p")
     assert resolved is None
     assert metadata == {}
 
 
-async def test_resolve_discovered_url_blocks_disallowed_redirect():
-    async def resolver(url):
-        return "https://evil.com/"
-
-    guard = RedirectGuard(resolver=resolver)
-    resolved, metadata = await resolve_discovered_url("https://x.edu.cn/p", redirect_guard=guard)
-    assert resolved is None
-    assert metadata == {}
-
-
-async def test_resolve_discovered_url_allows_github_io_redirect():
-    async def resolver(url):
-        return "https://foo.github.io/page"
-
-    guard = RedirectGuard(resolver=resolver)
-    resolved, metadata = await resolve_discovered_url("https://x.edu.cn/p", redirect_guard=guard)
-    assert resolved == "https://foo.github.io/page"
-    assert metadata["source_url"] == "https://x.edu.cn/p"
-
-
-async def test_resolve_discovered_url_probe_failed_is_not_dropped():
-    async def resolver(url):
-        raise RuntimeError("WAF")
-
-    guard = RedirectGuard(resolver=resolver)
-    resolved, metadata = await resolve_discovered_url("https://x.edu.cn/p", redirect_guard=guard)
+async def test_resolve_discovered_url_allows_allowed_direct():
+    resolved, metadata = await resolve_discovered_url("https://x.edu.cn/p")
     assert resolved == "https://x.edu.cn/p"
     assert metadata["source_url"] == "https://x.edu.cn/p"
-    assert metadata["redirect_probe_failed"] is True
 
 
-async def test_resolve_discovered_url_skips_probe_for_non_http_urls():
-    async def resolver(url):
-        raise AssertionError("non-http URL must not be probed")
+async def test_resolve_discovered_url_allows_github_io_direct():
+    resolved, metadata = await resolve_discovered_url("https://foo.github.io/page")
+    assert resolved == "https://foo.github.io/page"
+    assert metadata["source_url"] == "https://foo.github.io/page"
 
-    guard = RedirectGuard(resolver=resolver)
-    resolved, metadata = await resolve_discovered_url("about:org_unit:数学学院", redirect_guard=guard)
+
+async def test_resolve_discovered_url_keeps_non_http_urls():
+    resolved, metadata = await resolve_discovered_url("about:org_unit:数学学院")
     assert resolved == "about:org_unit:数学学院"
     assert metadata["source_url"] == "about:org_unit:数学学院"
 
 
-async def test_resolve_discovered_urls_runs_probes_concurrently():
-    import asyncio as _asyncio
-
-    in_flight = 0
-    peak = 0
-    lock = _asyncio.Lock()
-
-    async def resolver(url):
-        nonlocal in_flight, peak
-        async with lock:
-            in_flight += 1
-            peak = max(peak, in_flight)
-        await _asyncio.sleep(0.02)
-        async with lock:
-            in_flight -= 1
-        return url
-
-    guard = RedirectGuard(resolver=resolver)
+async def test_resolve_discovered_urls_preserves_order_and_metadata():
     urls = [f"https://x.edu.cn/p{i}" for i in range(32)]
-    results = await resolve_discovered_urls(urls, redirect_guard=guard)
+    results = await resolve_discovered_urls(urls)
     assert len(results) == 32
     assert all(resolved_url == url for (resolved_url, _meta), url in zip(results, urls))
-    # Serial execution would peak at 1; semaphore(16) allows real concurrency.
-    assert peak > 1
+    assert [meta["source_url"] for _resolved_url, meta in results] == urls
 
 
-async def test_load_seed_nodes_keeps_probe_failed_urls(tmp_path):
+async def test_load_seed_nodes_records_source_url_metadata(tmp_path):
     h = await _writer(tmp_path)
     university = UniversitySeed(
         name="测试大学",
@@ -202,21 +137,17 @@ async def test_load_seed_nodes_keeps_probe_failed_urls(tmp_path):
         org_units=[OrgUnitSeed(name="数学学院", url="/math", faculty_urls=["/math/teachers.htm"])],
     )
 
-    class TooManyRedirects(Exception):
-        pass
+    summary = await load_seed_nodes(university, h, _settings(), run_id=1)
 
-    async def resolver(url):
-        raise TooManyRedirects("too many redirects")
-
-    guard = RedirectGuard(resolver=resolver)
-    summary = await load_seed_nodes(university, h, _settings(), run_id=1, redirect_guard=guard)
-
-    # PROBE_FAILED no longer drops URLs — the seed nodes are still created.
     assert summary.org_listing_nodes == 1
     assert summary.org_units == 1
     assert summary.faculty_list_nodes == 1
     async with h.session_factory() as s:
         nodes = (await s.execute(select(GraphNode))).scalars().all()
         listing = next(n for n in nodes if n.type == NodeType.org_listing_url)
-        assert listing.metadata_json.get("redirect_probe_failed") is True
+        assert listing.metadata_json == {
+            "seeded": True,
+            "source": "org_unit_listing_urls",
+            "source_url": "https://x.edu.cn/schools.htm",
+        }
     await _close(h)
