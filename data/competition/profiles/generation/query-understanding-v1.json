@@ -4,7 +4,7 @@
   "operation": {
     "id": "competition_query_understanding",
     "system_prompt_id": "competition_query_understanding_v1",
-    "timeout_seconds": 8.0,
+    "timeout_seconds": 120.0,
     "json_schema": {
       "type": "object",
       "additionalProperties": false,

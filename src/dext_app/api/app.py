@@ -1,8 +1,11 @@
 """Combined aiohttp application for recommendation and competition routes."""
 from __future__ import annotations
 
+import logging
+
 from aiohttp import web
 
+from dext_competition.adapters.llm_generation import CompetitionOpenAICompatibleGenerationAdapter
 from dext_competition.assistant import PlanAssistantDeps
 from dext_competition.catalog import verify_catalog
 from dext_competition.config import CompetitionSettings
@@ -23,6 +26,8 @@ from dext_recommend.api.middleware import ApiError as RecommendApiError
 from dext_recommend.api.routes import API_PREFIX
 from dext_recommend.api.settings import AppSettings
 from dext_recommend.config import RecommendSettings
+
+logger = logging.getLogger(__name__)
 
 
 @web.middleware
@@ -55,10 +60,13 @@ def create_live_competition_http_deps(
     settings: CompetitionSettings | None = None,
     *,
     generation_pipeline: ConstrainedGenerationPipeline | None = None,
+    recommend_settings: RecommendSettings | None = None,
 ) -> CompetitionHttpDeps:
     """Build competition HTTP dependencies from local checked artifacts."""
 
     resolved = settings or CompetitionSettings()
+    if generation_pipeline is None:
+        generation_pipeline = _new_competition_generation_pipeline(recommend_settings)
     knowledge = verify_index(resolved.index_artifact_dir)
     catalog = verify_catalog(
         resolved.catalog_artifact_dir,
@@ -110,6 +118,7 @@ def create_app(
     deps = competition_deps or create_live_competition_http_deps(
         competition_settings,
         generation_pipeline=competition_generation_pipeline,
+        recommend_settings=recommend_settings,
     )
     setup_competition_routes(
         app,
@@ -117,6 +126,39 @@ def create_app(
         prefix=API_PREFIX,
     )
     return app
+
+
+def _new_competition_generation_pipeline(
+    settings: RecommendSettings | None = None,
+) -> ConstrainedGenerationPipeline | None:
+    resolved = settings or RecommendSettings()
+    api_key = resolved.llm_api_key.get_secret_value()
+    if not api_key:
+        logger.warning("competition LLM pipeline disabled: recommend LLM API key is not configured")
+        return None
+    try:
+        from openai import AsyncOpenAI
+
+        timeout = max(float(resolved.llm_timeout), 120.0)
+        client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=resolved.llm_base_url,
+            max_retries=resolved.llm_max_retries,
+            timeout=timeout,
+        )
+        return ConstrainedGenerationPipeline(
+            CompetitionOpenAICompatibleGenerationAdapter(
+                client=client,
+                model=resolved.llm_model,
+                timeout=timeout,
+            )
+        )
+    except Exception as exc:
+        logger.warning(
+            "competition LLM pipeline disabled: %s",
+            type(exc).__name__,
+        )
+        return None
 
 
 __all__ = ["create_app", "create_live_competition_http_deps"]

@@ -116,12 +116,31 @@ class RecommendSettings(BaseSettings):
     # LLM (constrained generation)
     llm_api_key: SecretStr = Field(
         default_factory=lambda: SecretStr(""),
-        validation_alias=AliasChoices("DEXT_RECOMMEND_LLM_API_KEY", "DEEPSEEK_API_KEY"),
+        validation_alias=AliasChoices(
+            "DEXT_RECOMMEND_LLM_API_KEY",
+            "DEXT_LLM_API_KEY",
+            "DEEPSEEK_API_KEY",
+        ),
     )
-    llm_base_url: str = "https://api.deepseek.com"
-    llm_model: str = "deepseek-v4-flash"
-    llm_max_retries: int = Field(default=1, ge=0, le=5)
-    llm_timeout: float = Field(default=20.0, gt=0.0)
+    llm_base_url: str = Field(
+        default="https://api.deepseek.com",
+        validation_alias=AliasChoices("DEXT_RECOMMEND_LLM_BASE_URL", "DEXT_LLM_BASE_URL"),
+    )
+    llm_model: str = Field(
+        default="deepseek-v4-flash",
+        validation_alias=AliasChoices("DEXT_RECOMMEND_LLM_MODEL", "DEXT_LLM_MODEL"),
+    )
+    llm_max_retries: int = Field(
+        default=1,
+        ge=0,
+        le=5,
+        validation_alias=AliasChoices("DEXT_RECOMMEND_LLM_MAX_RETRIES", "DEXT_LLM_MAX_RETRIES"),
+    )
+    llm_timeout: float = Field(
+        default=20.0,
+        gt=0.0,
+        validation_alias=AliasChoices("DEXT_RECOMMEND_LLM_TIMEOUT", "DEXT_LLM_TIMEOUT"),
+    )
 
     # Profile paths
     ranking_profile_path: Path = Path("data/recommend/ranking-profile.json")

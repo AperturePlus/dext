@@ -256,6 +256,40 @@ async def test_assistant_route_accepts_unpersisted_plan_snapshot() -> None:
         await client.close()
 
 
+async def test_assistant_route_accepts_flutter_plan_snapshot_shape() -> None:
+    client = await _client()
+    try:
+        snapshot = _snapshot(0)
+        snapshot["target_date"] = "2026-08-20T00:00:00.000"
+        snapshot["registration_deadline"] = "2026-07-20"
+        snapshot["phases"][0]["title"] = "基础准备"
+        snapshot["phases"][0]["personalized_advice"] = "先读规则"
+        snapshot["phases"][0]["start_date"] = "2026-07-01T00:00:00.000"
+        snapshot["phases"][0]["end_date"] = "2026-07-14T00:00:00.000"
+        snapshot["phases"][0]["tasks"][0]["template_key"] = "read_rules"
+        snapshot["phases"][0]["tasks"][0]["note"] = "规则重点"
+        snapshot["phases"][0]["tasks"][0]["due_date"] = "2026-07-10T00:00:00.000"
+        payload = {
+            "calendar_today": "2026-07-01",
+            "base_plan_revision": 0,
+            "plan_snapshot": snapshot,
+            "user_message": "这周没空，帮我调整一下",
+            "request_id": "req-flutter",
+            "history": [],
+        }
+        resp = await client.post(
+            "/api/v1/preparation-plans/plan-1/assistant",
+            json=payload,
+            headers=_headers(),
+        )
+        body = await resp.json()
+        assert resp.status == 200
+        assert body["data"]["request_id"] == "req-flutter"
+        assert body["data"]["change_set"]["base_plan_revision"] == 0
+    finally:
+        await client.close()
+
+
 async def test_generate_template_config_and_diagnose_routes() -> None:
     client = await _client()
     try:

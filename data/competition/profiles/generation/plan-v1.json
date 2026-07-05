@@ -4,7 +4,7 @@
   "operation": {
     "id": "competition_plan_personalization",
     "system_prompt_id": "dext_competition.plan.personalization.v1",
-    "timeout_seconds": 10.0,
+    "timeout_seconds": 120.0,
     "max_optional_tasks_per_phase": 3,
     "json_schema": {
       "type": "object",

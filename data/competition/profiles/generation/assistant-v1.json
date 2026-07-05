@@ -4,7 +4,7 @@
   "operation": {
     "id": "competition_plan_assistant",
     "system_prompt_id": "dext_competition.assistant.change_cards.v1",
-    "timeout_seconds": 10.0,
+    "timeout_seconds": 120.0,
     "max_cards": 5,
     "json_schema": {
       "type": "object",

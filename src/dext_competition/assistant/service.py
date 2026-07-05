@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,12 +22,15 @@ from dext_competition.contracts.assistant import (
     PlanAssistantRequest,
     PlanAssistantResult,
     PlanAssistantServiceResult,
+    PlanChangeCard,
     PlanChangeSet,
 )
 from dext_competition.contracts.knowledge import KnowledgeHit
 from dext_competition.errors import CompetitionError, CompetitionErrorCode, ErrorSeverity
 from dext_competition.ports import ConstrainedGenerationPipeline, KnowledgeIndexPort
 from dext_grounded import ContentClass, FactBundle, FactItem, SourceRef
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +136,46 @@ def _warning_issues(warnings) -> tuple[CompetitionError, ...]:
     return tuple(issues)
 
 
+def _local_fallback_result(
+    request: PlanAssistantRequest,
+    *,
+    generation_profile_version: str,
+) -> PlanAssistantServiceResult:
+    plan = request.plan_snapshot
+    advice = (
+        "我先按当前计划给出一条稳妥建议：保留现有阶段安排，"
+        "本周优先完成最早截止的未完成任务，并在下一次训练后复盘进度。"
+    )
+    cards: tuple[PlanChangeCard, ...] = ()
+    if plan.phases:
+        cards = (
+            PlanChangeCard(
+                id=f"card:{request.request_id}:advice",
+                type="append_advice",
+                target_phase_key=plan.phases[0].key,
+                advice_text=advice,
+                summary="补充本周备赛建议",
+                rationale="本地联调未配置助手 LLM 时，使用当前计划快照生成保守建议。",
+                validation_status="passed",
+            ),
+        )
+    result = PlanAssistantResult(
+        reply="已根据当前备赛计划生成一条本地建议，可先作为调整参考。",
+        change_set=PlanChangeSet(
+            id=f"changes:{request.request_id}",
+            base_plan_revision=request.base_plan_revision,
+            cards=cards,
+        ),
+        request_id=request.request_id,
+    )
+    return PlanAssistantServiceResult(
+        result,
+        (),
+        generation_profile_version=generation_profile_version,
+        diagnostics={"fallback": "local"},
+    )
+
+
 async def suggest_plan_changes(
     request: PlanAssistantRequest,
     deps: PlanAssistantDeps,
@@ -150,14 +194,9 @@ async def suggest_plan_changes(
             generation_profile_version=profile.version,
         )
     if deps.generation_pipeline is None:
-        return PlanAssistantServiceResult(
-            None,
-            (_issue(
-                CompetitionErrorCode.GENERATION_UNAVAILABLE,
-                ErrorSeverity.ERROR,
-                "assistant generation pipeline is unavailable",
-            ),),
-            generation_profile_version=profile.version,
+        return _local_fallback_result(
+            request,
+            generation_profile_version="competition.assistant.local-fallback-v1",
         )
     try:
         bundle = await _fact_bundle(request, deps)
@@ -182,18 +221,58 @@ async def suggest_plan_changes(
             ),
             timeout=profile.timeout_seconds,
         )
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "competition assistant generation failed; using local fallback error_type=%s",
+            type(exc).__name__,
+        )
+        fallback = _local_fallback_result(
+            request,
+            generation_profile_version="competition.assistant.local-fallback-v1",
+        )
         return PlanAssistantServiceResult(
-            None,
+            fallback.result,
             (_issue(
-                CompetitionErrorCode.GENERATION_UNAVAILABLE,
-                ErrorSeverity.ERROR,
-                "assistant generation failed",
+                CompetitionErrorCode.GENERATION_FALLBACK,
+                ErrorSeverity.WARNING,
+                "assistant generation failed; local fallback was used",
             ),),
-            generation_profile_version=profile.version,
+            generation_profile_version=fallback.generation_profile_version,
+            diagnostics=fallback.diagnostics,
         )
 
     warning_issues = _warning_issues(generated.warnings)
+    blocking_warning = next(
+        (
+            warning for warning in generated.warnings
+            if getattr(warning, "code", "") in {
+                "llm_unavailable",
+                "generation_parse_error",
+                "schema_validation_failed",
+                "json_parse_failed",
+            }
+        ),
+        None,
+    )
+    if blocking_warning is not None:
+        logger.warning(
+            "competition assistant generation warning; using local fallback code=%s",
+            getattr(blocking_warning, "code", ""),
+        )
+        fallback = _local_fallback_result(
+            request,
+            generation_profile_version="competition.assistant.local-fallback-v1",
+        )
+        return PlanAssistantServiceResult(
+            fallback.result,
+            (_issue(
+                CompetitionErrorCode.GENERATION_FALLBACK,
+                ErrorSeverity.WARNING,
+                getattr(blocking_warning, "message", "assistant generation fallback was used"),
+            ),),
+            generation_profile_version=fallback.generation_profile_version,
+            diagnostics=fallback.diagnostics,
+        )
     if any(issue.code == CompetitionErrorCode.UNSAFE_ADVICE for issue in warning_issues):
         raw_cards = ()
     else:
