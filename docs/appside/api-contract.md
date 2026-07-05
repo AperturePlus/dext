@@ -190,6 +190,10 @@ fork.
   Current Flutter clients also tolerate a legacy raw array for session and fork
   list responses, but new backend responses should use the `{ "items": [...] }`
   shape above.
+- `DELETE /chat/sessions` transactionally deletes every non-deleted conversation
+  owned by the current identity. The response data is
+  `{ "deleted": true, "deleted_count": number }`; `deleted_count` includes roots
+  and forks marked deleted by the request.
 - `DELETE /chat/sessions/{id}` transactionally deletes the session. Deleting a
   root also deletes its forks, turns, attempts, messages, summaries, and cache;
   deleting a fork does not affect the root.

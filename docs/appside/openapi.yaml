@@ -207,6 +207,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SessionListEnvelope'
+    delete:
+      summary: Delete all non-deleted conversations owned by the current identity.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          description: Bulk deletion result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletedEnvelope'
   /chat/sessions/{session_id}:
     parameters:
       - $ref: '#/components/parameters/RequestIdHeader'
@@ -1596,6 +1611,7 @@ components:
       required: [deleted]
       properties:
         deleted: { type: boolean }
+        deleted_count: { type: integer, minimum: 0 }
     InterruptedResult:
       type: object
       required: [interrupted]

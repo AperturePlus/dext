@@ -40,6 +40,7 @@ def routes(prefix: str) -> list[web.AbstractRouteDef]:
     return [
         web.post(f"{prefix}/chat/sessions", handle_create_session),
         web.get(f"{prefix}/chat/sessions", handle_list_sessions),
+        web.delete(f"{prefix}/chat/sessions", handle_delete_all_sessions),
         web.get(f"{prefix}/chat/sessions/{{session_id}}", handle_get_session),
         web.delete(f"{prefix}/chat/sessions/{{session_id}}", handle_delete_session),
         web.get(f"{prefix}/chat/sessions/{{session_id}}/turns", handle_list_turns),
@@ -69,6 +70,14 @@ async def handle_create_session(request: web.Request) -> web.Response:
 async def handle_list_sessions(request: web.Request) -> web.Response:
     principal = await require_principal(request)
     return ok({"items": await repository(request).list_sessions(str(principal.owner_id))})
+
+
+async def handle_delete_all_sessions(request: web.Request) -> web.Response:
+    principal = await require_principal(request)
+    deleted_count = await repository(request).soft_delete_all_session_trees(
+        str(principal.owner_id),
+    )
+    return ok({"deleted": True, "deleted_count": deleted_count})
 
 
 async def handle_get_session(request: web.Request) -> web.Response:

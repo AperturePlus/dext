@@ -1,6 +1,7 @@
 """Explicit DTO adapters between public HTTP shapes and internal models."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -77,10 +78,12 @@ def recommend_request_from_public(
     session_id: str | None = None,
     turn_id: str | None = None,
     professor_id: str | None = None,
+    conversation_context: ConversationContext | None = None,
+    conversation_model_context: Mapping[str, object] | None = None,
     limit: int = 10,
 ) -> RecommendRequest:
-    context = None
-    if session_id and turn_id:
+    context = conversation_context
+    if context is None and session_id and turn_id:
         context = ConversationContext(
             session_id=session_id,
             turn_id=turn_id,
@@ -92,6 +95,7 @@ def recommend_request_from_public(
         student_context=student_context_from_profile(profile),
         filters=RecommendationFilters(),
         conversation_context=context,
+        conversation_model_context=conversation_model_context,
         limit=limit,
         include_contacts=False,
         diagnostics_level="none",
@@ -272,6 +276,20 @@ def comparison_to_public(value: ProfessorComparison) -> dict[str, Any]:
     }
 
 
+def _conversation_issue_answer(issues: list[dict[str, Any]]) -> str:
+    if not issues:
+        return "无法完成本次对话。"
+    codes = {str(item.get("code") or "") for item in issues}
+    severities = {str(item.get("severity") or "") for item in issues}
+    if "content_policy_refusal" in codes:
+        return "这个问题我不能继续回答，可以换个更具体、合规的导师申请相关问题。"
+    if "needs_clarification" in codes:
+        return "我没理解这次追问，可以补充你想比较的方面。"
+    if "error" in severities:
+        return "这次对话暂时无法完成，请稍后重试。"
+    return "我没理解这次追问，可以补充你想比较的方面。"
+
+
 def conversation_dispatch_to_answer(result: ConversationDispatchResult) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     if result.kind == "recommendation" and result.recommendation is not None:
         recommendations = [
@@ -310,7 +328,7 @@ def conversation_dispatch_to_answer(result: ConversationDispatchResult) -> tuple
             "generation_profile_version": detail.generation_profile_version,
         }
     issues = [warning_to_public(item) for item in result.issues]
-    answer = issues[0]["message"] if issues else "无法完成本次对话。"
+    answer = _conversation_issue_answer(issues)
     return answer, [], {"issues": issues}
 
 

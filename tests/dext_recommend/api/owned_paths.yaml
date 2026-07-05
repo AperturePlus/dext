@@ -6,6 +6,7 @@ implemented:
   - "POST /identity/anonymous"
   - "POST /chat/sessions"
   - "GET /chat/sessions"
+  - "DELETE /chat/sessions"
   - "GET /chat/sessions/{session_id}"
   - "DELETE /chat/sessions/{session_id}"
   - "GET /chat/sessions/{session_id}/turns"
