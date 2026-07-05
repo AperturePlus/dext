@@ -23,6 +23,7 @@ def build_phase_templates(
     *,
     time_model: str,
     experience_level: str,
+    include_defense: bool = True,
 ) -> tuple[PhaseTemplate, ...]:
     foundations = _CATEGORY_TASKS.get(card.category, ("完成领域基础训练", "建立过程记录"))
     phases = [
@@ -45,11 +46,14 @@ def build_phase_templates(
             PhaseTemplate("submission", "提交准备", 0.12, (
                 TemplateTask("submission-package", "完成提交材料与合规检查", 8, True),
             )),
-            PhaseTemplate("defense_prep", "答辩准备", 0.08, (
-                TemplateTask("defense-required", "准备答辩材料并完成演练", 8, True),
-                TemplateTask("defense-advanced", "进行压力问答和验收", 6, False, "experienced"),
-            )),
         ))
+        if include_defense:
+            phases.append(
+                PhaseTemplate("defense_prep", "答辩准备", 0.08, (
+                    TemplateTask("defense-required", "准备答辩材料并完成演练", 8, True),
+                    TemplateTask("defense-advanced", "进行压力问答和验收", 6, False, "experienced"),
+                ))
+            )
     else:
         phases.extend((
             PhaseTemplate("event_sprint", "比赛窗口冲刺", 0.12, (

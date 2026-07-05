@@ -1,6 +1,8 @@
 """C7 owned HTTP routes for competition and preparation features."""
 from __future__ import annotations
 
+import uuid
+
 from aiohttp import web
 
 from dext_competition.assistant import suggest_plan_changes
@@ -90,6 +92,28 @@ def _raise_for_issues(issues) -> None:
     raise ApiError(status, code, first.message)
 
 
+def _required_query(request: web.Request, key: str) -> str:
+    value = request.query.get(key)
+    if value is None or not value.strip():
+        raise ApiError(422, "invalid_request", f"{key} query parameter is required")
+    return value.strip()
+
+
+def _required_bool_query(request: web.Request, key: str) -> bool:
+    value = _required_query(request, key).lower()
+    if value in {"true", "1"}:
+        return True
+    if value in {"false", "0"}:
+        return False
+    raise ApiError(422, "invalid_request", f"{key} must be true, false, 1, or 0")
+
+
+def _competition_session_id(value: str | None) -> str:
+    if value is not None and value.strip():
+        return value.strip()
+    return f"c_{uuid.uuid4().hex}"
+
+
 async def handle_list_competitions(request: web.Request) -> web.Response:
     catalog = _recommendation_service(request)._deps.catalog_port
     cards = await catalog.list_competitions()
@@ -110,7 +134,7 @@ async def handle_recommend_competitions(request: web.Request) -> web.Response:
     response = await _recommendation_service(request).recommend(
         recommendation_request_from_public(dto)
     )
-    session_id = dto.session_id or ""
+    session_id = _competition_session_id(dto.session_id)
     return ok(recommendation_response_to_public(response, session_id=session_id))
 
 
@@ -198,19 +222,27 @@ async def handle_preparation_config(request: web.Request) -> web.Response:
 
 async def handle_preparation_template(request: web.Request) -> web.Response:
     await require_owner_id(request)
-    competition_id = request.query.get("competition_id", "").strip()
-    category = request.query.get("category", "").strip()
-    timeline_type = request.query.get("timeline_type", "").strip()
+    competition_id = _required_query(request, "competition_id")
+    category = _required_query(request, "category")
+    timeline_type = _required_query(request, "timeline_type")
+    include_defense = _required_bool_query(request, "include_defense")
     if timeline_type not in {"eventWindow", "submission"}:
         raise ApiError(422, "invalid_request", "timeline_type must be eventWindow or submission")
+    if timeline_type == "eventWindow" and include_defense:
+        raise ApiError(422, "invalid_request", "eventWindow templates cannot include defense")
     catalog = _recommendation_service(request)._deps.catalog_port
     card = await catalog.get(competition_id)
     if card is None:
         raise ApiError(404, "competition_not_found", "competition not found")
-    if category and card.category != category:
+    if card.category != category:
         raise ApiError(404, "competition_not_found", "competition category mismatch")
     time_model = "competition_window" if timeline_type == "eventWindow" else "submission_deadline"
-    phases = build_phase_templates(card, time_model=time_model, experience_level="beginner")
+    phases = build_phase_templates(
+        card,
+        time_model=time_model,
+        experience_level="beginner",
+        include_defense=include_defense,
+    )
     return ok({"phases": [template_phase_to_public(phase) for phase in phases]})
 
 

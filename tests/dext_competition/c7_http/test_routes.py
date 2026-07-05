@@ -75,6 +75,10 @@ def _headers(extra: dict | None = None) -> dict:
     return headers
 
 
+def _phase_keys(body: dict) -> list[str]:
+    return [phase["key"] for phase in body["data"]["phases"]]
+
+
 def _snapshot(revision: int = 0) -> dict:
     now = datetime(2026, 7, 1, tzinfo=timezone.utc).isoformat()
     return {
@@ -136,6 +140,28 @@ async def test_recommendation_route_rejects_unknown_fields() -> None:
         body = await resp.json()
         assert resp.status == 422
         assert body["data"]["error_code"] == "invalid_request"
+    finally:
+        await client.close()
+
+
+async def test_recommendation_route_returns_non_empty_session_id() -> None:
+    client = await _client()
+    try:
+        resp = await client.post(
+            "/api/v1/recommendations/competitions",
+            json={"prompt": "算法竞赛"},
+        )
+        body = await resp.json()
+        assert resp.status == 200
+        assert body["data"]["session_id"].startswith("c_")
+
+        resp = await client.post(
+            "/api/v1/recommendations/competitions",
+            json={"prompt": "算法竞赛", "session_id": "client-session-1"},
+        )
+        body = await resp.json()
+        assert resp.status == 200
+        assert body["data"]["session_id"] == "client-session-1"
     finally:
         await client.close()
 
@@ -242,7 +268,33 @@ async def test_generate_template_config_and_diagnose_routes() -> None:
         )
         body = await resp.json()
         assert resp.status == 200
-        assert body["data"]["phases"]
+        assert "defense_prep" in _phase_keys(body)
+
+        resp = await client.get(
+            "/api/v1/preparation-templates?timeline_type=submission&include_defense=false&category=计算机&competition_id=cmp-1",
+            headers=_headers(),
+        )
+        body = await resp.json()
+        assert resp.status == 200
+        assert "defense_prep" not in _phase_keys(body)
+
+        resp = await client.get(
+            "/api/v1/preparation-templates?timeline_type=eventWindow&include_defense=false&category=计算机&competition_id=cmp-1",
+            headers=_headers(),
+        )
+        body = await resp.json()
+        assert resp.status == 200
+        assert "defense_prep" not in _phase_keys(body)
+
+        for suffix in (
+            "timeline_type=submission&category=计算机&competition_id=cmp-1",
+            "timeline_type=submission&include_defense=yes&category=计算机&competition_id=cmp-1",
+            "timeline_type=eventWindow&include_defense=true&category=计算机&competition_id=cmp-1",
+        ):
+            resp = await client.get(f"/api/v1/preparation-templates?{suffix}", headers=_headers())
+            body = await resp.json()
+            assert resp.status == 422
+            assert body["data"]["error_code"] == "invalid_request"
 
         generate_payload = {
             "competition": {"id": "cmp-1", "name": "测试竞赛", "category": "计算机", "rules_summary": {}},
