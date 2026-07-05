@@ -104,6 +104,7 @@ def test_cli_exposes_catalog_build_commands():
     assert result.exit_code == 0
     for command in (
         "build", "resume", "status", "vector", "validate", "promote",
+        "rollback-promotion",
         "topics", "gold", "curation-gold", "value-validation"
     ):
         assert command in result.output
@@ -118,6 +119,26 @@ def test_cli_exposes_catalog_build_commands():
     assert topics_help.exit_code == 0
     for command in ("build", "suggest-merges", "gold-generate", "gold-evaluate"):
         assert command in topics_help.output
+
+
+def test_cli_rollback_promotion_invokes_lifecycle(monkeypatch):
+    calls = []
+
+    async def fake_rollback(build_id, settings):
+        calls.append((build_id, settings.catalog_path))
+        return {
+            "build": {"id": build_id, "status": "READY"},
+            "promotion": {"status": "ROLLED_BACK"},
+        }
+
+    import dext_graph.catalog.lifecycle as lifecycle
+
+    monkeypatch.setattr(lifecycle, "rollback_promotion", fake_rollback)
+    runner = CliRunner()
+    result = runner.invoke(main, ["graph", "rollback-promotion", "build-1", "--json"])
+    assert result.exit_code == 0, result.output
+    assert calls and calls[0][0] == "build-1"
+    assert json.loads(result.output)["promotion"]["status"] == "ROLLED_BACK"
 
 
 def test_progress_bar_key_reuses_line_for_same_build_with_different_messages():

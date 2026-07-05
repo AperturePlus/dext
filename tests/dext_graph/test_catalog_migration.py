@@ -16,6 +16,44 @@ from dext_graph.catalog.workflow import create_build, resume_build
 from test_catalog_workflow import _patch_runtime, _settings, _source_db
 
 
+V6_RELEASE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS validation_runs (
+    id TEXT PRIMARY KEY,
+    build_id TEXT NOT NULL UNIQUE REFERENCES graph_builds(id),
+    validation_version TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('RUNNING','PASSED','FAILED')),
+    manifest_json TEXT NOT NULL DEFAULT '{}',
+    manifest_hash TEXT,
+    started_at TEXT,
+    finished_at TEXT,
+    last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS promotion_runs (
+    build_id TEXT PRIMARY KEY REFERENCES graph_builds(id),
+    validation_manifest_hash TEXT NOT NULL,
+    previous_active_build_id TEXT REFERENCES graph_builds(id),
+    status TEXT NOT NULL CHECK (status IN ('PENDING','RUNNING','COMPLETED','FAILED')),
+    neo4j_done INTEGER NOT NULL DEFAULT 0 CHECK (neo4j_done IN (0,1)),
+    qdrant_done INTEGER NOT NULL DEFAULT 0 CHECK (qdrant_done IN (0,1)),
+    readback_done INTEGER NOT NULL DEFAULT 0 CHECK (readback_done IN (0,1)),
+    started_at TEXT,
+    updated_at TEXT,
+    finished_at TEXT,
+    last_error TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_graph_builds_one_active
+ON graph_builds(status) WHERE status='ACTIVE';
+
+CREATE INDEX IF NOT EXISTS ix_validation_runs_status
+ON validation_runs(status, build_id);
+
+CREATE INDEX IF NOT EXISTS ix_promotion_runs_status
+ON promotion_runs(status, build_id);
+"""
+
+
 def test_v1_catalog_migrates_in_place_to_v3(tmp_path):
     path = tmp_path / "catalog.db"
     with sqlite3.connect(path) as connection:
@@ -118,7 +156,7 @@ def test_v5_catalog_migrates_in_place_to_v6(tmp_path):
         )
     initialize_catalog(path)
     with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == CATALOG_SCHEMA_VERSION
         assert connection.execute(
             "SELECT status FROM graph_builds WHERE id='ready-build'"
         ).fetchone()[0] == "READY"
@@ -126,6 +164,40 @@ def test_v5_catalog_migrates_in_place_to_v6(tmp_path):
             assert connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
             ).fetchone() == (1,)
+
+
+def test_v6_catalog_migrates_promotion_runs_to_rolled_back_status(tmp_path):
+    path = tmp_path / "catalog-v6.db"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(SCHEMA_SQL)
+        connection.executescript(CURATION_SCHEMA_SQL)
+        connection.executescript(EVIDENCE_GRAPH_SCHEMA_SQL)
+        connection.executescript(SEMANTIC_VECTOR_SCHEMA_SQL)
+        connection.executescript(TOPIC_SCHEMA_SQL)
+        connection.executescript(V6_RELEASE_SCHEMA_SQL)
+        connection.execute("INSERT INTO catalog_meta VALUES ('schema_version', '6')")
+        connection.execute("PRAGMA user_version=6")
+        connection.execute(
+            "INSERT INTO graph_builds(id,status,curation_version,graph_schema_version,"
+            "vector_schema_version,settings_json,summary_json) "
+            "VALUES ('ready-build','READY','v1',1,1,'{}','{}')"
+        )
+        connection.execute(
+            "INSERT INTO promotion_runs(build_id,validation_manifest_hash,status) "
+            "VALUES ('ready-build','hash','FAILED')"
+        )
+    initialize_catalog(path)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == CATALOG_SCHEMA_VERSION
+        assert connection.execute(
+            "SELECT status FROM promotion_runs WHERE build_id='ready-build'"
+        ).fetchone()[0] == "FAILED"
+        connection.execute(
+            "UPDATE promotion_runs SET status='ROLLED_BACK' WHERE build_id='ready-build'"
+        )
+        assert connection.execute(
+            "SELECT status FROM promotion_runs WHERE build_id='ready-build'"
+        ).fetchone()[0] == "ROLLED_BACK"
 
 
 def test_v3_writing_vector_build_keeps_resume_state_when_migrated_to_v5(tmp_path):

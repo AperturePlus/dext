@@ -4,7 +4,12 @@ import sqlite3
 import pytest
 
 from dext_graph.catalog.db import CatalogError, CatalogWriter
-from dext_graph.catalog.lifecycle import run_promotion, run_validation
+from dext_graph.catalog.lifecycle import (
+    run_promotion,
+    run_promotion_rollback,
+    run_validation,
+)
+from dext_graph.catalog.vector_sink import professor_collection_name
 from dext_graph.catalog.vector_workflow import run_vector_stage
 from dext_graph.catalog.workflow import create_build
 from test_catalog_workflow import _patch_runtime, _settings, _source_db
@@ -52,9 +57,9 @@ class CapturingProfessorSink:
 
 
 class PromotionQdrant:
-    def __init__(self, *, fail=False):
+    def __init__(self, *, fail=False, target=None):
         self.fail = fail
-        self.target = None
+        self.target = target
 
     async def switch_current_alias(self, name):
         if self.fail:
@@ -63,6 +68,31 @@ class PromotionQdrant:
 
     async def resolve_current_alias(self):
         return self.target
+
+
+def _insert_active_build_with_vector(catalog_path, build_id: str) -> str:
+    collection_name = professor_collection_name(build_id)
+    with sqlite3.connect(catalog_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO graph_builds(
+              id,status,curation_version,graph_schema_version,vector_schema_version,
+              settings_json,summary_json
+            ) VALUES (?,'ACTIVE','v1',1,1,'{}','{}')
+            """,
+            (build_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO vector_runs(
+              id,build_id,status,profile_template_version,tokenizer_identity,
+              sparse_tokenizer_version,embedding_fingerprint,collection_name,summary_json
+            ) VALUES (?,?, 'COMPLETED','profile-v1','character-v1',
+              'sparse-v1','fingerprint-v1',?,'{}')
+            """,
+            (f"vector-{build_id}", build_id, collection_name),
+        )
+    return collection_name
 
 
 async def _prepare_validating_build(tmp_path, monkeypatch, *, with_gold=True):
@@ -391,6 +421,293 @@ async def test_promotion_failure_keeps_old_active_and_retry_converges(
         assert connection.execute(
             "SELECT status FROM graph_builds WHERE id=?", (old_build,)
         ).fetchone()[0] == "READY"
+
+
+@pytest.mark.asyncio
+async def test_manual_promotion_rollback_restores_previous_active_and_is_idempotent(
+    tmp_path, monkeypatch
+):
+    settings, build_id, sink = await _prepare_validating_build(
+        tmp_path, monkeypatch, with_gold=True
+    )
+
+    async def neo4j_ok(_build_id, _settings):
+        return None
+
+    async with CatalogWriter(settings.catalog_path, max_queue=2) as writer:
+        await run_validation(
+            writer,
+            build_id,
+            settings,
+            qdrant_sink=sink,
+            neo4j_validator=neo4j_ok,
+        )
+
+    old_build = "old-active-rollback"
+    old_collection = _insert_active_build_with_vector(settings.catalog_path, old_build)
+    neo4j_state = {"active": old_build}
+
+    async def set_neo4j(target, _settings):
+        neo4j_state["active"] = target
+
+    async def read_neo4j(_settings):
+        return neo4j_state["active"]
+
+    async with CatalogWriter(settings.catalog_path, max_queue=2) as writer:
+        with pytest.raises(RuntimeError, match="qdrant switch failed"):
+            await run_promotion(
+                writer,
+                build_id,
+                settings,
+                qdrant_sink=PromotionQdrant(fail=True),
+                neo4j_setter=set_neo4j,
+                neo4j_reader=read_neo4j,
+            )
+    assert neo4j_state["active"] == build_id
+
+    rollback_qdrant = PromotionQdrant(target=professor_collection_name(build_id))
+    async with CatalogWriter(settings.catalog_path, max_queue=2) as writer:
+        rolled_back = await run_promotion_rollback(
+            writer,
+            build_id,
+            settings,
+            qdrant_sink=rollback_qdrant,
+            neo4j_setter=set_neo4j,
+            neo4j_reader=read_neo4j,
+        )
+        repeated = await run_promotion_rollback(
+            writer,
+            build_id,
+            settings,
+            qdrant_sink=rollback_qdrant,
+            neo4j_setter=set_neo4j,
+            neo4j_reader=read_neo4j,
+        )
+
+    assert rolled_back["promotion"]["status"] == "ROLLED_BACK"
+    assert repeated["promotion"]["status"] == "ROLLED_BACK"
+    assert neo4j_state["active"] == old_build
+    assert rollback_qdrant.target == old_collection
+    with sqlite3.connect(settings.catalog_path) as connection:
+        assert connection.execute(
+            "SELECT status FROM graph_builds WHERE id=?", (old_build,)
+        ).fetchone()[0] == "ACTIVE"
+        assert connection.execute(
+            "SELECT status FROM graph_builds WHERE id=?", (build_id,)
+        ).fetchone()[0] == "READY"
+        assert connection.execute(
+            "SELECT status FROM promotion_runs WHERE build_id=?", (build_id,)
+        ).fetchone()[0] == "ROLLED_BACK"
+
+
+@pytest.mark.asyncio
+async def test_promotion_rollback_requires_previous_active_build(
+    tmp_path, monkeypatch
+):
+    settings, build_id, sink = await _prepare_validating_build(
+        tmp_path, monkeypatch, with_gold=True
+    )
+
+    async def neo4j_ok(_build_id, _settings):
+        return None
+
+    async def set_neo4j(_target, _settings):
+        return None
+
+    async def read_neo4j(_settings):
+        return build_id
+
+    async with CatalogWriter(settings.catalog_path, max_queue=2) as writer:
+        await run_validation(
+            writer,
+            build_id,
+            settings,
+            qdrant_sink=sink,
+            neo4j_validator=neo4j_ok,
+        )
+        with pytest.raises(RuntimeError, match="qdrant switch failed"):
+            await run_promotion(
+                writer,
+                build_id,
+                settings,
+                qdrant_sink=PromotionQdrant(fail=True),
+                neo4j_setter=set_neo4j,
+                neo4j_reader=read_neo4j,
+            )
+        with pytest.raises(CatalogError, match="no previous active build"):
+            await run_promotion_rollback(
+                writer,
+                build_id,
+                settings,
+                qdrant_sink=PromotionQdrant(),
+                neo4j_setter=set_neo4j,
+                neo4j_reader=read_neo4j,
+            )
+
+
+@pytest.mark.asyncio
+async def test_promotion_rollback_rejects_non_failed_promotion(
+    tmp_path, monkeypatch
+):
+    settings, build_id, sink = await _prepare_validating_build(
+        tmp_path, monkeypatch, with_gold=True
+    )
+
+    async def neo4j_ok(_build_id, _settings):
+        return None
+
+    async def set_neo4j(_target, _settings):
+        return None
+
+    async def read_neo4j(_settings):
+        return build_id
+
+    async with CatalogWriter(settings.catalog_path, max_queue=2) as writer:
+        await run_validation(
+            writer,
+            build_id,
+            settings,
+            qdrant_sink=sink,
+            neo4j_validator=neo4j_ok,
+        )
+        await run_promotion(
+            writer,
+            build_id,
+            settings,
+            qdrant_sink=PromotionQdrant(target=professor_collection_name(build_id)),
+            neo4j_setter=set_neo4j,
+            neo4j_reader=read_neo4j,
+        )
+        with pytest.raises(CatalogError, match="cannot be rolled back"):
+            await run_promotion_rollback(
+                writer,
+                build_id,
+                settings,
+                qdrant_sink=PromotionQdrant(),
+                neo4j_setter=set_neo4j,
+                neo4j_reader=read_neo4j,
+            )
+
+
+@pytest.mark.asyncio
+async def test_promotion_rollback_requires_previous_vector_collection(
+    tmp_path, monkeypatch
+):
+    settings, build_id, sink = await _prepare_validating_build(
+        tmp_path, monkeypatch, with_gold=True
+    )
+
+    async def neo4j_ok(_build_id, _settings):
+        return None
+
+    async with CatalogWriter(settings.catalog_path, max_queue=2) as writer:
+        await run_validation(
+            writer,
+            build_id,
+            settings,
+            qdrant_sink=sink,
+            neo4j_validator=neo4j_ok,
+        )
+    old_build = "old-active-no-vector"
+    with sqlite3.connect(settings.catalog_path) as connection:
+        connection.execute(
+            "INSERT INTO graph_builds(id,status,curation_version,graph_schema_version,"
+            "vector_schema_version,settings_json,summary_json) "
+            "VALUES (?,'ACTIVE','v1',1,1,'{}','{}')",
+            (old_build,),
+        )
+
+    async def set_neo4j(target, _settings):
+        return None
+
+    async def read_neo4j(_settings):
+        return old_build
+
+    async with CatalogWriter(settings.catalog_path, max_queue=2) as writer:
+        with pytest.raises(RuntimeError, match="qdrant switch failed"):
+            await run_promotion(
+                writer,
+                build_id,
+                settings,
+                qdrant_sink=PromotionQdrant(fail=True),
+                neo4j_setter=set_neo4j,
+                neo4j_reader=read_neo4j,
+            )
+        with pytest.raises(CatalogError, match="no completed vector collection"):
+            await run_promotion_rollback(
+                writer,
+                build_id,
+                settings,
+                qdrant_sink=PromotionQdrant(),
+                neo4j_setter=set_neo4j,
+                neo4j_reader=read_neo4j,
+            )
+
+
+@pytest.mark.asyncio
+async def test_promotion_rollback_readback_mismatch_keeps_catalog_active(
+    tmp_path, monkeypatch
+):
+    settings, build_id, sink = await _prepare_validating_build(
+        tmp_path, monkeypatch, with_gold=True
+    )
+
+    async def neo4j_ok(_build_id, _settings):
+        return None
+
+    async with CatalogWriter(settings.catalog_path, max_queue=2) as writer:
+        await run_validation(
+            writer,
+            build_id,
+            settings,
+            qdrant_sink=sink,
+            neo4j_validator=neo4j_ok,
+        )
+    old_build = "old-active-mismatch"
+    _insert_active_build_with_vector(settings.catalog_path, old_build)
+    neo4j_state = {"active": old_build}
+
+    async def set_neo4j(target, _settings):
+        neo4j_state["active"] = target
+
+    async def read_neo4j(_settings):
+        return "unexpected-active"
+
+    async def read_new_build(_settings):
+        return build_id
+
+    async with CatalogWriter(settings.catalog_path, max_queue=2) as writer:
+        with pytest.raises(RuntimeError, match="qdrant switch failed"):
+            await run_promotion(
+                writer,
+                build_id,
+                settings,
+                qdrant_sink=PromotionQdrant(fail=True),
+                neo4j_setter=set_neo4j,
+                neo4j_reader=read_new_build,
+            )
+        with pytest.raises(CatalogError, match="rollback readback mismatch"):
+            await run_promotion_rollback(
+                writer,
+                build_id,
+                settings,
+                qdrant_sink=PromotionQdrant(),
+                neo4j_setter=set_neo4j,
+                neo4j_reader=read_neo4j,
+            )
+
+    with sqlite3.connect(settings.catalog_path) as connection:
+        assert connection.execute(
+            "SELECT status FROM graph_builds WHERE id=?", (old_build,)
+        ).fetchone()[0] == "ACTIVE"
+        assert connection.execute(
+            "SELECT status FROM graph_builds WHERE id=?", (build_id,)
+        ).fetchone()[0] == "READY"
+        promotion = connection.execute(
+            "SELECT status,last_error FROM promotion_runs WHERE build_id=?", (build_id,)
+        ).fetchone()
+        assert promotion[0] == "FAILED"
+        assert "rollback failed" in promotion[1]
 
 
 @pytest.mark.parametrize("failure_step", ["neo4j", "readback"])
