@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 
 import pytest
 
+import dext_recommend.generation.auxiliary as auxiliary_module
 from dext_grounded import (
     Claim, ConstrainedGenerationPipeline, ContentClass, FactBundle, FactItem,
-    FakeLLMGenerationPort, GenerationResult, SourceRef, StudentContext,
+    FakeLLMGenerationPort, GenerationResult, GenerationWarning, SourceRef,
+    StudentContext,
 )
 from dext_recommend import (
     AuxiliaryGenerationService, MatchAnalysis, OutreachDraft, ProfessorComparison,
     ViewerPermissions,
 )
 from dext_recommend.config import RecommendSettings
+from dext_recommend.core.generation_support import map_generation_warnings
 from dext_recommend.core.ranking_profile import RankingProfile
 from dext_recommend.core.service import RecommendDeps, RecommendationCore
 from dext_recommend.ports import (
@@ -76,7 +80,8 @@ def _detail(entity_id: str, *, build_id: str = "b-1", contacts=None,
     )
 
 
-def _service(llm: FakeLLMGenerationPort, *, details=None, snapshot_port=None):
+def _service(llm: FakeLLMGenerationPort, *, details=None, snapshot_port=None,
+             pipeline=None):
     snap = snapshot()
     snap_port = snapshot_port or FakeActiveSnapshotProvider(snap)
     deps = RecommendDeps(
@@ -91,13 +96,28 @@ def _service(llm: FakeLLMGenerationPort, *, details=None, snapshot_port=None):
     core = RecommendationCore(deps, RecommendSettings())
     return AuxiliaryGenerationService(
         core=core,
-        pipeline=ConstrainedGenerationPipeline(llm_port=llm),
+        pipeline=pipeline or ConstrainedGenerationPipeline(llm_port=llm),
         settings=RecommendSettings(),
     ), snap_port
 
 
 def _result(output: dict, claim: Claim) -> GenerationResult:
     return GenerationResult(output=output, claims=(claim,), warnings=[])
+
+
+class _ExplodingPipeline:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    async def generate(self, **kwargs):
+        raise self.exc
+
+
+class _ProviderError(RuntimeError):
+    pass
+
+
+_ProviderError.__module__ = "openai"
 
 
 @pytest.mark.asyncio
@@ -308,6 +328,136 @@ async def test_auxiliary_output_policy_refuses_mentor_attack():
 
     assert result.kind == "error"
     assert any(issue.code == "content_policy_refusal" for issue in result.issues)
+
+
+@pytest.mark.asyncio
+async def test_auxiliary_outer_timeout_adds_provider_grace(monkeypatch):
+    detail = _detail("e1")
+    ref = detail.fact_bundle.source_refs[0]
+    llm = FakeLLMGenerationPort(preset=_result(
+        {
+            "summary": "Strong NLP fit.",
+            "dimension_scores": {"research_fit": 0.8},
+            "next_steps": ["Read recent papers"],
+            "claims": [{
+                "text": "Strong NLP fit.",
+                "content_class": "fact",
+                "fact_indices": [0],
+                "fact_refs": [{
+                    "doc_path": ref.doc_path,
+                    "heading_path": ref.heading_path,
+                    "chunk_hash": ref.chunk_hash,
+                    "quote_or_summary": ref.quote_or_summary,
+                }],
+            }],
+        },
+        Claim(text="Strong NLP fit.", content_class=ContentClass.FACT, fact_refs=(ref,)),
+    ))
+    captured: dict[str, float] = {}
+
+    async def fake_wait_for(coro, timeout):
+        captured["timeout"] = timeout
+        return await coro
+
+    monkeypatch.setattr(auxiliary_module.asyncio, "wait_for", fake_wait_for)
+    service, _ = _service(llm, details={"e1": detail})
+
+    result = await service.analyze_match(
+        "e1",
+        StudentContext(research_interests=["NLP"]),
+        evidence_policy="default",
+    )
+
+    assert result.kind == "match_analysis"
+    op_timeout = generation_profile().operations["match_analysis"].timeout
+    assert captured["timeout"] == pytest.approx(op_timeout + 5.0)
+
+
+@pytest.mark.asyncio
+async def test_auxiliary_generation_timeout_is_request_timeout(caplog):
+    detail = _detail("e1")
+    llm = FakeLLMGenerationPort(preset=GenerationResult(output={}))
+    service, _ = _service(
+        llm,
+        details={"e1": detail},
+        pipeline=_ExplodingPipeline(asyncio.TimeoutError()),
+    )
+
+    with caplog.at_level("ERROR", logger="dext_recommend.generation.auxiliary"):
+        result = await service.analyze_match(
+            "e1",
+            StudentContext(research_interests=["NLP"]),
+            evidence_policy="default",
+            request_id="req-timeout",
+        )
+
+    assert result.kind == "error"
+    assert result.issues[0].code == "request_timeout"
+    assert result.issues[0].message == "match_analysis generation timed out"
+    assert "request_id=req-timeout" in caplog.text
+    assert "operation_id=match_analysis" in caplog.text
+    assert "elapsed_ms=" in caplog.text
+    assert "timeout=" in caplog.text
+    assert "outer_timeout=" in caplog.text
+    assert "error_type=TimeoutError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_auxiliary_provider_exception_is_llm_unavailable():
+    detail = _detail("e1")
+    llm = FakeLLMGenerationPort(preset=GenerationResult(output={}))
+    service, _ = _service(
+        llm,
+        details={"e1": detail},
+        pipeline=_ExplodingPipeline(_ProviderError("provider down")),
+    )
+
+    result = await service.analyze_match(
+        "e1",
+        StudentContext(research_interests=["NLP"]),
+        evidence_policy="default",
+        request_id="req-provider",
+    )
+
+    assert result.kind == "error"
+    assert result.issues[0].code == "llm_unavailable"
+    assert result.issues[0].message == "match_analysis provider unavailable"
+
+
+@pytest.mark.asyncio
+async def test_auxiliary_unknown_generation_exception_stays_generation_unavailable(caplog):
+    detail = _detail("e1")
+    llm = FakeLLMGenerationPort(preset=GenerationResult(output={}))
+    service, _ = _service(
+        llm,
+        details={"e1": detail},
+        pipeline=_ExplodingPipeline(RuntimeError("boom")),
+    )
+
+    with caplog.at_level("ERROR", logger="dext_recommend.generation.auxiliary"):
+        result = await service.analyze_match(
+            "e1",
+            StudentContext(research_interests=["NLP"]),
+            evidence_policy="default",
+            request_id="req-unknown",
+        )
+
+    assert result.kind == "error"
+    assert result.issues[0].code == "generation_unavailable"
+    assert result.issues[0].message == "match_analysis generation failed"
+    assert "request_id=req-unknown" in caplog.text
+    assert "operation_id=match_analysis" in caplog.text
+    assert "error_type=RuntimeError" in caplog.text
+
+
+def test_llm_unavailable_warning_maps_to_error():
+    mapped = map_generation_warnings((
+        GenerationWarning(code="llm_unavailable", message="provider down"),
+    ))
+
+    assert mapped[0].code == "llm_unavailable"
+    assert mapped[0].message == "provider down"
+    assert mapped[0].severity == "error"
 
 
 def test_auxiliary_dtos_are_deeply_immutable():

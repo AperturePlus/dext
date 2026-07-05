@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from collections.abc import Sequence
 
 from dext_grounded import (
@@ -20,6 +22,44 @@ from dext_recommend.models import (
 )
 from dext_recommend.ports import ProfessorDetail, ViewerPermissions
 from dext_recommend.readiness import ActiveBuildSnapshot
+
+
+logger = logging.getLogger(__name__)
+
+_PROVIDER_EXCEPTION_ROOT_MODULES = {"openai", "httpx"}
+_OUTER_TIMEOUT_GRACE_SECONDS = 5.0
+_PROVIDER_EXCEPTION_NAMES = {
+    "APIConnectionError",
+    "APIError",
+    "APIResponseValidationError",
+    "APIStatusError",
+    "APITimeoutError",
+    "AuthenticationError",
+    "BadRequestError",
+    "ConflictError",
+    "InternalServerError",
+    "NotFoundError",
+    "PermissionDeniedError",
+    "RateLimitError",
+    "UnprocessableEntityError",
+}
+
+
+def _is_timeout_exception(exc: Exception) -> bool:
+    return isinstance(exc, asyncio.TimeoutError) or "Timeout" in type(exc).__name__
+
+
+def _is_provider_exception(exc: Exception) -> bool:
+    exc_type = type(exc)
+    root_module = exc_type.__module__.split(".", 1)[0]
+    return (
+        root_module in _PROVIDER_EXCEPTION_ROOT_MODULES
+        or exc_type.__name__ in _PROVIDER_EXCEPTION_NAMES
+    )
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return (time.monotonic() - started_at) * 1000.0
 
 
 def _warn(
@@ -156,6 +196,68 @@ def _string_tuple_mapping(value) -> dict[str, tuple[str, ...]]:
     return {str(key): _string_tuple(child) for key, child in value.items()}
 
 
+def _log_generation_exception(
+    exc: Exception,
+    *,
+    request_id: str | None,
+    operation_id: str,
+    system_prompt_id: str,
+    fact_bundle: FactBundle,
+    student_context: StudentContext | None,
+    generation_profile_version: str,
+    elapsed_ms: float,
+    timeout: float,
+    outer_timeout: float,
+) -> None:
+    logger.exception(
+        "auxiliary generation failed request_id=%s operation_id=%s "
+        "system_prompt_id=%s generation_profile_version=%s fact_count=%s "
+        "student_context_present=%s elapsed_ms=%.1f timeout=%.1f "
+        "outer_timeout=%.1f error_type=%s",
+        request_id or "-",
+        operation_id,
+        system_prompt_id,
+        generation_profile_version,
+        len(fact_bundle.facts),
+        _has_student_context(student_context),
+        elapsed_ms,
+        timeout,
+        outer_timeout,
+        type(exc).__name__,
+    )
+
+
+def _log_generation_success(
+    *,
+    request_id: str | None,
+    operation_id: str,
+    system_prompt_id: str,
+    fact_bundle: FactBundle,
+    student_context: StudentContext | None,
+    generation_profile_version: str,
+    elapsed_ms: float,
+    timeout: float,
+    outer_timeout: float,
+    warning_count: int,
+) -> None:
+    logger.info(
+        "auxiliary generation completed request_id=%s operation_id=%s "
+        "system_prompt_id=%s generation_profile_version=%s fact_count=%s "
+        "student_context_present=%s elapsed_ms=%.1f timeout=%.1f "
+        "outer_timeout=%.1f warning_count=%s",
+        request_id or "-",
+        operation_id,
+        system_prompt_id,
+        generation_profile_version,
+        len(fact_bundle.facts),
+        _has_student_context(student_context),
+        elapsed_ms,
+        timeout,
+        outer_timeout,
+        warning_count,
+    )
+
+
 class AuxiliaryGenerationService:
     """Process-local R6 service; HTTP/application-state wiring lands in R7."""
 
@@ -177,6 +279,7 @@ class AuxiliaryGenerationService:
         evidence_policy: str,
         *,
         viewer_permissions: ViewerPermissions | None = None,
+        request_id: str | None = None,
     ) -> AuxiliaryGenerationResult:
         if not isinstance(entity_id, str) or not entity_id:
             return _error(RecommendationErrorCode.INVALID_REQUEST, "entity_id must be non-empty")
@@ -209,6 +312,7 @@ class AuxiliaryGenerationService:
             fact_bundle=bundle,
             student_context=student_context,
             generation_profile_version=gen_profile.version,
+            request_id=request_id,
         )
         if isinstance(result_or_error, AuxiliaryGenerationResult):
             return result_or_error
@@ -257,6 +361,7 @@ class AuxiliaryGenerationService:
         *,
         include_contacts: bool = False,
         viewer_permissions: ViewerPermissions | None = None,
+        request_id: str | None = None,
     ) -> AuxiliaryGenerationResult:
         if not isinstance(entity_id, str) or not entity_id:
             return _error(RecommendationErrorCode.INVALID_REQUEST, "entity_id must be non-empty")
@@ -297,6 +402,7 @@ class AuxiliaryGenerationService:
             fact_bundle=bundle,
             student_context=student_context,
             generation_profile_version=gen_profile.version,
+            request_id=request_id,
         )
         if isinstance(result_or_error, AuxiliaryGenerationResult):
             return result_or_error
@@ -341,6 +447,7 @@ class AuxiliaryGenerationService:
         evidence_policy: str,
         *,
         viewer_permissions: ViewerPermissions | None = None,
+        request_id: str | None = None,
     ) -> AuxiliaryGenerationResult:
         ids = tuple(entity_ids or ())
         if (
@@ -388,6 +495,7 @@ class AuxiliaryGenerationService:
             fact_bundle=bundle,
             student_context=student_context,
             generation_profile_version=gen_profile.version,
+            request_id=request_id,
         )
         if isinstance(result_or_error, AuxiliaryGenerationResult):
             return result_or_error
@@ -479,7 +587,11 @@ class AuxiliaryGenerationService:
         fact_bundle: FactBundle,
         student_context: StudentContext | None,
         generation_profile_version: str,
+        request_id: str | None = None,
     ):
+        timeout = float(op.timeout)
+        outer_timeout = timeout + _OUTER_TIMEOUT_GRACE_SECONDS
+        started_at = time.monotonic()
         try:
             result = await asyncio.wait_for(self._pipeline.generate(
                 system_prompt_id=op.system_prompt_id,
@@ -493,13 +605,50 @@ class AuxiliaryGenerationService:
                 operation_id=operation_id,
                 subject_kind="mentor",
                 support_validator=validate_fact_index_support,
-            ), timeout=op.timeout)
-        except Exception:
+            ), timeout=outer_timeout)
+        except Exception as exc:
+            elapsed_ms = _elapsed_ms(started_at)
+            _log_generation_exception(
+                exc,
+                request_id=request_id,
+                operation_id=operation_id,
+                system_prompt_id=op.system_prompt_id,
+                fact_bundle=fact_bundle,
+                student_context=student_context,
+                generation_profile_version=generation_profile_version,
+                elapsed_ms=elapsed_ms,
+                timeout=timeout,
+                outer_timeout=outer_timeout,
+            )
+            if _is_timeout_exception(exc):
+                return _error(
+                    RecommendationErrorCode.REQUEST_TIMEOUT,
+                    f"{operation_id} generation timed out",
+                    generation_profile_version=generation_profile_version,
+                )
+            if _is_provider_exception(exc):
+                return _error(
+                    RecommendationErrorCode.LLM_UNAVAILABLE,
+                    f"{operation_id} provider unavailable",
+                    generation_profile_version=generation_profile_version,
+                )
             return _error(
                 RecommendationErrorCode.GENERATION_UNAVAILABLE,
                 f"{operation_id} generation failed",
                 generation_profile_version=generation_profile_version,
             )
+        _log_generation_success(
+            request_id=request_id,
+            operation_id=operation_id,
+            system_prompt_id=op.system_prompt_id,
+            fact_bundle=fact_bundle,
+            student_context=student_context,
+            generation_profile_version=generation_profile_version,
+            elapsed_ms=_elapsed_ms(started_at),
+            timeout=timeout,
+            outer_timeout=outer_timeout,
+            warning_count=len(result.warnings),
+        )
         mapped = map_generation_warnings(
             result.warnings,
             generation_unavailable_code=RecommendationErrorCode.GENERATION_UNAVAILABLE,
