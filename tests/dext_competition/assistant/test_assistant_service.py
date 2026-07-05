@@ -78,6 +78,11 @@ def _pipeline(output: dict, *, claim_text: str = "应在训练阶段补充模拟
     return ConstrainedGenerationPipeline(llm), llm
 
 
+class _FailingPipeline:
+    async def generate(self, **kwargs):
+        raise TimeoutError("too slow")
+
+
 @pytest.mark.asyncio
 async def test_service_calls_shared_pipeline_with_closed_schema_and_validates_cards() -> None:
     pipeline, llm = _pipeline({
@@ -140,10 +145,22 @@ async def test_stale_revision_is_fatal_before_generation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_missing_pipeline_is_generation_unavailable() -> None:
+async def test_missing_pipeline_returns_local_fallback() -> None:
     result = await suggest_plan_changes(_request(), PlanAssistantDeps(None))
-    assert result.result is None
-    assert result.issues[0].code.value == "generation_unavailable"
+    assert result.result is not None
+    assert result.result.reply
+    assert result.result.change_set.cards[0].type == "append_advice"
+    assert result.generation_profile_version == "competition.assistant.local-fallback-v1"
+    assert result.diagnostics["fallback"] == "local"
+
+
+@pytest.mark.asyncio
+async def test_generation_failure_returns_local_fallback_warning() -> None:
+    result = await suggest_plan_changes(_request(), PlanAssistantDeps(_FailingPipeline()))
+    assert result.result is not None
+    assert result.result.change_set.cards[0].type == "append_advice"
+    assert result.issues[0].code.value == "generation_fallback"
+    assert result.issues[0].severity.value == "warning"
 
 
 @pytest.mark.asyncio

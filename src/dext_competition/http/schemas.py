@@ -4,11 +4,17 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+def _coerce_calendar_date(value):
+    if isinstance(value, str) and "T" in value:
+        return value.split("T", 1)[0]
+    return value
 
 
 class CompetitionSnapshot(StrictModel):
@@ -50,18 +56,32 @@ class PreparationDiagnoseRequest(StrictModel):
 
 class PreparationTaskSnapshot(StrictModel):
     id: StrictStr
+    template_key: StrictStr | None = None
     title: StrictStr
     kind: Literal["required", "optional", "userAdded"]
     estimated_hours: float
     due_date: date
+    note: StrictStr | None = None
     completed_at: datetime | None = None
+
+    @field_validator("due_date", mode="before")
+    @classmethod
+    def _parse_due_date(cls, value):
+        return _coerce_calendar_date(value)
 
 
 class PreparationPhaseSnapshot(StrictModel):
     key: StrictStr
+    title: StrictStr | None = None
     start_date: date
     end_date: date
     tasks: list[PreparationTaskSnapshot] = Field(default_factory=list)
+    personalized_advice: StrictStr | None = None
+
+    @field_validator("start_date", "end_date", mode="before")
+    @classmethod
+    def _parse_phase_dates(cls, value):
+        return _coerce_calendar_date(value)
 
 
 class CardResultRequest(StrictModel):
@@ -82,6 +102,7 @@ class PreparationAssistantPlanSnapshot(StrictModel):
     timeline_type: Literal["eventWindow", "submission"]
     event_end_date: date | None = None
     defense_date: date | None = None
+    registration_deadline: date | None = None
     revision: int = Field(ge=0)
     weekly_commitment: Literal["hours3to5", "hours6to10", "hours11to15", "hours16plus"]
     experience_level: Literal["beginner", "intermediate", "experienced"]
@@ -92,6 +113,11 @@ class PreparationAssistantPlanSnapshot(StrictModel):
     updated_at: datetime
     tight_schedule: bool = False
     overload: bool = False
+
+    @field_validator("target_date", "event_end_date", "defense_date", "registration_deadline", mode="before")
+    @classmethod
+    def _parse_plan_dates(cls, value):
+        return _coerce_calendar_date(value)
 
 
 class PreparationAssistantRequest(StrictModel):

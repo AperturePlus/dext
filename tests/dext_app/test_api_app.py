@@ -10,6 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 import dext_app.api.app as api_app
 import dext_app.api.cli as api_cli
 from dext_app.api import create_app
+from dext_app.api.app import _new_competition_generation_pipeline
 from dext_competition import CompetitionCard, SourceRef
 from dext_competition.assistant import PlanAssistantDeps
 from dext_competition.catalog import CatalogArtifactError
@@ -346,6 +347,16 @@ async def test_combined_app_uses_recommend_auth_for_competition_owner() -> None:
         assert body["data"][0]["id"] == "cmp-1"
 
 
+def test_live_competition_deps_injects_llm_pipeline_when_configured() -> None:
+    pipeline = _new_competition_generation_pipeline(
+        RecommendSettings(
+            llm_api_key="test-key",
+            llm_base_url="https://llm.test/v1",
+            llm_model="test-model",
+            _env_file=None,
+        )
+    )
+    assert pipeline is not None
 @pytest.mark.asyncio
 async def test_combined_app_routes_mentor_and_competition_recommendations() -> None:
     app = create_app(

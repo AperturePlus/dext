@@ -135,7 +135,7 @@ async def test_needs_clarification_from_pipeline_does_not_recall():
     assert knowledge.calls == []
 
 
-async def test_missing_generation_pipeline_does_not_silently_recall():
+async def test_missing_generation_pipeline_uses_heuristic_understanding():
     c = _chunk("算法竞赛")
     card = _card("算法竞赛", category="计算机", chunk=c)
     service, catalog, knowledge = _service((card,), (c,))
@@ -145,10 +145,11 @@ async def test_missing_generation_pipeline_does_not_silently_recall():
             preferences=CompetitionPreferences(categories=("计算机",)),
         )
     )
-    assert response.results == ()
-    assert response.warnings[0].code == "generation_unavailable"
-    assert catalog.calls == []
-    assert knowledge.calls == []
+    assert [item.display_name for item in response.results] == ["算法竞赛"]
+    assert response.generation_profile_version == "competition.query-understanding.heuristic-v1"
+    assert response.warnings == ()
+    assert catalog.calls == [{"op": "list_competitions"}]
+    assert knowledge.calls and knowledge.calls[0]["op"] == "query"
 
 
 async def test_service_filters_ranks_and_preserves_internal_source_refs():

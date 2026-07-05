@@ -32,6 +32,7 @@ from dext_competition.recommend.generation_profile import (
 )
 from dext_competition.recommend.query_understanding import (
     DEFAULT_GENERATION_PROFILE_VERSION,
+    heuristic_understanding,
     understand_query,
 )
 from dext_competition.recommend.ranking import rank_candidates
@@ -162,25 +163,29 @@ class CompetitionRecommendationService:
                 ),),
             )
 
-        query_result = await understand_query(
-            request,
-            knowledge_base_version=_kb_version(self._deps),
-            generation_pipeline=self._deps.generation_pipeline,
-            profile=generation_profile,
-        )
-        understanding = query_result.understanding
-        generation_profile_version = query_result.generation_profile_version
-        if query_result.warning_code is not None:
-            return _response(
-                deps=self._deps,
-                profile=profile,
-                generation_profile_version=generation_profile_version,
-                query_understanding=understanding,
-                warnings=(CompetitionWarning(
-                    code=query_result.warning_code,
-                    message="query understanding failed before recall",
-                ),),
+        if self._deps.generation_pipeline is None:
+            understanding = heuristic_understanding(request)
+            generation_profile_version = "competition.query-understanding.heuristic-v1"
+        else:
+            query_result = await understand_query(
+                request,
+                knowledge_base_version=_kb_version(self._deps),
+                generation_pipeline=self._deps.generation_pipeline,
+                profile=generation_profile,
             )
+            understanding = query_result.understanding
+            generation_profile_version = query_result.generation_profile_version
+            if query_result.warning_code is not None:
+                return _response(
+                    deps=self._deps,
+                    profile=profile,
+                    generation_profile_version=generation_profile_version,
+                    query_understanding=understanding,
+                    warnings=(CompetitionWarning(
+                        code=query_result.warning_code,
+                        message="query understanding failed before recall",
+                    ),),
+                )
         if understanding.needs_clarification:
             return _response(
                 deps=self._deps,

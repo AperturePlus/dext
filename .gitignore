@@ -41,3 +41,4 @@ webui/dist/
 .worktrees/
 
 flutter-app-source/
+logs/

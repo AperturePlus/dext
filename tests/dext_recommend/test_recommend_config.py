@@ -90,6 +90,19 @@ def test_recommend_settings_accepts_graph_embedding_env_aliases(monkeypatch):
     assert settings.embedding_base_url == "https://embedding.test/v1"
 
 
+def test_recommend_settings_accepts_shared_llm_env_aliases(monkeypatch):
+    monkeypatch.delenv("DEXT_RECOMMEND_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("DEXT_RECOMMEND_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("DEXT_RECOMMEND_LLM_MODEL", raising=False)
+    monkeypatch.setenv("DEXT_LLM_API_KEY", "shared-key")
+    monkeypatch.setenv("DEXT_LLM_BASE_URL", "https://llm.test/v1")
+    monkeypatch.setenv("DEXT_LLM_MODEL", "shared-model")
+    settings = RecommendSettings(_env_file=None)
+    assert settings.llm_api_key.get_secret_value() == "shared-key"
+    assert settings.llm_base_url == "https://llm.test/v1"
+    assert settings.llm_model == "shared-model"
+
+
 def test_readiness_thresholds_have_defaults():
     s = RecommendSettings()
     assert s.readiness_readback_timeout == 5.0

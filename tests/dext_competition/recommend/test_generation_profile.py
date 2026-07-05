@@ -13,7 +13,7 @@ def test_query_understanding_profile_loads_checked_in_operation() -> None:
     assert profile.operation_id == "competition_query_understanding"
     assert profile.system_prompt_id == "competition_query_understanding_v1"
     assert profile.safety_domain == "competition"
-    assert profile.timeout_seconds == 8.0
+    assert profile.timeout_seconds == 120.0
     assert profile.json_schema["additionalProperties"] is False
 
 
