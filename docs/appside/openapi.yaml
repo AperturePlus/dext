@@ -1916,11 +1916,21 @@ components:
         suggestion: { type: string }
     MatchDimension:
       type: object
+      additionalProperties: false
       required: [label, score, comment]
       properties:
-        label: { type: string }
-        score: { type: integer, minimum: 0, maximum: 100 }
-        comment: { type: string }
+        label:
+          type: string
+          enum: [方向契合, 方法匹配, 地域, 学历目标, 产出活跃]
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: 信息性契合度，不是录取概率。
+        comment:
+          type: string
+          minLength: 1
+          description: 中文非空一句话 AI 解读；信息不足时说明需要补充的信息。
     MatchAnalysis:
       type: object
       required: [professor_id, summary, strengths, gaps, suggestions, dimensions]
@@ -1938,6 +1948,9 @@ components:
           items: { type: string }
         dimensions:
           type: array
+          minItems: 5
+          maxItems: 5
+          description: 必须且仅包含方向契合、方法匹配、地域、学历目标、产出活跃五个维度。
           items:
             $ref: '#/components/schemas/MatchDimension'
     EmailDraft:
