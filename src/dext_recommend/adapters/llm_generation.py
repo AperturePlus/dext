@@ -161,13 +161,7 @@ class OpenAICompatibleLLMGenerationAdapter:
             "fact_bundle": fact_bundle,
             "student_context": student_context,
             "output_contract": {
-                "instructions": [
-                    "Return exactly one JSON object and no markdown.",
-                    "The object must conform to output_contract.json_schema.",
-                    "Include every field listed in json_schema.required.",
-                    "Use only enum values declared in the schema.",
-                    "Do not include fields outside json_schema.properties.",
-                ],
+                "instructions": list(self._profile.output_contract_instructions),
                 "json_schema": schema,
             },
         }
@@ -182,7 +176,22 @@ class OpenAICompatibleLLMGenerationAdapter:
             timeout=operation.timeout,
             stream=False,
         )
-        content = response.choices[0].message.content or ""
+        try:
+            content = response.choices[0].message.content
+        except (AttributeError, IndexError, TypeError):
+            return GenerationResult(
+                output={}, warnings=[GenerationWarning(
+                    code="generation_parse_error",
+                    message="provider response missing message content",
+                )],
+            )
+        if not isinstance(content, str) or not content:
+            return GenerationResult(
+                output={}, warnings=[GenerationWarning(
+                    code="generation_parse_error",
+                    message="provider response missing message content",
+                )],
+            )
         try:
             output = json.loads(content)
         except (json.JSONDecodeError, TypeError):
