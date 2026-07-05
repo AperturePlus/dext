@@ -1,5 +1,5 @@
 {
-  "version": "generation-v2",
+  "version": "generation-v3",
   "grounded_rules_manifest_hash": "23531ed9edf058fedff7c7d8e04cdad046a163481dee0b0d81b6e7d07996b625",
   "output_contract_prompt_path": "prompts/output_contract_instructions.md",
   "operations": {
